@@ -35,9 +35,6 @@ export class SlackAdapter implements IConnector {
   private threadLastSeen: Map<string, string> = new Map(); // threadRootTs → last processed msg ts
   private threadPollTimer: ReturnType<typeof setInterval> | null = null;
 
-  // Interactive button support for permissions
-  private pendingPermissions: Map<string, (allowed: boolean) => void> = new Map();
-
   constructor(private config: SlackConfig) {}
 
   get status(): ConnectorStatus {
@@ -77,14 +74,6 @@ export class SlackAdapter implements IConnector {
             this.handleSocketMessage(event);
           });
 
-          // Interactive events (button clicks)
-          this.socketClient.on("interactive", (event: any) => {
-            if (typeof event?.ack === "function") {
-              Promise.resolve(event.ack()).catch(() => {});
-            }
-            this.handleInteraction(event);
-          });
-
           await this.socketClient.start();
         } catch {
           // Socket Mode optional — fall back to polling
@@ -115,7 +104,6 @@ export class SlackAdapter implements IConnector {
     this.sessionThreads.clear();
     this.threadToSession.clear();
     this.threadLastSeen.clear();
-    this.pendingPermissions.clear();
     this.botUserId = null;
     this._status = "disconnected";
   }
@@ -129,8 +117,6 @@ export class SlackAdapter implements IConnector {
 
     const inputStr = JSON.stringify(request.toolInput, null, 2);
     const truncated = inputStr.length > 2500 ? inputStr.slice(0, 2500) + "\n..." : inputStr;
-    const useButtons = this.socketClient !== null;
-    const permId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     const fallbackText = `*Agent needs permission*\n*Tool:* \`${request.toolName}\`\n\`\`\`${truncated}\`\`\`\nReply: *allow* or *deny*`;
 
@@ -149,35 +135,11 @@ export class SlackAdapter implements IConnector {
           text: `\`\`\`${truncated}\`\`\``,
         },
       },
-    ];
-
-    if (useButtons) {
-      blocks.push({
-        type: "actions",
-        block_id: `perm_${permId}`,
-        elements: [
-          {
-            type: "button",
-            text: { type: "plain_text", text: "Allow", emoji: true },
-            style: "primary",
-            action_id: `perm_allow_${permId}`,
-            value: "allow",
-          },
-          {
-            type: "button",
-            text: { type: "plain_text", text: "Deny", emoji: true },
-            style: "danger",
-            action_id: `perm_deny_${permId}`,
-            value: "deny",
-          },
-        ],
-      });
-    } else {
-      blocks.push({
+      {
         type: "section",
         text: { type: "mrkdwn", text: "Reply in this thread: *allow* or *deny*" },
-      });
-    }
+      },
+    ];
 
     try {
       const result = await this.webClient.chat.postMessage({
@@ -190,8 +152,8 @@ export class SlackAdapter implements IConnector {
 
       const msgTs = result.ts as string;
 
-      // Race: button click (if available) vs text reply vs timeout
-      const reply = await this.waitForPermissionDecision(permId, useButtons, threadTs, msgTs);
+      // Wait for text reply in thread
+      const reply = await this.pollForReply(threadTs, msgTs);
 
       // Update the original message — replace buttons with result
       const resultEmoji = reply.allowed ? "\u2705" : "\u274c";
@@ -407,70 +369,6 @@ export class SlackAdapter implements IConnector {
   }
 
   // ---------------------------------------------------------------------------
-  // Socket Mode — interactive (button clicks)
-  // ---------------------------------------------------------------------------
-
-  private handleInteraction(event: any): void {
-    const body = event?.body ?? event;
-    if (body?.type !== "block_actions") return;
-
-    const action = body.actions?.[0];
-    if (!action) return;
-
-    const actionId = action.action_id as string;
-    if (!actionId?.startsWith("perm_")) return;
-
-    // Extract permId: "perm_allow_<id>" or "perm_deny_<id>"
-    const match = actionId.match(/^perm_(?:allow|deny)_(.+)$/);
-    if (!match) return;
-
-    const permId = match[1];
-    const resolver = this.pendingPermissions.get(permId);
-    if (resolver) {
-      resolver(action.value === "allow");
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Permission decision — race buttons vs text replies
-  // ---------------------------------------------------------------------------
-
-  private waitForPermissionDecision(
-    permId: string,
-    useButtons: boolean,
-    threadTs: string,
-    afterTs: string,
-  ): Promise<PermissionReply> {
-    const abort = { aborted: false };
-
-    const done = (reply: PermissionReply) => {
-      abort.aborted = true;
-      this.pendingPermissions.delete(permId);
-      return reply;
-    };
-
-    const promises: Promise<PermissionReply>[] = [];
-
-    // Button click path (only when Socket Mode is active)
-    if (useButtons) {
-      promises.push(
-        new Promise<PermissionReply>((resolve) => {
-          this.pendingPermissions.set(permId, (allowed) => {
-            resolve(done({ allowed, message: allowed ? undefined : "Denied by user" }));
-          });
-        }),
-      );
-    }
-
-    // Text reply polling (always available as fallback)
-    promises.push(
-      this.pollForReply(threadTs, afterTs, abort).then((r) => done(r)),
-    );
-
-    return Promise.race(promises);
-  }
-
-  // ---------------------------------------------------------------------------
   // Thread polling — reliable path for inbound prompts via API
   // ---------------------------------------------------------------------------
 
@@ -537,15 +435,12 @@ export class SlackAdapter implements IConnector {
   private async pollForReply(
     threadRootTs: string,
     afterTs: string,
-    abort?: { aborted: boolean },
   ): Promise<PermissionReply> {
     const timeout = this.config.timeout ?? 300000;
     const interval = this.config.pollInterval ?? 2000;
     const deadline = Date.now() + timeout;
 
     while (Date.now() < deadline) {
-      if (abort?.aborted) return { allowed: false, message: "Cancelled" };
-
       try {
         const result = await this.webClient.conversations.replies({
           channel: this.config.channelId,

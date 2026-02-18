@@ -128,15 +128,33 @@ function resolveInternalSessionId(hookSessionId: string, cwd: string): string {
 }
 
 /**
+ * Check whether the hook event originated from an agent session managed by
+ * this app (matched by cwd).  External/standalone Claude Code instances
+ * should NOT have their events forwarded to Slack.
+ */
+function isInternalSession(cwd: string): boolean {
+  if (!cwd) return false;
+  return appStore.getState().sessions.some((s) => s.cwd === cwd);
+}
+
+/**
  * Bridge HookServer events → ConnectorManager
  */
 function wireHookBridge(): void {
   // permission_request: async — await connector reply then call socket reply callback
-  // If no connectors are connected, reply with "ack" (not "permission_reply")
-  // so the hook falls through instead of denying.
+  // If no connectors are connected or the agent isn't managed by this app,
+  // reply with "ack" so the hook falls through instead of denying.
   hookServer.on(
     "permission_request",
     (payload: Record<string, unknown>, reply: (response: HookResponse) => void) => {
+      const cwd = String(payload.cwd ?? "");
+
+      // Only forward events from agents running inside this app
+      if (!isInternalSession(cwd)) {
+        reply({ type: "ack", payload: {} });
+        return;
+      }
+
       const connected = connectorManager.getAll().filter((c) => c.status === "connected");
       if (connected.length === 0) {
         // No connectors to ask — let hook fall through to default behavior
@@ -144,7 +162,6 @@ function wireHookBridge(): void {
         return;
       }
 
-      const cwd = String(payload.cwd ?? "");
       const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
 
       (async () => {
@@ -175,8 +192,11 @@ function wireHookBridge(): void {
 
   // notification: from Claude Code's Notification hook.
   // Filter out "waiting for input" noise — forward actual responses.
+  // Only forward for agents managed by this app.
   hookServer.on("notification", (payload: Record<string, unknown>) => {
     const cwd = String(payload.cwd ?? "");
+    if (!isInternalSession(cwd)) return;
+
     const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
     const message = String(payload.message ?? "");
     if (!message) return;
@@ -195,9 +215,11 @@ function wireHookBridge(): void {
       .catch(() => {});
   });
 
-  // stop: session stopped notification
+  // stop: session stopped notification (only for managed agents)
   hookServer.on("stop", (payload: Record<string, unknown>) => {
     const cwd = String(payload.cwd ?? "");
+    if (!isInternalSession(cwd)) return;
+
     const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
 
     connectorManager
@@ -274,12 +296,23 @@ function extractLatestResponse(content: ScreenContent | undefined): string | nul
     if (/^\s*⏺\s+Ran \d+/.test(l)) return false;
     if (/^\s*[⎿]\s/.test(l)) return false;
     if (/hook error/i.test(l)) return false;
-    // Status bar / shortcuts hint
-    if (/^\?\s+for shortcuts/.test(l)) return false;
-    if (/^Press/.test(l) && /shortcuts|help/.test(l)) return false;
+    // Status bar / shortcuts / IDE hints (anywhere on line)
+    if (/\?\s+for shortcuts/i.test(l)) return false;
+    if (/\/ide\s+for\s/i.test(l)) return false;
+    if (/\/help/i.test(l) && /shortcuts|commands/i.test(l)) return false;
     // Update notice
     if (/update available/i.test(l)) return false;
     if (/npm install -g/i.test(l)) return false;
+    // Cost / token stats bar
+    if (/^\s*\$[\d.]+\s+(cost|total)/i.test(l)) return false;
+    if (/tokens?[:\s]+[\d,]+/i.test(l) && /cost|input|output/i.test(l)) return false;
+    // Model name on its own line
+    if (/^\s*claude-/i.test(l) && l.trim().length < 80) return false;
+    // "Press Enter" / "Esc to cancel" prompts
+    if (/^\s*(Press|Esc\s)/i.test(l)) return false;
+    // Compact mode tip, auto-update notice
+    if (/^\s*tip:/i.test(l)) return false;
+    if (/^\s*Run\s.*to update/i.test(l)) return false;
     return true;
   });
 
