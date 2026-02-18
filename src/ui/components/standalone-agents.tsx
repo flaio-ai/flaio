@@ -37,7 +37,13 @@ export function StandaloneAgents({
           {countStr}
         </Text>
       </Box>
-      {agents.map((agent) => {
+      {[...agents]
+        .sort((a, b) => {
+          const la = a.cwd ? path.basename(a.cwd) : `PID:${a.pid}`;
+          const lb = b.cwd ? path.basename(b.cwd) : `PID:${b.pid}`;
+          return la.localeCompare(lb);
+        })
+        .map((agent) => {
         const icon = AGENT_ICONS[agent.driverName] ?? DEFAULT_ICON;
         const label = agent.cwd ? path.basename(agent.cwd) : `PID:${agent.pid}`;
         return (

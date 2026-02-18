@@ -8,7 +8,7 @@ const SOCKET_DIR = path.join(os.tmpdir(), "agent-manager");
 const SOCKET_PATH = path.join(SOCKET_DIR, "hooks.sock");
 
 export interface HookMessage {
-  type: "permission_request" | "post_tool_use" | "stop";
+  type: "permission_request" | "post_tool_use" | "stop" | "notification";
   payload: Record<string, unknown>;
 }
 
@@ -108,6 +108,12 @@ export class HookServer extends EventEmitter {
       }
       case "stop": {
         this.emit("stop", msg.payload);
+        conn.write(JSON.stringify({ type: "ack", payload: {} }) + "\n");
+        conn.end();
+        break;
+      }
+      case "notification": {
+        this.emit("notification", msg.payload);
         conn.write(JSON.stringify({ type: "ack", payload: {} }) + "\n");
         conn.end();
         break;

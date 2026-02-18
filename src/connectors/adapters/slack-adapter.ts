@@ -26,6 +26,11 @@ export class SlackAdapter implements IConnector {
   private webClient: any = null;
   private socketClient: any = null;
 
+  // Per-session threading
+  private sessionThreads: Map<string, string> = new Map(); // sessionId → thread root ts
+  private threadToSession: Map<string, string> = new Map(); // thread root ts → sessionId
+  private botUserId: string | null = null;
+
   constructor(private config: SlackConfig) {}
 
   get status(): ConnectorStatus {
@@ -39,6 +44,15 @@ export class SlackAdapter implements IConnector {
       // @ts-ignore — optional dependency, installed when Slack connector is enabled
       const webApiModule: any = await import("@slack/web-api");
       this.webClient = new webApiModule.WebClient(this.config.botToken);
+
+      // Resolve bot user ID for filtering own messages
+      try {
+        const authResult = await this.webClient.auth.test();
+        this.botUserId = authResult.user_id ?? null;
+      } catch {
+        // Non-fatal — bot filtering will rely on bot_id/subtype only
+        this.botUserId = null;
+      }
 
       // Try Socket Mode if appToken is provided
       if (this.config.appToken) {
@@ -77,6 +91,9 @@ export class SlackAdapter implements IConnector {
     }
     this.webClient = null;
     this.socketClient = null;
+    this.sessionThreads.clear();
+    this.threadToSession.clear();
+    this.botUserId = null;
     this._status = "disconnected";
   }
 
@@ -85,36 +102,37 @@ export class SlackAdapter implements IConnector {
       return { allowed: false, message: "Slack not connected" };
     }
 
+    const threadTs = await this.ensureSessionThread(request.sessionId, request.cwd);
+
     const inputStr = JSON.stringify(request.toolInput, null, 2);
     const truncated = inputStr.length > 2500 ? inputStr.slice(0, 2500) + "\n..." : inputStr;
-    const project = request.cwd.split("/").filter(Boolean).pop() ?? "unknown";
 
     const text = [
       `*Agent needs permission*`,
-      `*Project:* \`${project}\` (\`${request.cwd}\`)`,
-      `*Session:* \`${request.sessionId}\``,
       `*Tool:* \`${request.toolName}\``,
       "",
       "```",
       truncated,
       "```",
       "",
-      `Reply in thread: *allow* or *deny*`,
+      `Reply in this thread: *allow* or *deny*`,
     ].join("\n");
 
     try {
       const result = await this.webClient.chat.postMessage({
         channel: this.config.channelId,
+        thread_ts: threadTs,
         text,
         unfurl_links: false,
       });
 
-      const messageTs = result.ts;
-      const reply = await this.pollForReply(messageTs);
+      // Poll for reply in the session thread, only considering messages after the permission question
+      const afterTs = result.ts;
+      const reply = await this.pollForReply(threadTs, afterTs);
 
       await this.webClient.chat.postMessage({
         channel: this.config.channelId,
-        thread_ts: messageTs,
+        thread_ts: threadTs,
         text: reply.allowed ? "*Allowed*" : `*Denied*${reply.message ? `: ${reply.message}` : ""}`,
         unfurl_links: false,
       });
@@ -127,6 +145,8 @@ export class SlackAdapter implements IConnector {
 
   async postToolResult(result: ToolResult): Promise<void> {
     if (!this.webClient) return;
+
+    const threadTs = await this.ensureSessionThread(result.sessionId);
 
     const inputStr = JSON.stringify(result.input, null, 2);
     const truncInput = inputStr.length > 500 ? inputStr.slice(0, 500) + "..." : inputStr;
@@ -148,6 +168,7 @@ export class SlackAdapter implements IConnector {
     try {
       await this.webClient.chat.postMessage({
         channel: this.config.channelId,
+        thread_ts: threadTs,
         text,
         unfurl_links: false,
       });
@@ -159,8 +180,35 @@ export class SlackAdapter implements IConnector {
   async postNotification(notification: SessionNotification): Promise<void> {
     if (!this.webClient) return;
 
+    if (notification.type === "started") {
+      // "started" is the thread root — ensureSessionThread creates the top-level message
+      await this.ensureSessionThread(notification.sessionId, notification.cwd);
+      return;
+    }
+
+    const threadTs = await this.ensureSessionThread(notification.sessionId, notification.cwd);
+
+    // Agent response — post the message text directly, no label prefix
+    if (notification.type === "response") {
+      const truncated =
+        notification.message.length > 3000
+          ? notification.message.slice(0, 3000) + "\n..."
+          : notification.message;
+
+      try {
+        await this.webClient.chat.postMessage({
+          channel: this.config.channelId,
+          thread_ts: threadTs,
+          text: truncated,
+          unfurl_links: false,
+        });
+      } catch {
+        // Non-critical
+      }
+      return;
+    }
+
     const typeLabels: Record<string, string> = {
-      started: "Session started",
       stopped: "Session ended",
       waiting_input: "Waiting for input",
       error: "Error",
@@ -168,8 +216,6 @@ export class SlackAdapter implements IConnector {
 
     const text = [
       `*${typeLabels[notification.type] ?? notification.type}*`,
-      `*Session:* \`${notification.sessionId}\``,
-      notification.cwd ? `*CWD:* \`${notification.cwd}\`` : null,
       notification.message,
     ]
       .filter(Boolean)
@@ -178,11 +224,18 @@ export class SlackAdapter implements IConnector {
     try {
       await this.webClient.chat.postMessage({
         channel: this.config.channelId,
+        thread_ts: threadTs,
         text,
         unfurl_links: false,
       });
     } catch {
       // Non-critical
+    }
+
+    // Clean up maps when session ends
+    if (notification.type === "stopped") {
+      this.sessionThreads.delete(notification.sessionId);
+      this.threadToSession.delete(threadTs);
     }
   }
 
@@ -190,14 +243,74 @@ export class SlackAdapter implements IConnector {
     this.promptHandler = handler;
   }
 
-  private handleSocketMessage(event: any): void {
-    if (!this.promptHandler) return;
-    const text = event?.event?.text?.trim();
-    if (!text) return;
-    this.promptHandler(text);
+  /**
+   * Ensure a Slack thread exists for the given session.
+   * Posts a top-level "Session started" message if one doesn't exist yet.
+   * Idempotent — safe to call from any method.
+   */
+  private async ensureSessionThread(sessionId: string, cwd?: string): Promise<string> {
+    const existing = this.sessionThreads.get(sessionId);
+    if (existing) return existing;
+
+    const project = cwd?.split("/").filter(Boolean).pop() ?? "unknown";
+
+    const text = [
+      `*Session started*`,
+      `*Project:* \`${project}\``,
+      cwd ? `*CWD:* \`${cwd}\`` : null,
+      `*Session:* \`${sessionId}\``,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      const result = await this.webClient.chat.postMessage({
+        channel: this.config.channelId,
+        text,
+        unfurl_links: false,
+      });
+
+      const ts = result.ts as string;
+      this.sessionThreads.set(sessionId, ts);
+      this.threadToSession.set(ts, sessionId);
+      return ts;
+    } catch {
+      // If we can't create the thread, return empty string — callers will still
+      // post messages (they'll just be top-level, which is the old behavior)
+      return "";
+    }
   }
 
-  private async pollForReply(messageTs: string): Promise<PermissionReply> {
+  private handleSocketMessage(event: any): void {
+    if (!this.promptHandler) return;
+
+    const msg = event?.event ?? event;
+    const text = (msg?.text ?? "").trim();
+    if (!text) return;
+
+    // Filter: own bot messages
+    if (this.botUserId && msg.user === this.botUserId) return;
+    if (msg.bot_id || msg.subtype === "bot_message") return;
+
+    // Filter: wrong channel
+    if (msg.channel && msg.channel !== this.config.channelId) return;
+
+    // Filter: allow/deny keywords — those are handled by permission polling, not prompts
+    const lower = text.toLowerCase();
+    if (ALLOW_WORDS.includes(lower) || DENY_WORDS.includes(lower)) return;
+
+    // Thread routing: look up which session this thread belongs to
+    const threadRootTs = msg.thread_ts;
+    if (threadRootTs) {
+      const sessionId = this.threadToSession.get(threadRootTs);
+      this.promptHandler(text, sessionId);
+    } else {
+      // Top-level message — routes to active session (no sessionId)
+      this.promptHandler(text);
+    }
+  }
+
+  private async pollForReply(threadRootTs: string, afterTs: string): Promise<PermissionReply> {
     const timeout = this.config.timeout ?? 300000;
     const interval = this.config.pollInterval ?? 2000;
     const deadline = Date.now() + timeout;
@@ -206,16 +319,21 @@ export class SlackAdapter implements IConnector {
       try {
         const result = await this.webClient.conversations.replies({
           channel: this.config.channelId,
-          ts: messageTs,
-          limit: 10,
+          ts: threadRootTs,
+          limit: 50,
         });
 
-        if (result.messages && result.messages.length > 1) {
-          for (const msg of result.messages.slice(1)) {
+        if (result.messages) {
+          for (const msg of result.messages) {
+            // Skip messages at or before the permission question
+            if (msg.ts <= afterTs) continue;
+            // Skip bot messages
             if (msg.bot_id || msg.subtype === "bot_message") continue;
-            const text = (msg.text ?? "").trim().toLowerCase();
-            if (ALLOW_WORDS.includes(text)) return { allowed: true };
-            if (DENY_WORDS.includes(text)) return { allowed: false, message: "Denied by user" };
+            if (this.botUserId && msg.user === this.botUserId) continue;
+
+            const msgText = (msg.text ?? "").trim().toLowerCase();
+            if (ALLOW_WORDS.includes(msgText)) return { allowed: true };
+            if (DENY_WORDS.includes(msgText)) return { allowed: false, message: "Denied by user" };
           }
         }
       } catch {

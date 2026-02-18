@@ -11,6 +11,7 @@ import { useKeybindings } from "./ui/hooks/use-keybindings.js";
 import { useRawInput } from "./ui/hooks/use-raw-input.js";
 import { appStore, getSessionInstance, startAgentDetector, stopAgentDetector } from "./store/app-store.js";
 import { settingsStore } from "./store/settings-store.js";
+import { startConnectors, stopConnectors } from "./store/connector-store.js";
 
 function useAppStore<T>(selector: (state: ReturnType<typeof appStore.getState>) => T): T {
   return useSyncExternalStore(
@@ -33,6 +34,11 @@ export function App(): React.ReactElement {
   useEffect(() => {
     startAgentDetector();
     return () => stopAgentDetector();
+  }, []);
+
+  useEffect(() => {
+    startConnectors().catch(() => {});
+    return () => { stopConnectors().catch(() => {}); };
   }, []);
 
   const sessions = useAppStore((s) => s.sessions);

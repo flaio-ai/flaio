@@ -10,7 +10,6 @@ const settingsPath = resolve(
   ".claude",
   "settings.json",
 );
-const command = process.argv[2];
 
 const HOOKS = [
   {
@@ -34,7 +33,17 @@ const HOOKS = [
     timeout: 90000000,
     matcher: "",
   },
+  {
+    event: "Notification",
+    script: resolve(__dirname, "notification-hook.ts"),
+    marker: "hooks/notification-hook.ts",
+    timeout: 15000,
+    matcher: "",
+  },
 ];
+
+// Markers for legacy hooks that should be replaced
+const LEGACY_MARKERS = ["src/hook.js", "src/stop-hook.js", "src/post-tool-hook.js"];
 
 function readSettings(): Record<string, any> {
   if (!existsSync(settingsPath)) return {};
@@ -55,9 +64,47 @@ function writeSettings(settings: Record<string, any>): void {
   );
 }
 
-function install(): void {
+function removeLegacyHooks(settings: Record<string, any>): number {
+  if (!settings.hooks) return 0;
+  let removed = 0;
+
+  for (const event of Object.keys(settings.hooks)) {
+    const before = settings.hooks[event].length;
+    settings.hooks[event] = settings.hooks[event].filter(
+      (entry: any) =>
+        !(
+          entry.hooks &&
+          entry.hooks.some((h: any) =>
+            LEGACY_MARKERS.some((m) => h.command && h.command.includes(m)),
+          )
+        ),
+    );
+    removed += before - settings.hooks[event].length;
+
+    if (settings.hooks[event].length === 0) delete settings.hooks[event];
+  }
+
+  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+  return removed;
+}
+
+export interface InstallOptions {
+  silent?: boolean;
+}
+
+export function installHooks(opts?: InstallOptions): void {
+  const silent = opts?.silent ?? false;
+  const log = silent ? () => {} : console.log.bind(console);
+
   const settings = readSettings();
   if (!settings.hooks) settings.hooks = {};
+
+  // Remove legacy hooks that bypass IPC
+  const legacyRemoved = removeLegacyHooks(settings);
+  if (legacyRemoved > 0) {
+    log(`  Removed ${legacyRemoved} legacy hook(s).`);
+    if (!settings.hooks) settings.hooks = {};
+  }
 
   let installed = 0;
   for (const hook of HOOKS) {
@@ -72,7 +119,7 @@ function install(): void {
     );
 
     if (exists) {
-      console.log(`  ${hook.event} hook already installed, skipping.`);
+      log(`  ${hook.event} hook already installed, skipping.`);
       continue;
     }
 
@@ -87,35 +134,26 @@ function install(): void {
       ],
     });
 
-    console.log(`  ${hook.event} hook installed -> ${hook.script}`);
+    log(`  ${hook.event} hook installed -> ${hook.script}`);
     installed++;
   }
 
   writeSettings(settings);
 
-  if (installed > 0) {
-    console.log(`\nDone! ${installed} hook(s) installed.`);
+  if (installed > 0 || legacyRemoved > 0) {
+    log(`\nDone! ${installed} hook(s) installed, ${legacyRemoved} legacy hook(s) removed.`);
   } else {
-    console.log("\nAll hooks were already installed.");
+    log("\nAll hooks were already installed.");
   }
-  console.log(`  Settings: ${settingsPath}`);
-  console.log("\nHow it works:");
-  console.log(
-    "  - PermissionRequest: Routes to agent-manager (IPC) or Slack (fallback)",
-  );
-  console.log(
-    "  - PostToolUse: Posts tool results via agent-manager or Slack",
-  );
-  console.log(
-    "  - Stop: Notifies agent-manager or Slack when session ends",
-  );
-  console.log("\nUse 'npm run uninstall-hooks' to remove all hooks.");
 }
 
-function uninstall(): void {
+export function uninstallHooks(opts?: InstallOptions): void {
+  const silent = opts?.silent ?? false;
+  const log = silent ? () => {} : console.log.bind(console);
+
   const settings = readSettings();
   if (!settings.hooks) {
-    console.log("No hooks found to remove.");
+    log("No hooks found to remove.");
     return;
   }
 
@@ -134,15 +172,15 @@ function uninstall(): void {
 
     if (settings.hooks[hook.event].length === 0)
       delete settings.hooks[hook.event];
-    console.log(`  ${hook.event} hook removed.`);
+    log(`  ${hook.event} hook removed.`);
   }
 
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
   writeSettings(settings);
-  console.log("\nAll agent-manager hooks uninstalled.");
+  log("\nAll agent-manager hooks uninstalled.");
 }
 
-function status(): void {
+export function hookStatus(): void {
   const settings = readSettings();
   console.log("Agent Manager hook status:\n");
 
@@ -162,16 +200,27 @@ function status(): void {
   console.log(`\n  Settings: ${settingsPath}`);
 }
 
-switch (command) {
-  case "install":
-    install();
-    break;
-  case "uninstall":
-    uninstall();
-    break;
-  case "status":
-    status();
-    break;
-  default:
-    console.log("Usage: npx tsx src/hooks/install.ts [install|uninstall|status]");
+// CLI entry point — only runs when executed directly
+const isMain =
+  process.argv[1] &&
+  resolve(process.argv[1]).replace(/\.[^.]+$/, "") ===
+    fileURLToPath(import.meta.url).replace(/\.[^.]+$/, "");
+
+if (isMain) {
+  const command = process.argv[2];
+  switch (command) {
+    case "install":
+      installHooks();
+      break;
+    case "uninstall":
+      uninstallHooks();
+      break;
+    case "status":
+      hookStatus();
+      break;
+    default:
+      console.log(
+        "Usage: npx tsx src/hooks/install.ts [install|uninstall|status]",
+      );
+  }
 }
