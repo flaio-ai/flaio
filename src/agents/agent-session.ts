@@ -16,6 +16,7 @@ export class AgentSession extends EventEmitter {
   private screenBuffer: ScreenBuffer;
   private _status: AgentStatus = "idle";
   private recentOutput = "";
+  private lastOutputTime = 0;
   private statusCheckTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -38,6 +39,7 @@ export class AgentSession extends EventEmitter {
     this.pty.on("data", (data) => {
       this.xterm.write(data);
       this.recentOutput += data;
+      this.lastOutputTime = Date.now();
       // Keep only last 2000 chars for status detection
       if (this.recentOutput.length > 2000) {
         this.recentOutput = this.recentOutput.slice(-1000);
@@ -148,7 +150,8 @@ export class AgentSession extends EventEmitter {
   private startStatusChecking(): void {
     this.statusCheckTimer = setInterval(() => {
       if (this._status === "exited" || this._status === "idle") return;
-      const detected = this.driver.detectStatus(this.recentOutput);
+      const idleMs = this.lastOutputTime > 0 ? Date.now() - this.lastOutputTime : 0;
+      const detected = this.driver.detectStatus(this.recentOutput, idleMs);
       this.setStatus(detected);
     }, 1000);
   }

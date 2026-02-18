@@ -35,28 +35,23 @@ export class ClaudeDriver extends BaseDriver {
     return { command: this.resolveCommand(), args };
   }
 
-  detectStatus(recentOutput: string): AgentStatus {
-    const lastLines = recentOutput.slice(-500);
+  detectStatus(recentOutput: string, idleMs: number): AgentStatus {
+    const raw = recentOutput.slice(-500);
+    const lastLines = this.stripAnsi(raw);
 
     // Claude shows ">" prompt when waiting for input
     if (/>\s*$/.test(lastLines)) {
       return "waiting_input";
     }
 
-    // Various activity indicators
-    if (
-      lastLines.includes("⠋") ||
-      lastLines.includes("⠙") ||
-      lastLines.includes("⠹") ||
-      lastLines.includes("⠸") ||
-      lastLines.includes("⠼") ||
-      lastLines.includes("⠴") ||
-      lastLines.includes("⠦") ||
-      lastLines.includes("⠧") ||
-      lastLines.includes("⠇") ||
-      lastLines.includes("⠏")
-    ) {
+    // Various activity indicators (spinners)
+    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(raw)) {
       return "running";
+    }
+
+    // No output for 3+ seconds likely means waiting for input
+    if (idleMs > 3000) {
+      return "waiting_input";
     }
 
     return "running";

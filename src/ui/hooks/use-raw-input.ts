@@ -24,17 +24,15 @@ export function useRawInput(
       const str = data.toString();
       const byte = data[0];
 
-      // SGR mouse events: contain ESC[< somewhere in the data.
-      // Multiple events can arrive concatenated in one chunk, so we check
-      // with includes() rather than a full-string regex.
-      // Button 64 = scroll wheel up, 65 = scroll wheel down.
+      // SGR mouse events: ESC[< prefix. Only handle scroll wheel
+      // (buttons 64/65), consume all others so they don't reach the PTY.
+      // Hold Shift in the terminal emulator to bypass mouse mode for text selection.
       if (str.includes("\x1B[<")) {
         if (str.includes("\x1B[<64;")) {
           activeSession.scroll(-SCROLL_LINES);
         } else if (str.includes("\x1B[<65;")) {
           activeSession.scroll(SCROLL_LINES);
         }
-        // Consume all mouse events entirely — don't forward to PTY
         return;
       }
 
@@ -47,7 +45,8 @@ export function useRawInput(
           byte === 0x0e || // Ctrl+N
           byte === 0x10 || // Ctrl+P
           byte === 0x02 || // Ctrl+B
-          byte === 0x11    // Ctrl+Q
+          byte === 0x11 || // Ctrl+Q
+          byte === 0x13    // Ctrl+S
         ) {
           return;
         }

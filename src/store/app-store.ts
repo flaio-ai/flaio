@@ -53,6 +53,10 @@ export const appStore = createStore<AppState>((set, get) => ({
       get().updateSessionContent(session.id, content);
     });
 
+    session.on("exit", () => {
+      get().closeSession(session.id);
+    });
+
     const state: SessionState = {
       id: session.id,
       driverName: driver.name,

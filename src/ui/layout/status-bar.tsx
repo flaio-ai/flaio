@@ -15,13 +15,13 @@ export function StatusBar({
     <Box height={1} paddingX={1} justifyContent="space-between">
       <Box>
         <Text dimColor>
-          Ctrl+Q:Quit Ctrl+T:New Ctrl+W:Close Scroll:MouseWheel/Ctrl+U/D
+          Ctrl+Q:Quit Ctrl+T:New Ctrl+W:Close Ctrl+S:Settings Scroll:MouseWheel/Ctrl+U/D Select:Shift+Drag
         </Text>
       </Box>
       <Box>
         {activeSession && (
           <Text>
-            <Text color={activeSession.status === "running" ? "green" : activeSession.status === "waiting_input" ? "yellow" : "gray"}>
+            <Text color={activeSession.status === "running" ? "green" : activeSession.status === "waiting_input" ? "#FFA500" : activeSession.status === "exited" ? "red" : "gray"}>
               {activeSession.status}
             </Text>
             <Text dimColor> | </Text>

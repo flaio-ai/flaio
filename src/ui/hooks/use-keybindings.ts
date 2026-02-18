@@ -4,6 +4,7 @@ import { appStore } from "../../store/app-store.js";
 interface KeybindingActions {
   onNewSession: () => void;
   onCloseSession: () => void;
+  onToggleSettings: () => void;
 }
 
 export function useKeybindings(actions: KeybindingActions): void {
@@ -29,6 +30,12 @@ export function useKeybindings(actions: KeybindingActions): void {
         return;
       }
       // Otherwise let it pass through to the PTY via use-raw-input
+      return;
+    }
+
+    // Ctrl+S: Toggle settings panel
+    if (key.ctrl && input === "s") {
+      actions.onToggleSettings();
       return;
     }
 

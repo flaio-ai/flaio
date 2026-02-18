@@ -16,9 +16,9 @@ program
     // Hide the hardware cursor — agents render their own cursor in ANSI output
     process.stdout.write("\x1B[?25l");
     // Enable SGR extended mouse mode for wheel scroll support
-    process.stdout.write("\x1B[?1000h"); // Enable basic mouse reporting
-    process.stdout.write("\x1B[?1006h"); // Use SGR extended format
-
+    // (hold Shift to select text in most terminal emulators)
+    process.stdout.write("\x1B[?1000h");
+    process.stdout.write("\x1B[?1006h");
     const cleanup = () => {
       // Disable mouse reporting
       process.stdout.write("\x1B[?1006l");

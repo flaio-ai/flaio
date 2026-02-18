@@ -36,8 +36,9 @@ export class GeminiDriver extends BaseDriver {
     return { command: this.resolveCommand(), args };
   }
 
-  detectStatus(recentOutput: string): AgentStatus {
-    const lastLines = recentOutput.slice(-500);
+  detectStatus(recentOutput: string, idleMs: number): AgentStatus {
+    const raw = recentOutput.slice(-500);
+    const lastLines = this.stripAnsi(raw);
 
     // Gemini shows ">" or ">>>" when waiting for input
     if (/>{1,3}\s*$/.test(lastLines)) {
@@ -45,8 +46,13 @@ export class GeminiDriver extends BaseDriver {
     }
 
     // Spinner characters indicate activity
-    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(lastLines)) {
+    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(raw)) {
       return "running";
+    }
+
+    // No output for 3+ seconds likely means waiting for input
+    if (idleMs > 3000) {
+      return "waiting_input";
     }
 
     return "running";

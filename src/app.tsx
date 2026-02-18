@@ -1,11 +1,13 @@
-import React, { useState, useCallback, useSyncExternalStore } from "react";
+import React, { useState, useCallback, useEffect, useSyncExternalStore } from "react";
 import { Box } from "ink";
 import { Shell } from "./ui/layout/shell.js";
 import { NewSessionDialog } from "./ui/components/new-session-dialog.js";
+import { SettingsPanel } from "./ui/components/settings-panel.js";
 import { useTerminalSize } from "./ui/hooks/use-terminal-size.js";
 import { useKeybindings } from "./ui/hooks/use-keybindings.js";
 import { useRawInput } from "./ui/hooks/use-raw-input.js";
 import { appStore, getSessionInstance } from "./store/app-store.js";
+import { settingsStore } from "./store/settings-store.js";
 
 function useAppStore<T>(selector: (state: ReturnType<typeof appStore.getState>) => T): T {
   return useSyncExternalStore(
@@ -16,7 +18,12 @@ function useAppStore<T>(selector: (state: ReturnType<typeof appStore.getState>) 
 
 export function App(): React.ReactElement {
   const [showNewSession, setShowNewSession] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const { columns, rows } = useTerminalSize();
+
+  useEffect(() => {
+    settingsStore.getState().load();
+  }, []);
 
   const sessions = useAppStore((s) => s.sessions);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
@@ -32,9 +39,10 @@ export function App(): React.ReactElement {
       const id = appStore.getState().activeSessionId;
       if (id) appStore.getState().closeSession(id);
     }, []),
+    onToggleSettings: useCallback(() => setShowSettings((v) => !v), []),
   });
 
-  useRawInput(activeInstance, !showNewSession);
+  useRawInput(activeInstance, !showNewSession && !showSettings);
 
   // Compute actual pane dimensions for the PTY/xterm
   const SIDEBAR_WIDTH = 24;
@@ -71,6 +79,16 @@ export function App(): React.ReactElement {
             onSubmit={handleNewSession}
             onCancel={handleCancelNewSession}
           />
+        </Box>
+      ) : showSettings ? (
+        <Box
+          flexDirection="column"
+          alignItems="center"
+          justifyContent="center"
+          width={columns}
+          height={rows}
+        >
+          <SettingsPanel onClose={() => setShowSettings(false)} />
         </Box>
       ) : (
         <Shell
