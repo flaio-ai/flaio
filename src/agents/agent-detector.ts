@@ -107,13 +107,21 @@ export class AgentDetector extends EventEmitter {
 
   private getCwd(pid: number): string | null {
     try {
-      const output = execSync(`lsof -p ${pid} -Fn 2>/dev/null | grep '^ncwd' | head -1`, {
+      // lsof -Fn outputs "fcwd" on one line, then "n/path" on the next
+      const output = execSync(`lsof -p ${pid} -Fn 2>/dev/null`, {
         encoding: "utf-8",
         timeout: 3000,
       });
-      // lsof output format: "ncwd" followed by the path on next line, or "n/path"
-      const match = output.match(/^n(.+)$/m);
-      return match?.[1] ?? null;
+      const lines = output.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i] === "fcwd") {
+          const next = lines[i + 1];
+          if (next?.startsWith("n")) {
+            return next.slice(1);
+          }
+        }
+      }
+      return null;
     } catch {
       return null;
     }

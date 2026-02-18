@@ -7,6 +7,7 @@ import { StatusBar } from "./status-bar.js";
 import { AgentTab } from "../components/agent-tab.js";
 import type { AgentSession } from "../../agents/agent-session.js";
 import type { SessionState } from "../../store/app-store.js";
+import type { DetectedAgent } from "../../agents/agent-detector.js";
 
 interface ShellProps {
   sessions: SessionState[];
@@ -15,6 +16,7 @@ interface ShellProps {
   sidebarVisible: boolean;
   columns: number;
   rows: number;
+  detectedAgents: DetectedAgent[];
 }
 
 const SIDEBAR_WIDTH = 24;
@@ -48,6 +50,7 @@ export function Shell({
   sidebarVisible,
   columns,
   rows,
+  detectedAgents,
 }: ShellProps): React.ReactElement {
   const statusBarHeight = 1;
   const activeSessionState = sessions.find((s) => s.id === activeSessionId);
@@ -73,6 +76,7 @@ export function Shell({
             sessions={sessions}
             activeSessionId={activeSessionId}
             width={SIDEBAR_WIDTH}
+            detectedAgents={detectedAgents}
           />
         )}
 

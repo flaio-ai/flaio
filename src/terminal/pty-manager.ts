@@ -40,6 +40,7 @@ export class PtyManager extends EventEmitter {
       env: {
         ...process.env,
         ...options.env,
+        CLAUDECODE: "",
         PATH: fullPath,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",

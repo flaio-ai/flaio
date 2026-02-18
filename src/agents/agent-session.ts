@@ -63,6 +63,10 @@ export class AgentSession extends EventEmitter {
     return this._status;
   }
 
+  get pid(): number | null {
+    return this.pty.pid;
+  }
+
   private setStatus(status: AgentStatus): void {
     if (this._status === status) return;
     this._status = status;
@@ -97,6 +101,24 @@ export class AgentSession extends EventEmitter {
       sessionId,
       prompt,
     });
+
+    this.pty.spawn({
+      command: config.command,
+      args: config.args,
+      cwd: this.cwd,
+      env: config.env,
+      cols: this.xterm.cols,
+      rows: this.xterm.rows,
+    });
+
+    this.screenBuffer.start(() => this.xterm.extractGrid());
+    this.startStatusChecking();
+    this.setStatus("running");
+  }
+
+  continueSession(): void {
+    this.setStatus("starting");
+    const config = this.driver.buildContinueArgs({ cwd: this.cwd });
 
     this.pty.spawn({
       command: config.command,

@@ -1,55 +1,59 @@
 import React from "react";
-import { Box, Text, useInput } from "ink";
+import path from "node:path";
+import { Box, Text } from "ink";
 import type { DetectedAgent } from "../../agents/agent-detector.js";
 
 interface StandaloneAgentsProps {
   agents: DetectedAgent[];
-  selectedIndex: number;
-  onSelect: (agent: DetectedAgent) => void;
-  onNavigate: (delta: number) => void;
+  width: number;
 }
+
+const AGENT_ICONS: Record<string, string> = {
+  claude: "◈",
+  gemini: "◆",
+};
+const DEFAULT_ICON = "●";
 
 export function StandaloneAgents({
   agents,
-  selectedIndex,
-  onSelect,
-  onNavigate,
-}: StandaloneAgentsProps): React.ReactElement {
-  useInput((input, key) => {
-    if (key.upArrow) onNavigate(-1);
-    if (key.downArrow) onNavigate(1);
-    if (key.return && agents[selectedIndex]) {
-      onSelect(agents[selectedIndex]!);
-    }
-  });
+  width,
+}: StandaloneAgentsProps): React.ReactElement | null {
+  if (agents.length === 0) return null;
 
-  if (agents.length === 0) {
-    return (
-      <Box paddingX={1}>
-        <Text dimColor>No standalone agents detected</Text>
-      </Box>
-    );
-  }
+  const divider = "─".repeat(Math.max(width, 0));
+  const title = "Standalone Agents";
+  const countStr = ` ${agents.length}`;
+  const gap = Math.max(width - 2 - title.length - countStr.length, 0);
 
   return (
-    <Box flexDirection="column" paddingX={1}>
-      <Text bold dimColor>
-        Standalone Agents:
-      </Text>
-      {agents.map((agent, i) => (
-        <Box key={agent.pid} paddingLeft={1}>
-          <Text
-            color={i === selectedIndex ? "cyan" : undefined}
-            bold={i === selectedIndex}
-          >
-            {i === selectedIndex ? ">" : " "} {agent.displayName} (PID:{agent.pid})
-          </Text>
-          {agent.cwd && (
-            <Text dimColor> {agent.cwd}</Text>
-          )}
-        </Box>
-      ))}
-      <Text dimColor>Enter: bring in | Arrows: navigate</Text>
+    <Box flexDirection="column">
+      <Box paddingX={1}>
+        <Text dimColor>{divider}</Text>
+      </Box>
+      <Box paddingX={1}>
+        <Text bold dimColor>
+          {title}
+          {" ".repeat(gap)}
+          {countStr}
+        </Text>
+      </Box>
+      {agents.map((agent) => {
+        const icon = AGENT_ICONS[agent.driverName] ?? DEFAULT_ICON;
+        const label = agent.cwd ? path.basename(agent.cwd) : `PID:${agent.pid}`;
+        return (
+          <Box key={agent.pid} paddingX={1}>
+            <Text color={agent.driverName === "claude" ? "#D97757" : "cyan"}>
+              {icon}{" "}
+            </Text>
+            <Text>{label}</Text>
+          </Box>
+        );
+      })}
+      <Box paddingX={1}>
+        <Text dimColor italic>
+          Alt+A to adopt
+        </Text>
+      </Box>
     </Box>
   );
 }

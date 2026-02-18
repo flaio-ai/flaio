@@ -35,6 +35,9 @@ export abstract class BaseDriver {
     prompt?: string;
   }): SpawnConfig;
 
+  /** Build spawn arguments to continue the most recent session */
+  abstract buildContinueArgs(options: { cwd: string }): SpawnConfig;
+
   /** Detect agent status from recent output and ms since last output */
   abstract detectStatus(recentOutput: string, idleMs: number): AgentStatus;
 

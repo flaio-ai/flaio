@@ -1,11 +1,18 @@
 import { useInput, useApp } from "ink";
 import { appStore } from "../../store/app-store.js";
 
+// macOS Option key sends Unicode chars instead of ESC prefix (US English layout)
+// Option+1 through Option+9:
+const MAC_OPT_DIGIT: Record<string, number> = {
+  "¡": 1, "™": 2, "£": 3, "¢": 4, "∞": 5, "§": 6, "¶": 7, "•": 8, "ª": 9,
+};
+
 interface KeybindingActions {
   onNewSession: () => void;
   onCloseSession: () => void;
   onToggleSettings: () => void;
   onToggleHelp: () => void;
+  onAdoptAgent: () => void;
 }
 
 export function useKeybindings(actions: KeybindingActions): void {
@@ -76,9 +83,26 @@ export function useKeybindings(actions: KeybindingActions): void {
       return;
     }
 
-    // Ctrl+1-9: Jump to tab N
-    if (key.ctrl && input >= "1" && input <= "9") {
+    // Alt+A: Adopt standalone agent (ESC prefix or macOS Option+A = å)
+    if ((key.meta && input === "a") || input === "å") {
+      actions.onAdoptAgent();
+      return;
+    }
+
+    // Alt+1-9: Jump to tab N (ESC prefix)
+    if (key.meta && input >= "1" && input <= "9") {
       const index = parseInt(input) - 1;
+      const sessions = store.sessions;
+      if (index < sessions.length) {
+        store.switchSession(sessions[index]!.id);
+      }
+      return;
+    }
+
+    // macOS Option+1-9: Jump to tab N (Unicode chars, US English layout)
+    const macDigit = MAC_OPT_DIGIT[input];
+    if (macDigit !== undefined) {
+      const index = macDigit - 1;
       const sessions = store.sessions;
       if (index < sessions.length) {
         store.switchSession(sessions[index]!.id);

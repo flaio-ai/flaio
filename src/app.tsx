@@ -4,10 +4,12 @@ import { Shell } from "./ui/layout/shell.js";
 import { NewSessionDialog } from "./ui/components/new-session-dialog.js";
 import { SettingsPanel } from "./ui/components/settings-panel.js";
 import { HelpModal } from "./ui/components/help-modal.js";
+import { AdoptAgentDialog } from "./ui/components/adopt-agent-dialog.js";
+import type { DetectedAgent } from "./agents/agent-detector.js";
 import { useTerminalSize } from "./ui/hooks/use-terminal-size.js";
 import { useKeybindings } from "./ui/hooks/use-keybindings.js";
 import { useRawInput } from "./ui/hooks/use-raw-input.js";
-import { appStore, getSessionInstance } from "./store/app-store.js";
+import { appStore, getSessionInstance, startAgentDetector, stopAgentDetector } from "./store/app-store.js";
 import { settingsStore } from "./store/settings-store.js";
 
 function useAppStore<T>(selector: (state: ReturnType<typeof appStore.getState>) => T): T {
@@ -21,15 +23,22 @@ export function App(): React.ReactElement {
   const [showNewSession, setShowNewSession] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showAdoptDialog, setShowAdoptDialog] = useState(false);
   const { columns, rows } = useTerminalSize();
 
   useEffect(() => {
     settingsStore.getState().load();
   }, []);
 
+  useEffect(() => {
+    startAgentDetector();
+    return () => stopAgentDetector();
+  }, []);
+
   const sessions = useAppStore((s) => s.sessions);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const sidebarVisible = useAppStore((s) => s.sidebarVisible);
+  const detectedAgents = useAppStore((s) => s.detectedAgents);
 
   const activeInstance = activeSessionId
     ? getSessionInstance(activeSessionId)
@@ -45,9 +54,10 @@ export function App(): React.ReactElement {
     }, []),
     onToggleSettings: useCallback(() => setShowSettings((v) => !v), []),
     onToggleHelp: toggleHelp,
+    onAdoptAgent: useCallback(() => setShowAdoptDialog(true), []),
   });
 
-  useRawInput(activeInstance, !showNewSession && !showSettings && !showHelp);
+  useRawInput(activeInstance, !showNewSession && !showSettings && !showHelp && !showAdoptDialog);
 
   // Compute actual pane dimensions for the PTY/xterm
   const SIDEBAR_WIDTH = 24;
@@ -70,10 +80,21 @@ export function App(): React.ReactElement {
     setShowNewSession(false);
   }, []);
 
+  const handleAdoptAgent = useCallback((agent: DetectedAgent) => {
+    setShowAdoptDialog(false);
+    appStore.getState().adoptAgent(agent, paneWidth, paneRows);
+  }, [paneWidth, paneRows]);
+
   return (
     <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
       {showHelp ? (
         <HelpModal onClose={() => setShowHelp(false)} />
+      ) : showAdoptDialog ? (
+        <AdoptAgentDialog
+          agents={detectedAgents}
+          onAdopt={handleAdoptAgent}
+          onCancel={() => setShowAdoptDialog(false)}
+        />
       ) : showNewSession ? (
         <Box
           flexDirection="column"
@@ -105,6 +126,7 @@ export function App(): React.ReactElement {
           sidebarVisible={sidebarVisible}
           columns={columns}
           rows={rows}
+          detectedAgents={detectedAgents}
         />
       )}
     </Box>

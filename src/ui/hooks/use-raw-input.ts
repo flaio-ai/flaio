@@ -4,6 +4,9 @@ import type { AgentSession } from "../../agents/agent-session.js";
 
 const SCROLL_LINES = 3;
 
+// macOS Option key produces Unicode chars instead of ESC prefix (US English layout)
+const MAC_OPT_INTERCEPT = new Set(["¡", "™", "£", "¢", "∞", "§", "¶", "•", "ª", "å"]);
+
 /**
  * Forward raw stdin bytes to the active agent's PTY.
  * Intercepts global shortcuts, scroll (mouse wheel + keyboard), and mouse events.
@@ -70,6 +73,16 @@ export function useRawInput(
           }
         }
       }
+
+      // Alt shortcuts — handled by useKeybindings, must intercept before PTY
+      // ESC prefix form (terminal configured with Option=Esc)
+      if (data.length === 2 && data[0] === 0x1b) {
+        const second = data[1]!;
+        if (second >= 0x31 && second <= 0x39) return; // Alt+1-9
+        if (second === 0x61) return; // Alt+A (adopt)
+      }
+      // macOS Option key Unicode chars (US English layout)
+      if (MAC_OPT_INTERCEPT.has(str)) return;
 
       if (!session) return;
 

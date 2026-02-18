@@ -35,6 +35,10 @@ export class ClaudeDriver extends BaseDriver {
     return { command: this.resolveCommand(), args };
   }
 
+  buildContinueArgs(_options: { cwd: string }): SpawnConfig {
+    return { command: this.resolveCommand(), args: ["--continue"] };
+  }
+
   detectStatus(recentOutput: string, idleMs: number): AgentStatus {
     const raw = recentOutput.slice(-500);
     const lastLines = this.stripAnsi(raw);
