@@ -126,7 +126,10 @@ export class HookServer extends EventEmitter {
  * Client function used by hooks to send messages to the agent-manager.
  * Returns the response, or null if the server isn't running.
  */
-export async function sendToHookServer(msg: HookMessage): Promise<HookResponse | null> {
+export async function sendToHookServer(
+  msg: HookMessage,
+  timeoutMs = 10000,
+): Promise<HookResponse | null> {
   if (!fs.existsSync(SOCKET_PATH)) return null;
 
   return new Promise((resolve) => {
@@ -135,7 +138,7 @@ export async function sendToHookServer(msg: HookMessage): Promise<HookResponse |
     const timeout = setTimeout(() => {
       conn.destroy();
       resolve(null);
-    }, 10000);
+    }, timeoutMs);
 
     conn.on("connect", () => {
       conn.write(JSON.stringify(msg) + "\n");

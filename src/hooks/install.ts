@@ -27,13 +27,6 @@ const HOOKS = [
     matcher: "",
   },
   {
-    event: "Stop",
-    script: resolve(__dirname, "stop-hook.ts"),
-    marker: "hooks/stop-hook.ts",
-    timeout: 90000000,
-    matcher: "",
-  },
-  {
     event: "Notification",
     script: resolve(__dirname, "notification-hook.ts"),
     marker: "hooks/notification-hook.ts",
@@ -43,7 +36,7 @@ const HOOKS = [
 ];
 
 // Markers for legacy hooks that should be replaced
-const LEGACY_MARKERS = ["src/hook.js", "src/stop-hook.js", "src/post-tool-hook.js"];
+const LEGACY_MARKERS = ["src/hook.js", "src/stop-hook.js", "src/post-tool-hook.js", "hooks/stop-hook.ts"];
 
 function readSettings(): Record<string, any> {
   if (!existsSync(settingsPath)) return {};

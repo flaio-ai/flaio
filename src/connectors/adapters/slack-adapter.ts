@@ -31,6 +31,10 @@ export class SlackAdapter implements IConnector {
   private threadToSession: Map<string, string> = new Map(); // thread root ts → sessionId
   private botUserId: string | null = null;
 
+  // Thread polling for inbound prompts (reliable fallback for Socket Mode)
+  private threadLastSeen: Map<string, string> = new Map(); // threadRootTs → last processed msg ts
+  private threadPollTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(private config: SlackConfig) {}
 
   get status(): ConnectorStatus {
@@ -64,6 +68,10 @@ export class SlackAdapter implements IConnector {
           });
 
           this.socketClient.on("message", (event: any) => {
+            // Acknowledge the envelope so Slack doesn't retry/drop events
+            if (typeof event?.ack === "function") {
+              Promise.resolve(event.ack()).catch(() => {});
+            }
             this.handleSocketMessage(event);
           });
 
@@ -75,6 +83,7 @@ export class SlackAdapter implements IConnector {
       }
 
       this._status = "connected";
+      this.startThreadPolling();
     } catch (err) {
       this._status = "error";
       throw err;
@@ -82,6 +91,8 @@ export class SlackAdapter implements IConnector {
   }
 
   async disconnect(): Promise<void> {
+    this.stopThreadPolling();
+
     if (this.socketClient) {
       try {
         await this.socketClient.disconnect();
@@ -93,6 +104,7 @@ export class SlackAdapter implements IConnector {
     this.socketClient = null;
     this.sessionThreads.clear();
     this.threadToSession.clear();
+    this.threadLastSeen.clear();
     this.botUserId = null;
     this._status = "disconnected";
   }
@@ -236,12 +248,17 @@ export class SlackAdapter implements IConnector {
     if (notification.type === "stopped") {
       this.sessionThreads.delete(notification.sessionId);
       this.threadToSession.delete(threadTs);
+      this.threadLastSeen.delete(threadTs);
     }
   }
 
   onPrompt(handler: (prompt: string, sessionId?: string) => void): void {
     this.promptHandler = handler;
   }
+
+  // ---------------------------------------------------------------------------
+  // Thread management
+  // ---------------------------------------------------------------------------
 
   /**
    * Ensure a Slack thread exists for the given session.
@@ -273,13 +290,17 @@ export class SlackAdapter implements IConnector {
       const ts = result.ts as string;
       this.sessionThreads.set(sessionId, ts);
       this.threadToSession.set(ts, sessionId);
+      // Initialize lastSeen to thread root ts so we don't replay old messages
+      this.threadLastSeen.set(ts, ts);
       return ts;
     } catch {
-      // If we can't create the thread, return empty string — callers will still
-      // post messages (they'll just be top-level, which is the old behavior)
       return "";
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Socket Mode — low-latency path (when Slack app has event subscriptions)
+  // ---------------------------------------------------------------------------
 
   private handleSocketMessage(event: any): void {
     if (!this.promptHandler) return;
@@ -299,8 +320,16 @@ export class SlackAdapter implements IConnector {
     const lower = text.toLowerCase();
     if (ALLOW_WORDS.includes(lower) || DENY_WORDS.includes(lower)) return;
 
-    // Thread routing: look up which session this thread belongs to
+    // Track this message so the thread poll doesn't re-deliver it
     const threadRootTs = msg.thread_ts;
+    if (threadRootTs && msg.ts) {
+      const prev = this.threadLastSeen.get(threadRootTs);
+      if (!prev || msg.ts > prev) {
+        this.threadLastSeen.set(threadRootTs, msg.ts);
+      }
+    }
+
+    // Thread routing: look up which session this thread belongs to
     if (threadRootTs) {
       const sessionId = this.threadToSession.get(threadRootTs);
       this.promptHandler(text, sessionId);
@@ -309,6 +338,79 @@ export class SlackAdapter implements IConnector {
       this.promptHandler(text);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Thread polling — reliable path for inbound prompts via API
+  // ---------------------------------------------------------------------------
+
+  private startThreadPolling(): void {
+    const interval = this.config.pollInterval ?? 3000;
+    this.threadPollTimer = setInterval(() => {
+      this.pollSessionThreads().catch(() => {});
+    }, interval);
+  }
+
+  private stopThreadPolling(): void {
+    if (this.threadPollTimer) {
+      clearInterval(this.threadPollTimer);
+      this.threadPollTimer = null;
+    }
+  }
+
+  /**
+   * Poll all active session threads for new user messages and route as prompts.
+   */
+  private async pollSessionThreads(): Promise<void> {
+    if (!this.webClient || !this.promptHandler) return;
+
+    for (const [sessionId, threadTs] of this.sessionThreads) {
+      if (!threadTs) continue;
+      const lastSeen = this.threadLastSeen.get(threadTs) ?? threadTs;
+
+      try {
+        const result = await this.webClient.conversations.replies({
+          channel: this.config.channelId,
+          ts: threadTs,
+          limit: 20,
+        });
+
+        if (!result.messages) continue;
+
+        let maxTs = lastSeen;
+        for (const msg of result.messages) {
+          // Skip already-seen messages
+          if (msg.ts <= lastSeen) continue;
+          // Track highest ts regardless of message type
+          if (msg.ts > maxTs) maxTs = msg.ts;
+
+          // Skip bot messages
+          if (msg.bot_id || msg.subtype === "bot_message") continue;
+          if (this.botUserId && msg.user === this.botUserId) continue;
+
+          const text = (msg.text ?? "").trim();
+          if (!text) continue;
+
+          // Skip allow/deny keywords — those are for permission polling
+          const lower = text.toLowerCase();
+          if (ALLOW_WORDS.includes(lower) || DENY_WORDS.includes(lower)) continue;
+
+          // Route as prompt to the correct session
+          this.promptHandler(text, sessionId);
+        }
+
+        // Advance high-water mark
+        if (maxTs > lastSeen) {
+          this.threadLastSeen.set(threadTs, maxTs);
+        }
+      } catch {
+        // Poll error — continue to next thread
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Permission reply polling
+  // ---------------------------------------------------------------------------
 
   private async pollForReply(threadRootTs: string, afterTs: string): Promise<PermissionReply> {
     const timeout = this.config.timeout ?? 300000;

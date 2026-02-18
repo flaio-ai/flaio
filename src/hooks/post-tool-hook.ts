@@ -2,7 +2,7 @@
 
 /**
  * PostToolUse hook for Claude Code.
- * Posts tool results via IPC to agent-manager, or falls back to direct Slack.
+ * Posts tool results via IPC to agent-manager.
  *
  * stdin: JSON with tool_name, tool_input, tool_result, session_id, cwd
  */
@@ -15,57 +15,30 @@ async function main(): Promise<void> {
   try {
     input = fs.readFileSync(0, "utf-8");
   } catch {
-    process.exitCode = 0;
-    return;
+    process.exit(0);
   }
 
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(input);
+    data = JSON.parse(input!);
   } catch {
-    process.exitCode = 0;
-    return;
+    process.exit(0);
   }
 
-  const toolName = data.tool_name as string;
-  const toolInput = data.tool_input as Record<string, unknown>;
-  const toolResult = data.tool_result;
-  const sessionId = data.session_id as string;
-  const cwd = data.cwd as string;
+  const toolName = data!.tool_name as string;
+  const toolInput = data!.tool_input as Record<string, unknown>;
+  const toolResult = data!.tool_result;
+  const sessionId = data!.session_id as string;
+  const cwd = data!.cwd as string;
 
-  // Try IPC first
-  const ipcResponse = await sendToHookServer({
+  await sendToHookServer({
     type: "post_tool_use",
     payload: { toolName, toolInput, toolResult, sessionId, cwd },
   });
 
-  if (ipcResponse) {
-    process.exitCode = 0;
-    return;
-  }
-
-  // Fallback: check for marker file (only post if tool was approved via Slack)
-  const markerDir = "/tmp/agent-manager-markers";
-  try {
-    const files = fs.readdirSync(markerDir);
-    const marker = files.find((f) => f.startsWith(`${sessionId}-`));
-    if (!marker) {
-      process.exitCode = 0;
-      return;
-    }
-
-    // Consume marker
-    fs.unlinkSync(`${markerDir}/${marker}`);
-
-    // Post result via Slack
-    // @ts-ignore — legacy JS module
-    const { postToolResult } = await import("../slack-client.js");
-    await postToolResult({ toolName, toolInput, toolResult, sessionId, cwd });
-  } catch {
-    // Non-critical
-  }
-
-  process.exitCode = 0;
+  process.exit(0);
 }
 
-main();
+main().catch(() => {
+  process.exit(0);
+});

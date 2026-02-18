@@ -15,30 +15,29 @@ async function main(): Promise<void> {
   try {
     input = fs.readFileSync(0, "utf-8");
   } catch {
-    process.exitCode = 0;
-    return;
+    process.exit(0);
   }
 
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(input);
+    data = JSON.parse(input!);
   } catch {
-    process.exitCode = 0;
-    return;
+    process.exit(0);
   }
 
-  const sessionId = data.session_id as string;
-  const cwd = data.cwd as string;
-  const message = data.message as string;
-  const title = data.title as string | undefined;
+  const sessionId = data!.session_id as string;
+  const cwd = data!.cwd as string;
+  const message = data!.message as string;
+  const title = data!.title as string | undefined;
 
-  // Forward to agent-manager via IPC
   await sendToHookServer({
     type: "notification",
     payload: { sessionId, cwd, message, title },
   });
 
-  process.exitCode = 0;
+  process.exit(0);
 }
 
-main();
+main().catch(() => {
+  process.exit(0);
+});

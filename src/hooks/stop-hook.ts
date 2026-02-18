@@ -15,43 +15,28 @@ async function main(): Promise<void> {
   try {
     input = fs.readFileSync(0, "utf-8");
   } catch {
-    process.exitCode = 0;
-    return;
+    process.exit(0);
   }
 
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(input);
+    data = JSON.parse(input!);
   } catch {
-    process.exitCode = 0;
-    return;
+    process.exit(0);
   }
 
-  const sessionId = data.session_id as string;
-  const cwd = data.cwd as string;
-  const exitCode = data.exit_code as number;
+  const sessionId = data!.session_id as string;
+  const cwd = data!.cwd as string;
+  const exitCode = data!.exit_code as number;
 
-  // Try IPC to agent-manager
-  const ipcResponse = await sendToHookServer({
+  await sendToHookServer({
     type: "stop",
     payload: { sessionId, cwd, exitCode },
   });
 
-  if (ipcResponse) {
-    process.exitCode = 0;
-    return;
-  }
-
-  // Fallback: direct Slack notification (legacy path)
-  try {
-    // @ts-ignore — legacy JS module
-    const { postStopNotification } = await import("../slack-client.js");
-    await postStopNotification({ sessionId, cwd, exitCode });
-  } catch {
-    // Non-critical
-  }
-
-  process.exitCode = 0;
+  process.exit(0);
 }
 
-main();
+main().catch(() => {
+  process.exit(0);
+});

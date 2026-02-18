@@ -7,6 +7,7 @@ import { installHooks } from "../hooks/install.js";
 import { appStore, getSessionInstance } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
+import type { ScreenContent } from "../terminal/screen-buffer.js";
 
 // ---------------------------------------------------------------------------
 // Connector status store — reactive state for the UI
@@ -47,6 +48,8 @@ let unsubSessions: (() => void) | null = null;
 
 // Session status tracking for notification transitions
 const prevStatuses = new Map<string, AgentStatus>();
+// Dedup: avoid posting the same response twice (waiting_input → exited)
+const lastPostedResponse = new Map<string, string>();
 
 // Debounce + mutex state for config reactivity
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -101,6 +104,7 @@ export async function stopConnectors(): Promise<void> {
   }
 
   prevStatuses.clear();
+  lastPostedResponse.clear();
   lastSlackFields = null;
 
   await connectorManager.disconnectAll();
@@ -169,12 +173,17 @@ function wireHookBridge(): void {
   // (agent responses are sent via the "notification" event instead)
   hookServer.on("post_tool_use", () => {});
 
-  // notification: agent response — forward as "response" notification
+  // notification: from Claude Code's Notification hook.
+  // Filter out "waiting for input" noise — forward actual responses.
   hookServer.on("notification", (payload: Record<string, unknown>) => {
     const cwd = String(payload.cwd ?? "");
     const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
     const message = String(payload.message ?? "");
     if (!message) return;
+
+    // Filter out noise — desktop notifications about waiting for input
+    const lower = message.toLowerCase();
+    if (lower.includes("waiting for") || lower.includes("needs input") || lower.includes("needs your input")) return;
 
     connectorManager
       .postNotification({
@@ -214,9 +223,68 @@ function wirePromptBridge(): void {
       session = appStore.getState().getActiveSession();
     }
     if (session) {
-      session.write(text + "\n");
+      // Write text first, then send Enter as a separate event after a short
+      // delay so the agent's input handler can commit the text before submission.
+      session.write(text);
+      setTimeout(() => session!.write("\r"), 100);
     }
   });
+}
+
+/**
+ * Extract only the agent's latest response from screen content.
+ * Finds the last user prompt (❯ with text), takes lines after it,
+ * and strips terminal chrome / hook output.
+ */
+function extractLatestResponse(content: ScreenContent | undefined): string | null {
+  if (!content || content.length === 0) return null;
+
+  // Flatten spans to plain text lines
+  const allLines = content.map((line) =>
+    line.map((span) => span.text).join("").trimEnd(),
+  );
+
+  // Find the last user prompt line: starts with ❯ followed by actual text
+  let promptIdx = -1;
+  for (let i = allLines.length - 1; i >= 0; i--) {
+    const l = allLines[i];
+    // Match "❯ sometext" but not a bare "❯" (empty prompt)
+    if (/^❯\s+\S/.test(l)) {
+      promptIdx = i;
+      break;
+    }
+  }
+
+  if (promptIdx < 0) return null;
+
+  // Take lines after the prompt
+  const after = allLines.slice(promptIdx + 1);
+
+  // Filter out terminal chrome and noise
+  const cleaned = after.filter((l) => {
+    if (!l) return false;
+    // Dividers
+    if (/^[─━]+$/.test(l)) return false;
+    // Box drawing borders
+    if (/^[╭╰╮╯│┌└┐┘├┤┬┴┼]/.test(l)) return false;
+    if (/[╭╰╮╯│┌└┐┘├┤┬┴┼]$/.test(l.trimEnd())) return false;
+    // Empty prompt line
+    if (/^❯\s*$/.test(l)) return false;
+    // Hook output
+    if (/^\s*⏺\s+Ran \d+/.test(l)) return false;
+    if (/^\s*[⎿]\s/.test(l)) return false;
+    if (/hook error/i.test(l)) return false;
+    // Status bar / shortcuts hint
+    if (/^\?\s+for shortcuts/.test(l)) return false;
+    if (/^Press/.test(l) && /shortcuts|help/.test(l)) return false;
+    // Update notice
+    if (/update available/i.test(l)) return false;
+    if (/npm install -g/i.test(l)) return false;
+    return true;
+  });
+
+  const text = cleaned.join("\n").trim();
+  return text || null;
 }
 
 /**
@@ -249,24 +317,31 @@ function wireSessionNotifications(): void {
               cwd: s.cwd,
             })
             .catch(() => {});
-        } else if (s.status === "waiting_input") {
-          connectorManager
-            .postNotification({
-              sessionId: s.id,
-              type: "waiting_input",
-              message: `Session is waiting for input (${s.displayName})`,
-              cwd: s.cwd,
-            })
-            .catch(() => {});
-        } else if (s.status === "exited") {
-          connectorManager
-            .postNotification({
-              sessionId: s.id,
-              type: "stopped",
-              message: `Session exited (${s.displayName})`,
-              cwd: s.cwd,
-            })
-            .catch(() => {});
+        } else if (s.status === "waiting_input" || s.status === "exited") {
+          // Agent finished responding — extract only the latest response
+          const response = extractLatestResponse(s.content);
+          if (response && response !== lastPostedResponse.get(s.id)) {
+            lastPostedResponse.set(s.id, response);
+            connectorManager
+              .postNotification({
+                sessionId: s.id,
+                type: "response",
+                message: response,
+                cwd: s.cwd,
+              })
+              .catch(() => {});
+          }
+
+          if (s.status === "exited") {
+            connectorManager
+              .postNotification({
+                sessionId: s.id,
+                type: "stopped",
+                message: `Session exited (${s.displayName})`,
+                cwd: s.cwd,
+              })
+              .catch(() => {});
+          }
         }
       }
     }
@@ -275,6 +350,7 @@ function wireSessionNotifications(): void {
     for (const id of prevStatuses.keys()) {
       if (!currentIds.has(id)) {
         prevStatuses.delete(id);
+        lastPostedResponse.delete(id);
       }
     }
   });
