@@ -1,0 +1,19 @@
+{
+  "name": "claude-relay",
+  "version": "2.0.0",
+  "description": "Relay Claude Code permission prompts through Slack using hooks",
+  "type": "module",
+  "scripts": {
+    "install-hook": "node src/install.js install",
+    "uninstall-hook": "node src/install.js uninstall",
+    "status": "node src/install.js status",
+    "ps": "node src/manage.js list",
+    "kill": "node src/manage.js kill",
+    "killall": "node src/manage.js killall",
+    "test-hook": "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hello\"},\"session_id\":\"test-123\",\"cwd\":\"/tmp/test-project\"}' | node src/hook.js"
+  },
+  "dependencies": {
+    "@slack/web-api": "^7.8.0",
+    "dotenv": "^16.4.7"
+  }
+}
