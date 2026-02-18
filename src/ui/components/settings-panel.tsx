@@ -2,12 +2,13 @@ import React, { useState, useSyncExternalStore } from "react";
 import { Box, Text, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import { settingsStore } from "../../store/settings-store.js";
+import { AgentsSettingsContent } from "./agents-settings-content.js";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type Section = "connectors" | "ui";
+type Section = "connectors" | "ui" | "agents";
 
 interface FieldDef {
   label: string;
@@ -121,7 +122,7 @@ export function SettingsPanel({
   const [editingField, setEditingField] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const fields = section === "connectors" ? getConnectorFields() : getUiFields();
+  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : getUiFields();
 
   useInput((input, key) => {
     if (editingField !== null) {
@@ -138,10 +139,12 @@ export function SettingsPanel({
     }
 
     if (key.tab) {
-      setSection((s) => (s === "connectors" ? "ui" : "connectors"));
+      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : "connectors");
       setFocusedIndex(0);
       return;
     }
+
+    if (section === "agents") return;
 
     if (key.downArrow) {
       setFocusedIndex((i) => Math.min(i + 1, fields.length - 1));
@@ -209,24 +212,36 @@ export function SettingsPanel({
         >
           UI
         </Text>
+        <Text> | </Text>
+        <Text
+          bold={section === "agents"}
+          underline={section === "agents"}
+          color={section === "agents" ? "cyan" : undefined}
+        >
+          Agents
+        </Text>
       </Box>
 
       <Box flexDirection="column">
-        {fields.map((field, i) => (
-          <FieldRow
-            key={field.label}
-            field={field}
-            focused={i === focusedIndex}
-            editing={i === editingField}
-            editValue={editValue}
-            onEditChange={setEditValue}
-            onEditSubmit={handleEditSubmit}
-          />
-        ))}
+        {section === "agents" ? (
+          <AgentsSettingsContent isActive={section === "agents"} />
+        ) : (
+          fields.map((field, i) => (
+            <FieldRow
+              key={field.label}
+              field={field}
+              focused={i === focusedIndex}
+              editing={i === editingField}
+              editValue={editValue}
+              onEditChange={setEditValue}
+              onEditSubmit={handleEditSubmit}
+            />
+          ))
+        )}
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>Tab: section | Up/Down: navigate | Enter: edit | Esc: close</Text>
+        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | Enter: action | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
       </Box>
     </Box>
   );
