@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useStdin } from "ink";
 import type { AgentSession } from "../../agents/agent-session.js";
 
@@ -15,23 +15,29 @@ export function useRawInput(
 ): void {
   const { stdin, setRawMode } = useStdin();
 
+  const sessionRef = useRef(activeSession);
+  sessionRef.current = activeSession;
+
   useEffect(() => {
-    if (!enabled || !activeSession || !stdin) return;
+    if (!enabled || !stdin) return;
 
     setRawMode(true);
 
     const onData = (data: Buffer) => {
       const str = data.toString();
       const byte = data[0];
+      const session = sessionRef.current;
 
       // SGR mouse events: ESC[< prefix. Only handle scroll wheel
       // (buttons 64/65), consume all others so they don't reach the PTY.
       // Hold Shift in the terminal emulator to bypass mouse mode for text selection.
       if (str.includes("\x1B[<")) {
-        if (str.includes("\x1B[<64;")) {
-          activeSession.scroll(-SCROLL_LINES);
-        } else if (str.includes("\x1B[<65;")) {
-          activeSession.scroll(SCROLL_LINES);
+        if (session) {
+          if (str.includes("\x1B[<64;")) {
+            session.scroll(-SCROLL_LINES);
+          } else if (str.includes("\x1B[<65;")) {
+            session.scroll(SCROLL_LINES);
+          }
         }
         return;
       }
@@ -46,39 +52,44 @@ export function useRawInput(
           byte === 0x10 || // Ctrl+P
           byte === 0x02 || // Ctrl+B
           byte === 0x11 || // Ctrl+Q
-          byte === 0x13    // Ctrl+S
+          byte === 0x13 || // Ctrl+S
+          byte === 0x07    // Ctrl+G (help)
         ) {
           return;
         }
 
-        // Scroll: Ctrl+U = 0x15 (up), Ctrl+D = 0x04 (down)
-        if (byte === 0x15) {
-          activeSession.scroll(-SCROLL_LINES);
-          return;
-        }
-        if (byte === 0x04) {
-          activeSession.scroll(SCROLL_LINES);
-          return;
+        if (session) {
+          // Scroll: Ctrl+U = 0x15 (up), Ctrl+D = 0x04 (down)
+          if (byte === 0x15) {
+            session.scroll(-SCROLL_LINES);
+            return;
+          }
+          if (byte === 0x04) {
+            session.scroll(SCROLL_LINES);
+            return;
+          }
         }
       }
+
+      if (!session) return;
 
       // Multi-byte escape sequences (non-mouse)
       if (str.startsWith("\x1B")) {
         // PageUp: ESC[5~ , Shift+Up: ESC[1;2A
         if (str === "\x1B[5~" || str === "\x1B[1;2A") {
-          activeSession.scroll(-SCROLL_LINES);
+          session.scroll(-SCROLL_LINES);
           return;
         }
         // PageDown: ESC[6~ , Shift+Down: ESC[1;2B
         if (str === "\x1B[6~" || str === "\x1B[1;2B") {
-          activeSession.scroll(SCROLL_LINES);
+          session.scroll(SCROLL_LINES);
           return;
         }
       }
 
       // Any keypress scrolls back to bottom (like a real terminal)
-      activeSession.scrollToBottom();
-      activeSession.write(str);
+      session.scrollToBottom();
+      session.write(str);
     };
 
     stdin.on("data", onData);
@@ -86,5 +97,5 @@ export function useRawInput(
     return () => {
       stdin.off("data", onData);
     };
-  }, [activeSession, enabled, stdin, setRawMode]);
+  }, [enabled, stdin, setRawMode]);
 }

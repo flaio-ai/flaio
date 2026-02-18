@@ -1,4 +1,5 @@
 import React from "react";
+import path from "node:path";
 import { Box, Text } from "ink";
 import { AgentTab } from "../components/agent-tab.js";
 import type { SessionState } from "../../store/app-store.js";
@@ -18,7 +19,7 @@ export function Sidebar({
     <Box
       flexDirection="column"
       width={width}
-      borderStyle="single"
+      borderStyle="round"
       borderColor="gray"
       paddingX={0}
     >
@@ -36,22 +37,16 @@ export function Sidebar({
         sessions.map((session, index) => (
           <AgentTab
             key={session.id}
-            name={session.displayName}
+            name={path.basename(session.cwd)}
             status={session.status}
             isActive={session.id === activeSessionId}
             index={index}
+            width={width - 2}
           />
         ))
       )}
 
       <Box flexGrow={1} />
-
-      <Box paddingX={1} flexDirection="column" borderStyle="single" borderTop borderColor="gray">
-        <Text dimColor>Ctrl+Q Quit</Text>
-        <Text dimColor>Ctrl+T New</Text>
-        <Text dimColor>Ctrl+W Close</Text>
-        <Text dimColor>Ctrl+N/P Switch</Text>
-      </Box>
     </Box>
   );
 }

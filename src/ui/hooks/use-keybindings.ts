@@ -5,6 +5,7 @@ interface KeybindingActions {
   onNewSession: () => void;
   onCloseSession: () => void;
   onToggleSettings: () => void;
+  onToggleHelp: () => void;
 }
 
 export function useKeybindings(actions: KeybindingActions): void {
@@ -66,6 +67,12 @@ export function useKeybindings(actions: KeybindingActions): void {
     // Ctrl+B: Toggle sidebar
     if (key.ctrl && input === "b") {
       store.toggleSidebar();
+      return;
+    }
+
+    // Ctrl+G: Toggle help
+    if (key.ctrl && input === "g") {
+      actions.onToggleHelp();
       return;
     }
 

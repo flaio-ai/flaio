@@ -12,6 +12,7 @@ export interface SettingsState {
     name: "slack" | "discord" | "telegram",
     patch: Record<string, unknown>,
   ) => void;
+  updateUi: (patch: Record<string, unknown>) => void;
 }
 
 export const settingsStore = createStore<SettingsState>((set, get) => ({
@@ -44,6 +45,19 @@ export const settingsStore = createStore<SettingsState>((set, get) => ({
             ...prev.config.connectors[name],
             ...patch,
           },
+        },
+      },
+    }));
+    get().save();
+  },
+
+  updateUi: (patch) => {
+    set((prev) => ({
+      config: {
+        ...prev.config,
+        ui: {
+          ...prev.config.ui,
+          ...patch,
         },
       },
     }));

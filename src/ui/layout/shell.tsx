@@ -1,19 +1,12 @@
 import React from "react";
-import { Box, Text } from "ink";
+import path from "node:path";
+import { Box } from "ink";
 import { Sidebar } from "./sidebar.js";
 import { MainPane } from "./main-pane.js";
 import { StatusBar } from "./status-bar.js";
+import { AgentTab } from "../components/agent-tab.js";
 import type { AgentSession } from "../../agents/agent-session.js";
 import type { SessionState } from "../../store/app-store.js";
-import type { AgentStatus } from "../../agents/drivers/base-driver.js";
-
-const STATUS_INDICATORS: Record<AgentStatus, { symbol: string; color: string }> = {
-  idle: { symbol: "○", color: "gray" },
-  starting: { symbol: "◐", color: "yellow" },
-  running: { symbol: "●", color: "green" },
-  waiting_input: { symbol: "●", color: "#FFA500" },
-  exited: { symbol: "○", color: "red" },
-};
 
 interface ShellProps {
   sessions: SessionState[];
@@ -34,24 +27,16 @@ function TopTabs({
   activeSessionId: string | null;
 }): React.ReactElement {
   return (
-    <Box height={1} paddingX={1}>
-      {sessions.map((session, i) => {
-        const indicator = STATUS_INDICATORS[session.status];
-        return (
-          <Box key={session.id} marginRight={1}>
-            <Text color={indicator.color}>{indicator.symbol} </Text>
-            {session.id === activeSessionId ? (
-              <Text bold underline>
-                {i + 1}:{session.displayName}
-              </Text>
-            ) : (
-              <Text dimColor>
-                {i + 1}:{session.displayName}
-              </Text>
-            )}
-          </Box>
-        );
-      })}
+    <Box height={3} flexDirection="row" flexWrap="wrap">
+      {sessions.map((session, i) => (
+        <AgentTab
+          key={session.id}
+          name={path.basename(session.cwd)}
+          status={session.status}
+          isActive={session.id === activeSessionId}
+          index={i}
+        />
+      ))}
     </Box>
   );
 }
@@ -72,7 +57,7 @@ export function Shell({
   const showSidebar = sidebarVisible && !useTopTabs;
   const showTopTabs = sidebarVisible && useTopTabs;
 
-  const topTabsHeight = showTopTabs ? 1 : 0;
+  const topTabsHeight = showTopTabs ? 3 : 0;
   const mainHeight = rows - statusBarHeight - topTabsHeight;
   const mainWidth = showSidebar ? columns - SIDEBAR_WIDTH : columns;
 

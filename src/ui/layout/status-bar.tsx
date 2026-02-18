@@ -12,12 +12,7 @@ export function StatusBar({
   sessionCount,
 }: StatusBarProps): React.ReactElement {
   return (
-    <Box height={1} paddingX={1} justifyContent="space-between">
-      <Box>
-        <Text dimColor>
-          Ctrl+Q:Quit Ctrl+T:New Ctrl+W:Close Ctrl+S:Settings Scroll:MouseWheel/Ctrl+U/D Select:Shift+Drag
-        </Text>
-      </Box>
+    <Box height={1} paddingX={1} justifyContent="flex-end">
       <Box>
         {activeSession && (
           <Text>
@@ -30,6 +25,7 @@ export function StatusBar({
         <Text dimColor>
           {sessionCount} session{sessionCount !== 1 ? "s" : ""}
         </Text>
+        <Text dimColor> | Ctrl+G Help</Text>
       </Box>
     </Box>
   );
