@@ -1,4 +1,4 @@
-# Code Relay
+# Agent Manager
 
 A terminal UI application for managing multiple AI CLI agents in tabbed sessions. Run Claude Code and Gemini CLI side by side, get permission requests forwarded to Slack, Discord, or Telegram, and adopt standalone agents already running on your system — all from a single interface.
 
@@ -200,7 +200,7 @@ By default, the manager polls Slack threads every 3 seconds. For faster message 
 2. Generate an **App-Level Token** with `connections:write` scope
 3. Copy the token (`xapp-...`)
 
-**7. Configure in Code Relay**
+**7. Configure in Agent Manager**
 
 Press `Ctrl+S` in the manager, enable Slack, and enter:
 
