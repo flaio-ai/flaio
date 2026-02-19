@@ -1,0 +1,120 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import CodeBlock from '../../../components/docs/CodeBlock.astro';
+import Callout from '../../../components/docs/Callout.astro';
+import StepList from '../../../components/docs/StepList.astro';
+import Step from '../../../components/docs/Step.astro';
+
+const headings = [
+  { depth: 2, slug: 'setup', text: 'Setup' },
+  { depth: 2, slug: 'how-it-works', text: 'How It Works' },
+];
+---
+<DocsLayout title="Slack Connector" headings={headings}>
+  <p>
+    Slack integration gives you per-session threads, permission approval via text replies, and agent response
+    forwarding — so you can monitor and interact with agents from your phone or desktop.
+  </p>
+
+  <h2 id="setup">Setup</h2>
+  <StepList>
+    <Step number={1} title="Create a Slack App">
+      <p>
+        Go to <a href="https://api.slack.com/apps">api.slack.com/apps</a> and create a new app "From scratch."
+      </p>
+    </Step>
+    <Step number={2} title="Configure Bot Scopes">
+      <p>Under <strong>OAuth &amp; Permissions</strong>, add these Bot Token Scopes:</p>
+      <table>
+        <thead>
+          <tr><th>Scope</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>chat:write</code></td><td>Post messages and thread replies</td></tr>
+          <tr><td><code>channels:history</code></td><td>Read replies in public channels</td></tr>
+          <tr><td><code>channels:read</code></td><td>Resolve channel info</td></tr>
+        </tbody>
+      </table>
+      <Callout type="tip">
+        <p>If using a <strong>private channel</strong>, also add <code>groups:history</code> and <code>groups:read</code>.</p>
+      </Callout>
+    </Step>
+    <Step number={3} title="Install to Workspace">
+      <p>
+        Click <strong>Install to Workspace</strong> and authorize. Copy the <strong>Bot User OAuth Token</strong> (<code>xoxb-...</code>).
+      </p>
+    </Step>
+    <Step number={4} title="Invite the Bot to a Channel">
+      <p>In Slack, go to your channel and type <code>/invite @YourBotName</code>.</p>
+    </Step>
+    <Step number={5} title="Get the Channel ID">
+      <p>
+        Right-click the channel name &gt; <strong>View channel details</strong> &gt; copy the <strong>Channel ID</strong> at the bottom.
+      </p>
+    </Step>
+    <Step number={6} title="Enable Socket Mode (Optional)">
+      <Callout type="info">
+        <p>
+          By default, the manager polls Slack threads every 3 seconds. For faster message delivery, enable Socket Mode.
+        </p>
+      </Callout>
+      <ol>
+        <li>Go to <strong>Socket Mode</strong> in your app settings and enable it</li>
+        <li>Generate an <strong>App-Level Token</strong> with <code>connections:write</code> scope</li>
+        <li>Copy the token (<code>xapp-...</code>)</li>
+      </ol>
+    </Step>
+    <Step number={7} title="Configure in Agent Manager">
+      <p>Press <code>Ctrl+S</code> in the manager, enable Slack, and enter:</p>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Value</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Bot Token</strong></td><td><code>xoxb-...</code> from step 3</td></tr>
+          <tr><td><strong>Channel ID</strong></td><td>From step 5</td></tr>
+          <tr><td><strong>App Token</strong> (optional)</td><td><code>xapp-...</code> from step 6</td></tr>
+        </tbody>
+      </table>
+      <p>Or edit <code>~/.config/agent-manager/settings.json</code> directly:</p>
+      <CodeBlock lang="json" code={`{
+  "connectors": {
+    "slack": {
+      "enabled": true,
+      "botToken": "xoxb-your-token",
+      "appToken": "xapp-your-token",
+      "channelId": "C0123456789",
+      "pollInterval": 3000,
+      "timeout": 300000
+    }
+  }
+}`} />
+    </Step>
+    <Step number={8} title="Install Hooks">
+      <CodeBlock code="npm run install-hooks" />
+      <p>
+        This registers lifecycle hooks in <code>~/.claude/settings.json</code> so Claude Code events
+        (permission requests, agent responses, notifications) are forwarded to Slack.
+      </p>
+    </Step>
+  </StepList>
+
+  <h2 id="how-it-works">How It Works</h2>
+  <p>When a session starts, the bot creates a thread in your Slack channel:</p>
+  <CodeBlock code={`Session started
+Project: my-project
+CWD: ~/projects/my-project
+Session: abc123`} />
+  <p>All agent interactions happen in that thread:</p>
+  <ul>
+    <li><strong>Agent responses</strong> are posted automatically</li>
+    <li><strong>Permission requests</strong> appear with the tool name and input — reply <code>allow</code> or <code>deny</code></li>
+    <li><strong>You can send prompts</strong> by replying in the thread — they're forwarded directly to the agent's input</li>
+  </ul>
+  <Callout type="info">
+    <p>
+      Messages from Slack are delivered via Socket Mode (instant) or thread polling (every 3s),
+      with built-in deduplication to prevent double delivery.
+    </p>
+  </Callout>
+</DocsLayout>

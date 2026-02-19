@@ -1,0 +1,104 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import CodeBlock from '../../../components/docs/CodeBlock.astro';
+import Callout from '../../../components/docs/Callout.astro';
+import StepList from '../../../components/docs/StepList.astro';
+import Step from '../../../components/docs/Step.astro';
+
+const headings = [
+  { depth: 2, slug: 'overview', text: 'Overview' },
+  { depth: 2, slug: 'steps', text: 'Steps' },
+  { depth: 2, slug: 'connector-interface', text: 'Connector Interface' },
+  { depth: 2, slug: 'example', text: 'Example' },
+];
+---
+<DocsLayout title="Adding Connectors" headings={headings}>
+  <h2 id="overview">Overview</h2>
+  <Callout type="info">
+    <p>
+      Connectors route events between the manager and external messaging platforms.
+      Each connector implements a standard interface for connecting, disconnecting, and handling events.
+    </p>
+  </Callout>
+
+  <h2 id="steps">Steps</h2>
+  <StepList>
+    <Step number={1} title="Create the adapter file">
+      <p>Create a new adapter in <code>src/connectors/adapters/</code> implementing <code>ConnectorInterface</code>.</p>
+    </Step>
+    <Step number={2} title="Implement the interface">
+      <p>Implement: <code>connect()</code>, <code>disconnect()</code>, <code>requestPermission()</code>, <code>postToolResult()</code>, <code>postNotification()</code>.</p>
+    </Step>
+    <Step number={3} title="Add config schema">
+      <p>Add your connector's config schema in <code>src/config/config.ts</code>.</p>
+    </Step>
+    <Step number={4} title="Wire it up">
+      <p>Wire it into <code>src/connectors/connector-manager.ts</code>.</p>
+    </Step>
+  </StepList>
+
+  <h2 id="connector-interface">Connector Interface</h2>
+  <CodeBlock lang="ts" code={`interface ConnectorInterface {
+  readonly name: string;
+
+  // Lifecycle
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+
+  // Permission flow
+  requestPermission(request: {
+    sessionId: string;
+    tool: string;
+    input: unknown;
+  }): Promise<{ allowed: boolean }>;
+
+  // Event forwarding
+  postToolResult(result: {
+    sessionId: string;
+    tool: string;
+    output: string;
+  }): Promise<void>;
+
+  postNotification(notification: {
+    sessionId: string;
+    message: string;
+    type: "info" | "warning" | "error";
+  }): Promise<void>;
+}`} />
+
+  <h2 id="example">Example</h2>
+  <CodeBlock lang="ts" filename="src/connectors/adapters/my-connector.ts" code={`import type { ConnectorInterface } from "../connector-interface.js";
+
+export class MyConnector implements ConnectorInterface {
+  readonly name = "my-connector";
+
+  async connect() {
+    // Initialize your messaging client
+  }
+
+  async disconnect() {
+    // Clean up resources
+  }
+
+  async requestPermission(request) {
+    // Send the permission request to your platform
+    // Wait for user response
+    // Return { allowed: true/false }
+    return { allowed: true };
+  }
+
+  async postToolResult(result) {
+    // Forward tool output to your platform
+  }
+
+  async postNotification(notification) {
+    // Forward notification to your platform
+  }
+}`} />
+  <p>Then add your config schema and wire it into the connector manager:</p>
+  <CodeBlock lang="ts" filename="src/config/config.ts" code={`const MyConnectorSchema = z.object({
+  enabled: z.boolean().default(false),
+  apiKey: z.string().optional(),
+  // ... your config fields
+});`} />
+</DocsLayout>

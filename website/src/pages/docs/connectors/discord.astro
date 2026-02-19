@@ -1,0 +1,44 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import Callout from '../../../components/docs/Callout.astro';
+import StepList from '../../../components/docs/StepList.astro';
+import Step from '../../../components/docs/Step.astro';
+
+const headings = [
+  { depth: 2, slug: 'setup', text: 'Setup' },
+  { depth: 2, slug: 'configuration', text: 'Configuration' },
+];
+---
+<DocsLayout title="Discord Connector" headings={headings}>
+  <Callout type="info">
+    <p>
+      Discord creates auto-threaded conversations for each session, with formatted output for
+      tool results and permission requests.
+    </p>
+  </Callout>
+
+  <h2 id="setup">Setup</h2>
+  <StepList>
+    <Step number={1} title="Create a Discord Bot">
+      <p>Go to the <a href="https://discord.com/developers/applications">Developer Portal</a> and create a new application.</p>
+    </Step>
+    <Step number={2} title="Configure Permissions">
+      <p>Enable the bot and grant <code>Send Messages</code> + <code>Read Message History</code> permissions.</p>
+    </Step>
+    <Step number={3} title="Invite to Server">
+      <p>Invite the bot to your server with the appropriate permissions.</p>
+    </Step>
+  </StepList>
+
+  <h2 id="configuration">Configuration</h2>
+  <p>In settings (<code>Ctrl+S</code>), enable Discord and enter:</p>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Bot Token</strong></td><td>Your Discord bot token</td></tr>
+      <tr><td><strong>Channel ID</strong></td><td>The channel where messages will be posted</td></tr>
+    </tbody>
+  </table>
+</DocsLayout>

@@ -1,0 +1,93 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import CodeBlock from '../../components/docs/CodeBlock.astro';
+import Callout from '../../components/docs/Callout.astro';
+
+const headings = [
+  { depth: 2, slug: 'what-is-agent-manager', text: 'What is Agent Manager?' },
+  { depth: 2, slug: 'quick-start', text: 'Quick Start' },
+  { depth: 2, slug: 'key-concepts', text: 'Key Concepts' },
+  { depth: 2, slug: 'next-steps', text: 'Next Steps' },
+];
+---
+<DocsLayout title="Getting Started" headings={headings}>
+  <Callout type="tip">
+    <p>
+      Agent Manager lets you run multiple AI CLI agents in a single tabbed terminal, with messaging integration
+      for approving actions from your phone. Get up and running in under a minute.
+    </p>
+  </Callout>
+
+  <h2 id="what-is-agent-manager">What is Agent Manager?</h2>
+  <p>
+    Agent Manager is a terminal UI application for managing multiple AI CLI agents in tabbed sessions.
+    Run Claude Code and Gemini CLI side by side, get permission requests forwarded to Slack, Discord, or Telegram,
+    and adopt standalone agents already running on your system — all from a single interface.
+  </p>
+  <p>
+    Built with <a href="https://github.com/vadimdemedes/ink">Ink</a> (React for CLIs),
+    <a href="https://github.com/microsoft/node-pty">node-pty</a>, and
+    <a href="https://github.com/xtermjs/xterm.js">xterm-headless</a>.
+  </p>
+
+  <h2 id="quick-start">Quick Start</h2>
+  <CodeBlock code="npm install -g agent-manager" />
+  <p>Then run it:</p>
+  <CodeBlock code="agent-manager" />
+  <p>
+    This opens a terminal UI with a tabbed interface. Press <code>Ctrl+T</code> to create a new session,
+    select an agent (Claude Code or Gemini CLI), enter a working directory, and start working.
+  </p>
+
+  <h2 id="key-concepts">Key Concepts</h2>
+  <div class="grid gap-3 sm:grid-cols-2 my-6 not-prose">
+    <div class="rounded-lg border border-border-default p-4 bg-card/20 hover:bg-card/40 transition-colors">
+      <h3 class="text-sm font-semibold text-text-primary mb-1">Sessions</h3>
+      <p class="text-xs text-text-secondary leading-relaxed">Each agent runs in its own tab with a full PTY-backed terminal. Create, switch, and close sessions with keyboard shortcuts.</p>
+    </div>
+    <div class="rounded-lg border border-border-default p-4 bg-card/20 hover:bg-card/40 transition-colors">
+      <h3 class="text-sm font-semibold text-text-primary mb-1">Connectors</h3>
+      <p class="text-xs text-text-secondary leading-relaxed">Forward permission requests and agent responses to Slack, Discord, or Telegram. Approve actions from your phone.</p>
+    </div>
+    <div class="rounded-lg border border-border-default p-4 bg-card/20 hover:bg-card/40 transition-colors">
+      <h3 class="text-sm font-semibold text-text-primary mb-1">Hooks</h3>
+      <p class="text-xs text-text-secondary leading-relaxed">IPC-based lifecycle hooks bridge Claude Code events to the manager, enabling messaging integration.</p>
+    </div>
+    <div class="rounded-lg border border-border-default p-4 bg-card/20 hover:bg-card/40 transition-colors">
+      <h3 class="text-sm font-semibold text-text-primary mb-1">Portals</h3>
+      <p class="text-xs text-text-secondary leading-relaxed">Connect to running sessions from another terminal window. Full mirroring with input forwarding.</p>
+    </div>
+  </div>
+
+  <h2 id="next-steps">Next Steps</h2>
+  <div class="not-prose space-y-2">
+    <a href="/docs/installation" class="flex items-center gap-3 rounded-lg border border-border-default p-3 hover:border-brand-accent/40 hover:bg-card/30 transition-all group">
+      <span class="text-brand-accent text-lg">&#8594;</span>
+      <span>
+        <span class="text-sm font-medium text-text-primary group-hover:text-brand-accent transition-colors">Installation</span>
+        <span class="block text-xs text-text-secondary">Detailed installation and setup instructions</span>
+      </span>
+    </a>
+    <a href="/docs/configuration" class="flex items-center gap-3 rounded-lg border border-border-default p-3 hover:border-brand-accent/40 hover:bg-card/30 transition-all group">
+      <span class="text-brand-accent text-lg">&#8594;</span>
+      <span>
+        <span class="text-sm font-medium text-text-primary group-hover:text-brand-accent transition-colors">Configuration</span>
+        <span class="block text-xs text-text-secondary">Customize the manager's behavior</span>
+      </span>
+    </a>
+    <a href="/docs/keyboard-shortcuts" class="flex items-center gap-3 rounded-lg border border-border-default p-3 hover:border-brand-accent/40 hover:bg-card/30 transition-all group">
+      <span class="text-brand-accent text-lg">&#8594;</span>
+      <span>
+        <span class="text-sm font-medium text-text-primary group-hover:text-brand-accent transition-colors">Keyboard Shortcuts</span>
+        <span class="block text-xs text-text-secondary">Full keybinding reference</span>
+      </span>
+    </a>
+    <a href="/docs/connectors" class="flex items-center gap-3 rounded-lg border border-border-default p-3 hover:border-brand-accent/40 hover:bg-card/30 transition-all group">
+      <span class="text-brand-accent text-lg">&#8594;</span>
+      <span>
+        <span class="text-sm font-medium text-text-primary group-hover:text-brand-accent transition-colors">Connectors</span>
+        <span class="block text-xs text-text-secondary">Set up Slack, Discord, or Telegram integration</span>
+      </span>
+    </a>
+  </div>
+</DocsLayout>

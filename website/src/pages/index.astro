@@ -1,0 +1,32 @@
+---
+import LandingLayout from '../layouts/LandingLayout.astro';
+import Hero from '../components/landing/Hero.astro';
+import Features from '../components/landing/Features.astro';
+import MessagingFlow from '../components/landing/MessagingFlow.tsx';
+import PortalsSection from '../components/landing/PortalsSection.astro';
+import InstallCTA from '../components/landing/InstallCTA.astro';
+import Footer from '../components/landing/Footer.astro';
+---
+<LandingLayout title="Agent Manager — Manage AI agents from one terminal">
+  <Hero />
+  <Features />
+
+  <!-- Messaging Flow -->
+  <section class="py-24 px-6 bg-card/30" id="messaging">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-16 fade-in">
+        <h2 class="text-3xl font-bold text-text-primary mb-4">Hook-based Messaging Flow</h2>
+        <p class="text-text-secondary max-w-2xl mx-auto">
+          Permission requests flow from Claude Code through IPC hooks to your messaging platform. Reply from Slack, Discord, or Telegram — the response routes back instantly.
+        </p>
+      </div>
+      <div class="fade-in">
+        <MessagingFlow client:visible />
+      </div>
+    </div>
+  </section>
+
+  <PortalsSection />
+  <InstallCTA />
+  <Footer />
+</LandingLayout>

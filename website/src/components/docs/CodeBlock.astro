@@ -1,0 +1,78 @@
+---
+interface Props {
+  code: string;
+  lang?: string;
+  filename?: string;
+}
+
+const { code, lang = 'bash', filename } = Astro.props;
+const id = `code-${Math.random().toString(36).slice(2, 9)}`;
+
+const langLabels: Record<string, string> = {
+  bash: 'bash',
+  sh: 'sh',
+  ts: 'TypeScript',
+  typescript: 'TypeScript',
+  js: 'JavaScript',
+  javascript: 'JavaScript',
+  json: 'JSON',
+  jsonc: 'JSONC',
+  yaml: 'YAML',
+  toml: 'TOML',
+  css: 'CSS',
+  html: 'HTML',
+};
+const label = langLabels[lang] || lang;
+---
+<div class="relative group mb-6">
+  {filename && (
+    <div class="bg-card border border-border-default border-b-0 rounded-t-lg px-4 py-2 text-xs text-text-secondary font-mono flex items-center gap-2">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="text-text-secondary/60 shrink-0">
+        <path d="M3.75 1.5a.25.25 0 00-.25.25v11.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V4.664a.25.25 0 00-.073-.177l-2.914-2.914a.25.25 0 00-.177-.073H3.75z" />
+      </svg>
+      {filename}
+    </div>
+  )}
+  <div class:list={['relative border border-border-default/50 rounded-lg overflow-hidden', filename ? 'rounded-t-none border-t-0' : '']}>
+    <div class="absolute top-0 left-0 right-0 h-px bg-brand-accent/20"></div>
+    <pre class="rounded-none border-none"><code class={`language-${lang}`} set:text={code} /></pre>
+    {!filename && (
+      <span class="absolute top-2.5 right-12 text-[10px] font-medium text-text-secondary/40 uppercase tracking-wider select-none">
+        {label}
+      </span>
+    )}
+    <button
+      data-copy-target={id}
+      class="absolute top-2 right-2 bg-card/80 border border-border-default rounded-md p-1.5 text-text-secondary hover:text-text-primary hover:bg-card transition-all"
+      aria-label="Copy code"
+    >
+      <svg class="copy-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+        <path d="M10.5 5.5V3.25A1.25 1.25 0 009.25 2H3.25A1.25 1.25 0 002 3.25v6a1.25 1.25 0 001.25 1.25H5.5" />
+      </svg>
+      <svg class="check-icon hidden" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M3 8.5l3.5 3.5L13 4" />
+      </svg>
+    </button>
+  </div>
+  <textarea id={id} class="sr-only" tabindex="-1" set:text={code} />
+</div>
+
+<script>
+  document.querySelectorAll('[data-copy-target]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-copy-target')!;
+      const textarea = document.getElementById(targetId) as HTMLTextAreaElement;
+      navigator.clipboard.writeText(textarea.value).then(() => {
+        const copyIcon = btn.querySelector('.copy-icon') as SVGElement;
+        const checkIcon = btn.querySelector('.check-icon') as SVGElement;
+        copyIcon.classList.add('hidden');
+        checkIcon.classList.remove('hidden');
+        setTimeout(() => {
+          copyIcon.classList.remove('hidden');
+          checkIcon.classList.add('hidden');
+        }, 2000);
+      });
+    });
+  });
+</script>

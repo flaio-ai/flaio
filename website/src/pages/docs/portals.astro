@@ -1,0 +1,128 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import CodeBlock from '../../components/docs/CodeBlock.astro';
+import Callout from '../../components/docs/Callout.astro';
+
+const headings = [
+  { depth: 2, slug: 'overview', text: 'Overview' },
+  { depth: 2, slug: 'usage', text: 'Usage' },
+  { depth: 2, slug: 'interactive-picker', text: 'Interactive Picker' },
+  { depth: 2, slug: 'features', text: 'Features' },
+  { depth: 2, slug: 'protocol', text: 'Protocol' },
+  { depth: 3, slug: 'client-to-server', text: 'Client to Server' },
+  { depth: 3, slug: 'server-to-client', text: 'Server to Client' },
+  { depth: 2, slug: 'types', text: 'Types' },
+];
+---
+<DocsLayout title="Portals" headings={headings}>
+  <h2 id="overview">Overview</h2>
+  <Callout type="info">
+    <p>
+      Portals let you access running sessions from a separate terminal — useful for monitoring agents
+      on a remote machine, pairing, or keeping the main UI on one screen while interacting from another.
+    </p>
+  </Callout>
+  <p>
+    The portal communicates over a Unix socket at <code>/tmp/agent-manager/portal.sock</code>.
+  </p>
+
+  <h2 id="usage">Usage</h2>
+  <CodeBlock code={`# Interactive picker — browse sessions, create new ones
+agent-manager portal
+
+# Connect directly to a known session
+agent-manager portal <session-id>
+
+# Static table of running sessions
+agent-manager portal --list`} />
+
+  <h2 id="interactive-picker">Interactive Picker</h2>
+  <ul>
+    <li>Use <strong>arrow keys</strong> to navigate, <strong>Enter</strong> to select</li>
+    <li>Choose <strong>"+ New Session"</strong> to start a fresh agent from the portal</li>
+    <li>Press <strong>Esc</strong> to exit</li>
+  </ul>
+  <p>
+    Once connected, the portal mirrors the session in real-time.
+    Press <strong>Ctrl+C</strong> to disconnect and return to your shell.
+  </p>
+
+  <h2 id="features">Features</h2>
+  <ul>
+    <li><strong>Full terminal mirroring</strong> — See the exact same output as the main app in real-time</li>
+    <li><strong>Input forwarding</strong> — Type commands and interact with the agent as if you were in the main app</li>
+    <li><strong>Scroll support</strong> — Mouse wheel, <code>Ctrl+U</code>/<code>Ctrl+D</code>, and <code>PageUp</code>/<code>PageDown</code> all work</li>
+    <li><strong>Connection indicator</strong> — The main app shows a <code>&#8644;</code> icon in the header when a portal client is connected</li>
+    <li><strong>Remote session creation</strong> — Start new agent sessions directly from the portal</li>
+  </ul>
+
+  <h2 id="protocol">Protocol</h2>
+  <p>The portal uses newline-delimited JSON over a Unix domain socket.</p>
+
+  <h3 id="client-to-server">Client to Server</h3>
+  <table>
+    <thead>
+      <tr><th>Message Type</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>portal_list</code></td><td>Request list of running sessions</td></tr>
+      <tr><td><code>portal_subscribe</code></td><td>Subscribe to a session's output</td></tr>
+      <tr><td><code>portal_input</code></td><td>Forward keyboard input to the session</td></tr>
+      <tr><td><code>portal_unsubscribe</code></td><td>Disconnect from current session</td></tr>
+      <tr><td><code>portal_list_drivers</code></td><td>Request available agent drivers</td></tr>
+      <tr><td><code>portal_create_session</code></td><td>Create a new agent session</td></tr>
+      <tr><td><code>portal_scroll</code></td><td>Scroll the terminal view</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="server-to-client">Server to Client</h3>
+  <table>
+    <thead>
+      <tr><th>Message Type</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>portal_sessions</code></td><td>List of running sessions</td></tr>
+      <tr><td><code>portal_frame</code></td><td>Screen content update</td></tr>
+      <tr><td><code>portal_status</code></td><td>Session status change</td></tr>
+      <tr><td><code>portal_session_ended</code></td><td>Session terminated</td></tr>
+      <tr><td><code>portal_error</code></td><td>Error message</td></tr>
+      <tr><td><code>portal_drivers</code></td><td>Available agent drivers</td></tr>
+      <tr><td><code>portal_session_created</code></td><td>New session created confirmation</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="types">Types</h2>
+  <CodeBlock lang="ts" code={`interface PortalSessionInfo {
+  id: string;
+  driverName: string;
+  displayName: string;
+  cwd: string;
+  status: string;
+}
+
+interface PortalDriverInfo {
+  name: string;
+  displayName: string;
+  installed: boolean;
+}
+
+// Client → Server
+type PortalClientMsg =
+  | { type: "portal_list" }
+  | { type: "portal_subscribe"; sessionId: string }
+  | { type: "portal_input"; data: string }
+  | { type: "portal_unsubscribe" }
+  | { type: "portal_list_drivers" }
+  | { type: "portal_create_session"; driverName: string; cwd: string }
+  | { type: "portal_scroll"; lines: number }
+
+// Server → Client
+type PortalServerMsg =
+  | { type: "portal_sessions"; sessions: PortalSessionInfo[] }
+  | { type: "portal_frame"; content: ScreenContent; cursor: { x: number; y: number }; cols: number; rows: number }
+  | { type: "portal_status"; sessionId: string; status: string }
+  | { type: "portal_session_ended"; sessionId: string }
+  | { type: "portal_error"; message: string }
+  | { type: "portal_drivers"; drivers: PortalDriverInfo[] }
+  | { type: "portal_session_created"; sessionId: string }`} />
+</DocsLayout>

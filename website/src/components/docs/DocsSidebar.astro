@@ -1,0 +1,55 @@
+---
+import { docsNavigation } from '../../data/navigation';
+
+interface Props {
+  currentPath: string;
+}
+
+const { currentPath } = Astro.props;
+
+const sectionColors: Record<string, string> = {
+  'Connectors': 'bg-cyan-400',
+  'Contributing': 'bg-emerald-400',
+};
+---
+<nav class="space-y-1">
+  {docsNavigation.map((item, idx) => (
+    <div>
+      {item.children ? (
+        <div class:list={['mt-5', idx > 0 ? 'pt-4 border-t border-border-default/40' : '']}>
+          <span class="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-2 flex items-center gap-2">
+            <span class:list={['w-1.5 h-1.5 rounded-full', sectionColors[item.title] || 'bg-brand-accent']} />
+            {item.title}
+          </span>
+          <div class="space-y-0.5 ml-2">
+            {item.children.map((child) => (
+              <a
+                href={child.href}
+                class:list={[
+                  'block text-sm py-1.5 px-3 rounded transition-colors',
+                  currentPath === child.href
+                    ? 'text-brand-accent bg-brand-accent/10 font-medium'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-card',
+                ]}
+              >
+                {child.title}
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <a
+          href={item.href}
+          class:list={[
+            'block text-sm py-1.5 px-3 rounded transition-colors',
+            currentPath === item.href
+              ? 'text-brand-accent bg-brand-accent/10 font-medium'
+              : 'text-text-secondary hover:text-text-primary hover:bg-card',
+          ]}
+        >
+          {item.title}
+        </a>
+      )}
+    </div>
+  ))}
+</nav>

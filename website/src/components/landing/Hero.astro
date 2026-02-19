@@ -1,0 +1,43 @@
+---
+import TerminalAnimation from './TerminalAnimation.tsx';
+---
+<section class="pt-24 pb-16 px-6">
+  <div class="max-w-4xl mx-auto">
+    <!-- Terminal window -->
+    <div class="terminal-chrome fade-in">
+      <div class="terminal-titlebar">
+        <span class="terminal-dot terminal-dot-red"></span>
+        <span class="terminal-dot terminal-dot-yellow"></span>
+        <span class="terminal-dot terminal-dot-green"></span>
+        <span class="ml-4 text-xs text-text-secondary font-mono">agent-manager</span>
+      </div>
+      <div class="p-6 min-h-[340px] font-mono text-sm leading-relaxed">
+        <TerminalAnimation client:visible />
+      </div>
+    </div>
+
+    <!-- Tagline -->
+    <div class="text-center mt-12 fade-in">
+      <h1 class="text-4xl md:text-5xl font-bold text-text-primary mb-4">
+        Manage AI agents from <span class="text-brand-accent">one terminal</span>
+      </h1>
+      <p class="text-lg text-text-secondary max-w-2xl mx-auto mb-8">
+        Run Claude Code and Gemini CLI side by side. Get permission requests on Slack. Adopt standalone agents. All from a single TUI.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a
+          href="/docs"
+          class="inline-flex items-center justify-center px-6 py-3 bg-brand-accent text-page font-semibold rounded-lg hover:bg-brand-accent/90 transition-colors"
+        >
+          Get Started
+        </a>
+        <a
+          href="/docs/architecture"
+          class="inline-flex items-center justify-center px-6 py-3 bg-card border border-border-default text-text-primary font-semibold rounded-lg hover:bg-card-hover transition-colors"
+        >
+          View Docs
+        </a>
+      </div>
+    </div>
+  </div>
+</section>

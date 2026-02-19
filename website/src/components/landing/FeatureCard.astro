@@ -1,0 +1,25 @@
+---
+interface Props {
+  title: string;
+  description: string;
+  icon: string;
+}
+
+const { title, description, icon } = Astro.props;
+
+const icons: Record<string, string> = {
+  tabs: '<rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M2 8h20M8 4v4M14 4v4" stroke="currentColor" stroke-width="1.5"/>',
+  adopt: '<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.5"/>',
+  message: '<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" stroke="currentColor" stroke-width="1.5" fill="none"/>',
+  terminal: '<rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M6 10l4 4-4 4M12 18h6" stroke="currentColor" stroke-width="1.5" fill="none"/>',
+  layout: '<rect x="2" y="3" width="20" height="18" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M9 3v18" stroke="currentColor" stroke-width="1.5"/>',
+  portal: '<rect x="1" y="5" width="9" height="14" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="14" y="5" width="9" height="14" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10 12h4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/>',
+};
+---
+<div class="group bg-card border border-border-default rounded-xl p-6 hover:border-border-accent/50 transition-all duration-300 hover:shadow-[0_0_20px_rgba(6,182,212,0.1)]">
+  <div class="w-10 h-10 rounded-lg bg-brand-accent/10 flex items-center justify-center mb-4 group-hover:bg-brand-accent/20 transition-colors">
+    <svg width="24" height="24" viewBox="0 0 24 24" class="text-brand-accent" set:html={icons[icon]} />
+  </div>
+  <h3 class="text-lg font-semibold text-text-primary mb-2">{title}</h3>
+  <p class="text-sm text-text-secondary leading-relaxed">{description}</p>
+</div>

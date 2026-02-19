@@ -1,0 +1,47 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import Callout from '../../../components/docs/Callout.astro';
+import StepList from '../../../components/docs/StepList.astro';
+import Step from '../../../components/docs/Step.astro';
+
+const headings = [
+  { depth: 2, slug: 'setup', text: 'Setup' },
+  { depth: 2, slug: 'configuration', text: 'Configuration' },
+];
+---
+<DocsLayout title="Telegram Connector" headings={headings}>
+  <Callout type="info">
+    <p>
+      Telegram uses inline keyboard buttons for permission requests, making it easy to approve or deny
+      actions with a single tap.
+    </p>
+  </Callout>
+
+  <h2 id="setup">Setup</h2>
+  <StepList>
+    <Step number={1} title="Create a Bot via BotFather">
+      <p>Open <a href="https://t.me/botfather">@BotFather</a> in Telegram and create a new bot.</p>
+    </Step>
+    <Step number={2} title="Copy the Bot Token">
+      <p>Copy the bot token provided by BotFather.</p>
+    </Step>
+    <Step number={3} title="Start a Chat">
+      <p>Start a chat with your bot (or add it to a group).</p>
+    </Step>
+    <Step number={4} title="Get Your Chat ID">
+      <p>Use the <code>/start</code> command and check the API for updates to find your Chat ID.</p>
+    </Step>
+  </StepList>
+
+  <h2 id="configuration">Configuration</h2>
+  <p>In settings (<code>Ctrl+S</code>), enable Telegram and enter:</p>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Bot Token</strong></td><td>Token from BotFather</td></tr>
+      <tr><td><strong>Chat ID</strong></td><td>Your personal or group chat ID (string or number)</td></tr>
+    </tbody>
+  </table>
+</DocsLayout>

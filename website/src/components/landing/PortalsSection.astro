@@ -1,0 +1,16 @@
+---
+import PortalsDiagram from './PortalsDiagram.tsx';
+---
+<section class="py-24 px-6" id="portals">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <h2 class="text-3xl font-bold text-text-primary mb-4">Portal — Remote Session Access</h2>
+      <p class="text-text-secondary max-w-2xl mx-auto">
+        Connect to running sessions from another terminal. Full screen mirroring with input forwarding — no disruption to the main UI.
+      </p>
+    </div>
+    <div class="fade-in">
+      <PortalsDiagram client:visible />
+    </div>
+  </div>
+</section>

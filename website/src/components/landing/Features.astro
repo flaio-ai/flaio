@@ -1,0 +1,19 @@
+---
+import FeatureCard from './FeatureCard.astro';
+import { features } from '../../data/features';
+---
+<section class="py-24 px-6" id="features">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-16 fade-in">
+      <h2 class="text-3xl font-bold text-text-primary mb-4">Everything you need to manage AI agents</h2>
+      <p class="text-text-secondary max-w-2xl mx-auto">
+        A unified terminal interface for running, monitoring, and interacting with multiple AI CLI agents.
+      </p>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 fade-in">
+      {features.map((feature) => (
+        <FeatureCard title={feature.title} description={feature.description} icon={feature.icon} />
+      ))}
+    </div>
+  </div>
+</section>

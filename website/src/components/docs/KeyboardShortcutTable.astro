@@ -1,0 +1,28 @@
+---
+import { shortcutGroups } from '../../data/keyboard-shortcuts';
+---
+{shortcutGroups.map((group) => (
+  <div class="mb-8">
+    <h3 id={group.title.toLowerCase().replace(/\s+/g, '-')}>{group.title}</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {group.shortcuts.map((s) => (
+          <tr>
+            <td><code>{s.key}</code></td>
+            <td>{s.action}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+))}
+
+<blockquote>
+  <p><strong>Note:</strong> On macOS, <code>Alt</code> shortcuts use the <code>Option</code> key or the <code>Esc</code> prefix (press <code>Esc</code> then the key).</p>
+</blockquote>

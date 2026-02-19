@@ -1,0 +1,156 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import CodeBlock from '../../components/docs/CodeBlock.astro';
+import Callout from '../../components/docs/Callout.astro';
+
+const headings = [
+  { depth: 2, slug: 'directory-structure', text: 'Directory Structure' },
+  { depth: 2, slug: 'how-it-works', text: 'How It Works' },
+  { depth: 2, slug: 'key-components', text: 'Key Components' },
+  { depth: 3, slug: 'agents', text: 'Agents' },
+  { depth: 3, slug: 'terminal', text: 'Terminal' },
+  { depth: 3, slug: 'connectors', text: 'Connectors' },
+  { depth: 3, slug: 'hooks', text: 'Hooks' },
+  { depth: 3, slug: 'portal', text: 'Portal' },
+  { depth: 3, slug: 'store', text: 'Store' },
+  { depth: 3, slug: 'ui', text: 'UI' },
+];
+---
+<DocsLayout title="Architecture" headings={headings}>
+  <Callout type="info">
+    <p>
+      Agent Manager is a full terminal UI app built with Ink 5 (React 18), node-pty, and xterm-headless.
+      This page describes the high-level architecture and how the pieces fit together.
+    </p>
+  </Callout>
+
+  <h2 id="directory-structure">Directory Structure</h2>
+  <CodeBlock code={`src/
+├── cli.tsx                         # Entry point (Commander + Ink)
+├── app.tsx                         # Root component
+├── agents/
+│   ├── agent-session.ts            # Session lifecycle & events
+│   ├── agent-registry.ts           # Driver registry
+│   ├── agent-detector.ts           # Standalone process scanner
+│   └── drivers/
+│       ├── base-driver.ts          # Abstract driver interface
+│       ├── claude-driver.ts        # Claude Code driver
+│       └── gemini-driver.ts        # Gemini CLI driver
+├── connectors/
+│   ├── connector-interface.ts      # Connector contract
+│   ├── connector-manager.ts        # Routes events to connectors
+│   └── adapters/
+│       ├── slack-adapter.ts        # Slack (Web API + Socket Mode)
+│       ├── discord-adapter.ts      # Discord (discord.js)
+│       └── telegram-adapter.ts     # Telegram (Telegraf)
+├── terminal/
+│   ├── pty-manager.ts              # node-pty wrapper
+│   ├── xterm-bridge.ts            # xterm-headless rendering
+│   └── screen-buffer.ts           # FPS-limited display buffer
+├── hooks/
+│   ├── hook-server.ts              # Unix socket IPC server
+│   ├── hook.ts                     # PermissionRequest handler
+│   ├── post-tool-hook.ts           # PostToolUse handler
+│   ├── notification-hook.ts        # Notification handler
+│   ├── stop-hook.ts                # Stop event handler
+│   └── install.ts                  # Hook installer/uninstaller
+├── portal/
+│   ├── shared.ts                   # Protocol types (client ↔ server)
+│   ├── portal-server.ts            # Unix socket server (main app)
+│   ├── portal-client.ts            # IPC client functions
+│   ├── portal-picker.tsx           # Interactive session picker
+│   └── ansi-renderer.ts            # ScreenContent → ANSI converter
+├── store/
+│   ├── app-store.ts                # Session state (Zustand)
+│   ├── settings-store.ts           # Persisted config (Zustand)
+│   ├── connector-store.ts          # Connector lifecycle & bridges
+│   └── portal-store.ts             # Portal connection tracking
+├── config/
+│   ├── config.ts                   # Zod schema & load/save
+│   └── defaults.ts                 # Default configuration
+└── ui/
+    ├── layout/
+    │   ├── shell.tsx               # Main layout container
+    │   ├── sidebar.tsx             # Session list panel
+    │   ├── main-pane.tsx           # Terminal + header
+    │   └── status-bar.tsx          # Bottom status indicators
+    ├── components/
+    │   ├── terminal-view.tsx       # xterm grid renderer
+    │   ├── agent-tab.tsx           # Session tab
+    │   ├── new-session-dialog.tsx  # Create session dialog
+    │   ├── adopt-agent-dialog.tsx  # Adopt agent dialog
+    │   ├── standalone-agents.tsx   # Detected agents list
+    │   ├── settings-panel.tsx      # Settings UI
+    │   ├── agents-settings-content.tsx  # Agent install/update UI
+    │   ├── help-modal.tsx          # Keybindings reference
+    │   └── path-input.tsx          # Directory autocomplete
+    └── hooks/
+        ├── use-keybindings.ts      # Keyboard shortcut handler
+        ├── use-raw-input.ts        # Raw stdin forwarding
+        ├── use-terminal-size.ts    # Terminal dimensions
+        ├── use-spinner.ts          # Cycling animation hook
+        ├── use-git-info.ts         # Git branch/status polling
+        └── use-portal-connected.ts # Portal connection state`} />
+
+  <h2 id="how-it-works">How It Works</h2>
+  <ol>
+    <li><strong>CLI entry</strong> (<code>cli.tsx</code>) sets up the alternate screen buffer, mouse tracking, and renders the Ink app. The <code>portal</code> subcommand launches the interactive picker or connects to a session directly.</li>
+    <li><strong>App</strong> (<code>app.tsx</code>) initializes stores, starts connectors and the portal server, and renders the shell layout.</li>
+    <li><strong>Sessions</strong> are managed by <code>AppStore</code> — each session owns a <code>PtyManager</code> (node-pty), <code>XtermBridge</code> (headless terminal emulation), and <code>ScreenBuffer</code> (FPS-limited rendering).</li>
+    <li><strong>Keyboard input</strong> is captured by <code>useRawInput</code> and forwarded to the active session's PTY, except when intercepted by <code>useKeybindings</code> for shortcuts.</li>
+    <li><strong>Portal server</strong> (<code>portal-server.ts</code>) listens on a Unix socket (<code>/tmp/agent-manager/portal.sock</code>). Portal clients subscribe to sessions, receive throttled screen frames, and forward keystrokes — providing full remote access without disrupting the main UI.</li>
+    <li><strong>Hooks</strong> are installed as Claude Code lifecycle hooks that send events to the manager's IPC server, which routes them through <code>ConnectorManager</code> to the configured messaging adapters.</li>
+    <li><strong>State</strong> flows through Zustand stores with selector-based subscriptions for efficient re-renders.</li>
+  </ol>
+
+  <h2 id="key-components">Key Components</h2>
+
+  <h3 id="agents">Agents</h3>
+  <p>
+    The agent layer uses a driver abstraction. <code>BaseDriver</code> defines the interface that all agent drivers
+    implement: <code>spawn()</code>, <code>resume()</code>, <code>continue()</code>, and <code>detectStatus()</code>.
+    <code>AgentSession</code> wraps a driver instance with lifecycle management and event emission.
+    <code>AgentDetector</code> scans for standalone processes that can be adopted.
+  </p>
+
+  <h3 id="terminal">Terminal</h3>
+  <p>
+    Each session gets a <code>PtyManager</code> (node-pty pseudoterminal), <code>XtermBridge</code>
+    (xterm-headless for ANSI parsing and terminal state), and <code>ScreenBuffer</code> (FPS-limited
+    rendering at 30fps default). The screen buffer converts xterm cell data to styled characters
+    for Ink rendering.
+  </p>
+
+  <h3 id="connectors">Connectors</h3>
+  <p>
+    <code>ConnectorManager</code> routes events to all enabled adapters. Each adapter implements
+    <code>ConnectorInterface</code> with methods for permission requests, tool results, and notifications.
+    Dependencies are optional — only load what's installed.
+  </p>
+
+  <h3 id="hooks">Hooks</h3>
+  <p>
+    <code>HookServer</code> runs a Unix socket IPC server. Claude Code hooks send events as JSON messages.
+    Permission requests block until a connector reply arrives or timeout.
+  </p>
+
+  <h3 id="portal">Portal</h3>
+  <p>
+    <code>PortalServer</code> listens on another Unix socket. Clients can list sessions, subscribe for
+    screen frames, forward input, and create new sessions. Frames are throttled to avoid flooding.
+  </p>
+
+  <h3 id="store">Store</h3>
+  <p>
+    State is managed with Zustand. <code>AppStore</code> holds session state, <code>SettingsStore</code>
+    persists config, <code>ConnectorStore</code> manages connector lifecycles, and <code>PortalStore</code>
+    tracks portal connections. Selector-based subscriptions minimize re-renders.
+  </p>
+
+  <h3 id="ui">UI</h3>
+  <p>
+    Built with Ink 5 (React for the terminal). The shell layout is responsive:
+    wide terminals get a sidebar with session list, narrow terminals get a compact tab bar.
+    Components use React hooks for keybindings, raw input, terminal size tracking, and animations.
+  </p>
+</DocsLayout>

@@ -1,0 +1,97 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import CodeBlock from '../../components/docs/CodeBlock.astro';
+import Callout from '../../components/docs/Callout.astro';
+
+const headings = [
+  { depth: 2, slug: 'overview', text: 'Overview' },
+  { depth: 2, slug: 'event-types', text: 'Event Types' },
+  { depth: 2, slug: 'protocol', text: 'Protocol' },
+  { depth: 2, slug: 'message-types', text: 'Message Types' },
+  { depth: 2, slug: 'hook-server', text: 'Hook Server' },
+  { depth: 2, slug: 'client-function', text: 'Client Function' },
+  { depth: 2, slug: 'installation', text: 'Installation' },
+];
+---
+<DocsLayout title="Hook System" headings={headings}>
+  <h2 id="overview">Overview</h2>
+  <Callout type="info">
+    <p>
+      The hook system bridges Claude Code's lifecycle events to Agent Manager via Unix socket IPC
+      at <code>/tmp/agent-manager/hooks.sock</code>, using newline-delimited JSON.
+    </p>
+  </Callout>
+
+  <h2 id="event-types">Event Types</h2>
+  <ul>
+    <li><strong>PermissionRequest</strong> — Tool execution approval routed through connectors</li>
+    <li><strong>PostToolUse</strong> — Tool results forwarded to messaging platforms</li>
+    <li><strong>Notification</strong> — Agent responses and status changes relayed to connectors</li>
+    <li><strong>Stop</strong> — Session stop events</li>
+  </ul>
+
+  <h2 id="protocol">Protocol</h2>
+  <p>
+    Messages are newline-delimited JSON sent over a Unix domain socket. Each connection handles
+    a single request-response cycle.
+  </p>
+
+  <h2 id="message-types">Message Types</h2>
+  <CodeBlock lang="ts" code={`// Hook → Manager
+interface HookMessage {
+  type: "permission_request" | "post_tool_use" | "stop" | "notification";
+  payload: Record<string, unknown>;
+}
+
+// Manager → Hook
+interface HookResponse {
+  type: "permission_reply" | "ack";
+  payload: Record<string, unknown>;
+}`} />
+  <p>
+    For <code>permission_request</code>, the manager waits for a response from the configured connector
+    (e.g., a Slack reply) and sends back a <code>permission_reply</code>. All other message types
+    receive an immediate <code>ack</code>.
+  </p>
+
+  <h2 id="hook-server">Hook Server</h2>
+  <p>
+    The <code>HookServer</code> class runs inside the agent-manager process. It creates a Unix socket
+    at <code>/tmp/agent-manager/hooks.sock</code> and listens for incoming connections.
+  </p>
+  <CodeBlock lang="ts" code={`class HookServer extends EventEmitter {
+  get socketPath(): string;
+  async start(): Promise<void>;
+  async stop(): Promise<void>;
+
+  // Events emitted:
+  // "permission_request" — (payload, respond) => void
+  // "post_tool_use"      — (payload) => void
+  // "stop"               — (payload) => void
+  // "notification"       — (payload) => void
+}`} />
+
+  <h2 id="client-function">Client Function</h2>
+  <p>
+    Hooks use <code>sendToHookServer()</code> to communicate with the manager:
+  </p>
+  <CodeBlock lang="ts" code={`async function sendToHookServer(
+  msg: HookMessage,
+  timeoutMs?: number  // default: 10000
+): Promise<HookResponse | null>;
+
+// Returns null if the manager isn't running`} />
+
+  <h2 id="installation">Installation</h2>
+  <p>Install hooks with:</p>
+  <CodeBlock code="npm run install-hooks" />
+  <Callout type="info">
+    <p>
+      This registers three hooks in <code>~/.claude/settings.json</code>:
+      a permission request handler, a post-tool-use handler, and a notification handler.
+      Each hook sends events through IPC to the manager, which routes them to connectors.
+    </p>
+  </Callout>
+  <p>To remove hooks:</p>
+  <CodeBlock code="npm run uninstall-hooks" />
+</DocsLayout>

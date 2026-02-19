@@ -1,0 +1,80 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import Callout from '../../../components/docs/Callout.astro';
+
+const headings = [
+  { depth: 2, slug: 'overview', text: 'Overview' },
+  { depth: 2, slug: 'comparison', text: 'Comparison' },
+  { depth: 2, slug: 'how-it-works', text: 'How It Works' },
+  { depth: 2, slug: 'optional-dependencies', text: 'Optional Dependencies' },
+];
+---
+<DocsLayout title="Connectors" headings={headings}>
+  <h2 id="overview">Overview</h2>
+  <Callout type="info">
+    <p>
+      Messaging connectors forward permission requests, tool results, and session notifications
+      to your preferred messaging platform. Monitor and interact with agents from your phone or desktop.
+    </p>
+  </Callout>
+  <p>
+    All connector dependencies are optional — only install what you need. Press <code>Ctrl+S</code> in the app
+    to open the settings panel and configure connectors.
+  </p>
+
+  <h2 id="comparison">Comparison</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Platform</th>
+        <th>Permission Requests</th>
+        <th>Tool Results</th>
+        <th>Notifications</th>
+        <th>Threading</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Slack</strong></td>
+        <td>Text replies (allow/deny)</td>
+        <td>Per-session threads</td>
+        <td>Session start/stop</td>
+        <td>Per-session threads</td>
+      </tr>
+      <tr>
+        <td><strong>Discord</strong></td>
+        <td>Thread replies</td>
+        <td>Formatted output</td>
+        <td>Status messages</td>
+        <td>Auto-created threads</td>
+      </tr>
+      <tr>
+        <td><strong>Telegram</strong></td>
+        <td>Inline keyboard buttons</td>
+        <td>Formatted output</td>
+        <td>Status messages</td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="how-it-works">How It Works</h2>
+  <ol>
+    <li>Claude Code lifecycle hooks send events to the manager's IPC server</li>
+    <li>The <code>ConnectorManager</code> routes events to all enabled connectors</li>
+    <li>Each connector formats and sends the message to its platform</li>
+    <li>User replies (allow/deny, prompts) are forwarded back through the same path</li>
+  </ol>
+
+  <h2 id="optional-dependencies">Optional Dependencies</h2>
+  <Callout type="tip">
+    <p>
+      Connector packages are optional peer dependencies. Install only what you need.
+    </p>
+  </Callout>
+  <ul>
+    <li><strong>Slack:</strong> <code>@slack/web-api</code>, <code>@slack/socket-mode</code> (optional, for real-time events)</li>
+    <li><strong>Discord:</strong> <code>discord.js</code></li>
+    <li><strong>Telegram:</strong> <code>telegraf</code></li>
+  </ul>
+</DocsLayout>

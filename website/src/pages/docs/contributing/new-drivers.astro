@@ -1,0 +1,93 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import CodeBlock from '../../../components/docs/CodeBlock.astro';
+import Callout from '../../../components/docs/Callout.astro';
+import StepList from '../../../components/docs/StepList.astro';
+import Step from '../../../components/docs/Step.astro';
+
+const headings = [
+  { depth: 2, slug: 'overview', text: 'Overview' },
+  { depth: 2, slug: 'steps', text: 'Steps' },
+  { depth: 2, slug: 'driver-interface', text: 'Driver Interface' },
+  { depth: 2, slug: 'example', text: 'Example' },
+];
+---
+<DocsLayout title="Adding Drivers" headings={headings}>
+  <h2 id="overview">Overview</h2>
+  <Callout type="info">
+    <p>
+      Agent Manager uses a driver abstraction for agent support. Each driver knows how to spawn,
+      resume, and detect the status of a specific AI CLI agent.
+    </p>
+  </Callout>
+
+  <h2 id="steps">Steps</h2>
+  <StepList>
+    <Step number={1} title="Create the driver file">
+      <p>Create a new driver in <code>src/agents/drivers/</code> extending <code>BaseDriver</code>.</p>
+    </Step>
+    <Step number={2} title="Implement required methods">
+      <p>Implement: <code>spawn()</code>, <code>resume()</code>, <code>continue()</code>, <code>detectStatus()</code>.</p>
+    </Step>
+    <Step number={3} title="Register the driver">
+      <p>Register it in <code>src/agents/agent-registry.ts</code>.</p>
+    </Step>
+  </StepList>
+
+  <h2 id="driver-interface">Driver Interface</h2>
+  <p>Your driver must extend <code>BaseDriver</code> and implement these methods:</p>
+  <CodeBlock lang="ts" code={`abstract class BaseDriver {
+  abstract readonly name: string;
+  abstract readonly displayName: string;
+  abstract readonly command: string;
+
+  // Spawn a new agent session in the given directory
+  abstract spawn(cwd: string): string[];
+
+  // Resume an existing session by ID
+  abstract resume(sessionId: string, cwd: string): string[];
+
+  // Continue the last session in the given directory
+  abstract continue(cwd: string): string[];
+
+  // Detect agent status from terminal output
+  abstract detectStatus(output: string): "idle" | "running" | "waiting" | "unknown";
+}`} />
+
+  <h2 id="example">Example</h2>
+  <p>Here's a simplified example of what a new driver looks like:</p>
+  <CodeBlock lang="ts" filename="src/agents/drivers/my-agent-driver.ts" code={`import { BaseDriver } from "./base-driver.js";
+
+export class MyAgentDriver extends BaseDriver {
+  readonly name = "my-agent";
+  readonly displayName = "My Agent";
+  readonly command = "my-agent";
+
+  spawn(cwd: string): string[] {
+    return [this.command, "--cwd", cwd];
+  }
+
+  resume(sessionId: string, cwd: string): string[] {
+    return [this.command, "--resume", sessionId, "--cwd", cwd];
+  }
+
+  continue(cwd: string): string[] {
+    return [this.command, "--continue", "--cwd", cwd];
+  }
+
+  detectStatus(output: string) {
+    if (output.includes("waiting for input")) return "waiting" as const;
+    if (output.includes("running")) return "running" as const;
+    return "idle" as const;
+  }
+}`} />
+  <p>Then register it in the agent registry:</p>
+  <CodeBlock lang="ts" filename="src/agents/agent-registry.ts" code={`import { MyAgentDriver } from "./drivers/my-agent-driver.js";
+
+// Add to the drivers array
+const drivers = [
+  new ClaudeDriver(),
+  new GeminiDriver(),
+  new MyAgentDriver(),  // ← Add here
+];`} />
+</DocsLayout>

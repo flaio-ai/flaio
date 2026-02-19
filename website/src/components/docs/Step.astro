@@ -1,0 +1,21 @@
+---
+interface Props {
+  number: number;
+  title: string;
+}
+
+const { number, title } = Astro.props;
+---
+<div class="step-item relative pb-8">
+  <!-- Connecting line -->
+  <div class="step-line absolute left-[-25px] top-8 bottom-0 w-px bg-border-default"></div>
+  <!-- Number badge -->
+  <div class="absolute left-[-34px] top-0 w-[18px] h-[18px] rounded-full bg-brand-accent text-page text-[11px] font-bold flex items-center justify-center leading-none">
+    {number}
+  </div>
+  <!-- Content -->
+  <h3 class="text-base font-semibold text-text-primary mt-[-2px] mb-3">{title}</h3>
+  <div class="step-content text-sm [&>p]:mb-3 [&>p]:text-text-secondary [&>ul]:text-text-secondary [&>ol]:text-text-secondary">
+    <slot />
+  </div>
+</div>

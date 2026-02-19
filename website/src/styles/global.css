@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-page text-text-primary font-sans antialiased;
+  }
+
+  ::selection {
+    @apply bg-brand-accent/30 text-text-primary;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-page;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border-default rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-text-secondary;
+  }
+
+  /* Code block base */
+  pre {
+    @apply bg-terminal rounded-lg p-4 overflow-x-auto font-mono text-sm;
+  }
+
+  code {
+    @apply font-mono;
+  }
+
+  /* Inline code */
+  :not(pre) > code {
+    @apply bg-card/80 border border-border-default px-1.5 py-0.5 rounded text-sm text-brand-accent;
+  }
+}
+
+@layer components {
+  .fade-in {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+
+  .fade-in.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Terminal window chrome */
+.terminal-chrome {
+  @apply bg-terminal rounded-xl overflow-hidden border border-border-default;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5);
+}
+
+.terminal-titlebar {
+  @apply flex items-center gap-2 px-4 py-3 bg-[#12131d] border-b border-border-default;
+}
+
+.terminal-dot {
+  @apply w-3 h-3 rounded-full;
+}
+
+.terminal-dot-red { @apply bg-[#ff5f57]; }
+.terminal-dot-yellow { @apply bg-[#febc2e]; }
+.terminal-dot-green { @apply bg-[#28c840]; }
+
+/* Prose table improvements */
+.prose table {
+  @apply rounded-lg overflow-hidden border border-border-default;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.prose thead th {
+  @apply bg-card/80 border-b border-border-default text-text-primary font-semibold text-xs uppercase tracking-wider;
+}
+
+.prose tbody tr:nth-child(even) {
+  @apply bg-card/30;
+}
+
+.prose tbody tr {
+  @apply transition-colors;
+}
+
+.prose tbody tr:hover {
+  @apply bg-card/50;
+}
+
+.prose tbody td {
+  @apply border-b border-border-default/50;
+}
+
+.prose tbody tr:last-child td {
+  @apply border-b-0;
+}
+
+/* Prose heading anchor links */
+.prose h2,
+.prose h3 {
+  position: relative;
+}
+
+.prose h2 .heading-anchor,
+.prose h3 .heading-anchor {
+  @apply absolute -left-6 top-1/2 -translate-y-1/2 text-text-secondary/0 hover:text-text-secondary transition-colors no-underline;
+}
+
+.prose h2:hover .heading-anchor,
+.prose h3:hover .heading-anchor {
+  @apply text-text-secondary/60;
+}
+
+/* Prose list improvements */
+.prose ul > li::marker {
+  @apply text-brand-accent/50;
+}
+
+.prose ol > li::marker {
+  @apply text-brand-accent/70 font-medium;
+}
+
+/* Prose link styling */
+.prose a:not(.heading-anchor) {
+  @apply underline underline-offset-2 decoration-brand-accent/30 hover:decoration-brand-accent transition-colors;
+}
+
+/* Prose blockquote — note style */
+.prose blockquote {
+  @apply relative;
+}
+
+.prose blockquote p strong:first-child {
+  @apply text-brand-accent;
+}

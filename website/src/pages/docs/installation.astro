@@ -1,0 +1,65 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import CodeBlock from '../../components/docs/CodeBlock.astro';
+import Callout from '../../components/docs/Callout.astro';
+import StepList from '../../components/docs/StepList.astro';
+import Step from '../../components/docs/Step.astro';
+
+const headings = [
+  { depth: 2, slug: 'prerequisites', text: 'Prerequisites' },
+  { depth: 2, slug: 'install-methods', text: 'Install Methods' },
+  { depth: 2, slug: 'development', text: 'Development' },
+  { depth: 2, slug: 'hook-installation', text: 'Hook Installation' },
+];
+---
+<DocsLayout title="Installation" headings={headings}>
+  <h2 id="prerequisites">Prerequisites</h2>
+  <Callout type="warning">
+    <p>
+      You need <strong>Node.js &gt;= 18</strong> and at least one supported AI CLI agent installed before proceeding.
+    </p>
+  </Callout>
+  <ul>
+    <li><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a> — <code>npm install -g @anthropic-ai/claude-code</code></li>
+    <li><a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a> — <code>npm install -g @google/gemini-cli</code></li>
+  </ul>
+
+  <h2 id="install-methods">Install Methods</h2>
+
+  <h3>From npm</h3>
+  <StepList>
+    <Step number={1} title="Install globally">
+      <CodeBlock code="npm install -g agent-manager" />
+    </Step>
+    <Step number={2} title="Run the manager">
+      <CodeBlock code="agent-manager" />
+    </Step>
+  </StepList>
+
+  <h3>From source</h3>
+  <StepList>
+    <Step number={1} title="Clone and build">
+      <CodeBlock code={`git clone https://github.com/georgelivas/agent-manager.git
+cd agent-manager
+npm install
+npm run build`} />
+    </Step>
+    <Step number={2} title="Start the manager">
+      <CodeBlock code="npm start" />
+    </Step>
+  </StepList>
+
+  <h2 id="development">Development</h2>
+  <CodeBlock code={`# Run with live reload
+npm run dev`} />
+
+  <h2 id="hook-installation">Hook Installation</h2>
+  <p>To enable messaging connector integration with Claude Code, install the hooks:</p>
+  <CodeBlock code="npm run install-hooks" />
+  <Callout type="info">
+    <p>
+      This registers three hooks in <code>~/.claude/settings.json</code> that route Claude Code events
+      through the manager's IPC server. To remove them, run <code>npm run uninstall-hooks</code>.
+    </p>
+  </Callout>
+</DocsLayout>

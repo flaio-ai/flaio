@@ -1,0 +1,171 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import CodeBlock from '../../components/docs/CodeBlock.astro';
+import Callout from '../../components/docs/Callout.astro';
+
+const headings = [
+  { depth: 2, slug: 'config-file', text: 'Config File' },
+  { depth: 2, slug: 'full-schema', text: 'Full Schema' },
+  { depth: 2, slug: 'ui-settings', text: 'UI Settings' },
+  { depth: 2, slug: 'connector-settings', text: 'Connector Settings' },
+  { depth: 3, slug: 'slack', text: 'Slack' },
+  { depth: 3, slug: 'discord', text: 'Discord' },
+  { depth: 3, slug: 'telegram', text: 'Telegram' },
+  { depth: 2, slug: 'agent-settings', text: 'Agent Settings' },
+  { depth: 2, slug: 'zod-schema', text: 'Zod Schema' },
+];
+---
+<DocsLayout title="Configuration" headings={headings}>
+  <h2 id="config-file">Config File</h2>
+  <Callout type="info">
+    <p>
+      Settings are persisted to <code>~/.config/agent-manager/settings.json</code> and validated with Zod on load.
+      You can edit the file directly or use the in-app settings panel (<code>Ctrl+S</code>).
+    </p>
+  </Callout>
+
+  <h2 id="full-schema">Full Schema</h2>
+  <CodeBlock lang="jsonc" code={`{
+  "ui": {
+    "sidebarWidth": 24,         // Sidebar character width
+    "narrowBreakpoint": 100,    // Column threshold for responsive layout
+    "targetFps": 30             // Screen buffer refresh rate
+  },
+  "connectors": {
+    "slack": {
+      "enabled": false,
+      "botToken": "",           // xoxb-... token
+      "appToken": "",           // xapp-... token (optional, for Socket Mode)
+      "channelId": "",
+      "pollInterval": 2000,     // Thread polling interval (ms)
+      "timeout": 300000         // Permission request timeout (ms)
+    },
+    "discord": {
+      "enabled": false,
+      "botToken": "",
+      "channelId": "",
+      "timeout": 300000
+    },
+    "telegram": {
+      "enabled": false,
+      "botToken": "",
+      "chatId": "",
+      "timeout": 300000
+    }
+  },
+  "agents": {
+    "statusCheckInterval": 1000,  // Agent status polling (ms)
+    "detectorInterval": 5000      // Standalone agent scan interval (ms)
+  }
+}`} />
+
+  <h2 id="ui-settings">UI Settings</h2>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>sidebarWidth</code></td><td>number</td><td>24</td><td>Character width of the sidebar panel</td></tr>
+      <tr><td><code>narrowBreakpoint</code></td><td>number</td><td>100</td><td>Column count below which the layout switches to compact mode</td></tr>
+      <tr><td><code>targetFps</code></td><td>number</td><td>30</td><td>Screen buffer refresh rate limit</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="connector-settings">Connector Settings</h2>
+
+  <h3 id="slack">Slack</h3>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td>boolean</td><td>false</td><td>Enable the Slack connector</td></tr>
+      <tr><td><code>botToken</code></td><td>string</td><td>—</td><td>Bot User OAuth Token (<code>xoxb-...</code>)</td></tr>
+      <tr><td><code>appToken</code></td><td>string</td><td>—</td><td>App-Level Token for Socket Mode (<code>xapp-...</code>)</td></tr>
+      <tr><td><code>channelId</code></td><td>string</td><td>—</td><td>Channel to post messages to</td></tr>
+      <tr><td><code>pollInterval</code></td><td>number</td><td>2000</td><td>Thread polling interval in ms (fallback when no Socket Mode)</td></tr>
+      <tr><td><code>timeout</code></td><td>number</td><td>300000</td><td>Permission request timeout in ms</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="discord">Discord</h3>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td>boolean</td><td>false</td><td>Enable the Discord connector</td></tr>
+      <tr><td><code>botToken</code></td><td>string</td><td>—</td><td>Discord bot token</td></tr>
+      <tr><td><code>channelId</code></td><td>string</td><td>—</td><td>Channel ID to post messages to</td></tr>
+      <tr><td><code>timeout</code></td><td>number</td><td>300000</td><td>Permission request timeout in ms</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="telegram">Telegram</h3>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>enabled</code></td><td>boolean</td><td>false</td><td>Enable the Telegram connector</td></tr>
+      <tr><td><code>botToken</code></td><td>string</td><td>—</td><td>Bot token from BotFather</td></tr>
+      <tr><td><code>chatId</code></td><td>string | number</td><td>—</td><td>Your personal or group chat ID</td></tr>
+      <tr><td><code>timeout</code></td><td>number</td><td>300000</td><td>Permission request timeout in ms</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="agent-settings">Agent Settings</h2>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>statusCheckInterval</code></td><td>number</td><td>1000</td><td>Agent status polling interval in ms</td></tr>
+      <tr><td><code>detectorInterval</code></td><td>number</td><td>5000</td><td>Standalone agent scan interval in ms</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="zod-schema">Zod Schema</h2>
+  <p>The config is validated at load time using Zod. Here are the schema definitions from <code>src/config/config.ts</code>:</p>
+  <CodeBlock lang="ts" code={`const SlackConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  botToken: z.string().optional(),
+  appToken: z.string().optional(),
+  channelId: z.string().optional(),
+  pollInterval: z.number().default(2000),
+  timeout: z.number().default(300000),
+});
+
+const DiscordConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  botToken: z.string().optional(),
+  channelId: z.string().optional(),
+  timeout: z.number().default(300000),
+});
+
+const TelegramConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  botToken: z.string().optional(),
+  chatId: z.union([z.string(), z.number()]).optional(),
+  timeout: z.number().default(300000),
+});
+
+const UiConfigSchema = z.object({
+  sidebarWidth: z.number().default(24),
+  narrowBreakpoint: z.number().default(100),
+  targetFps: z.number().default(30),
+});
+
+const AppConfigSchema = z.object({
+  ui: UiConfigSchema.default({}),
+  connectors: z.object({
+    slack: SlackConfigSchema.default({}),
+    discord: DiscordConfigSchema.default({}),
+    telegram: TelegramConfigSchema.default({}),
+  }).default({}),
+  agents: z.object({
+    statusCheckInterval: z.number().default(1000),
+    detectorInterval: z.number().default(5000),
+  }).default({}),
+});`} />
+</DocsLayout>
