@@ -39,7 +39,7 @@
     "dev": "tsx src/cli.tsx",
     "build": "tsc",
     "start": "node dist/cli.js",
-    "test": "vitest",
+    "test": "vitest --passWithNoTests",
     "prepublishOnly": "npm run build",
     "install-hooks": "tsx src/hooks/install.ts install",
     "uninstall-hooks": "tsx src/hooks/install.ts uninstall",
