@@ -258,18 +258,31 @@ function wirePromptBridge(): void {
 }
 
 /**
- * Extract only the agent's latest response from screen content.
- * Finds the last user prompt (❯ with text), takes lines after it,
- * and strips terminal chrome / hook output.
+ * Extract only the agent's latest response.
+ * First tries the viewport content (from the store, already processed by xterm).
+ * Falls back to the full scrollback buffer when the prompt scrolled off-screen.
  */
-function extractLatestResponse(content: ScreenContent | undefined): string | null {
-  if (!content || content.length === 0) return null;
+function extractLatestResponse(sessionId: string, content: ScreenContent | undefined): string | null {
+  // Primary: use viewport content from the store (reliable — already flushed by xterm)
+  if (content && content.length > 0) {
+    const viewportLines = content.map((line) =>
+      line.map((span) => span.text).join("").trimEnd(),
+    );
+    const result = extractFromLines(viewportLines);
+    if (result) return result;
+  }
 
-  // Flatten spans to plain text lines
-  const allLines = content.map((line) =>
-    line.map((span) => span.text).join("").trimEnd(),
-  );
+  // Fallback: read scrollback for long responses where prompt scrolled off viewport
+  const session = getSessionInstance(sessionId);
+  if (!session) return null;
+  return extractFromLines(session.getPlainText(500));
+}
 
+/**
+ * Find the last user prompt (❯ with text), take lines after it,
+ * and strip terminal chrome / hook output.
+ */
+function extractFromLines(allLines: string[]): string | null {
   // Find the last user prompt line: starts with ❯ followed by actual text
   let promptIdx = -1;
   for (let i = allLines.length - 1; i >= 0; i--) {
@@ -356,7 +369,7 @@ function wireSessionNotifications(): void {
             .catch(() => {});
         } else if (s.status === "waiting_input" || s.status === "exited") {
           // Agent finished responding — extract only the latest response
-          const response = extractLatestResponse(s.content);
+          const response = extractLatestResponse(s.id, s.content);
           if (response && response !== lastPostedResponse.get(s.id)) {
             lastPostedResponse.set(s.id, response);
             connectorManager

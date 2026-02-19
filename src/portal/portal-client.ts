@@ -5,6 +5,7 @@ import {
   type PortalClientMsg,
   type PortalServerMsg,
   type PortalSessionInfo,
+  type PortalDriverInfo,
 } from "./shared.js";
 import { screenContentToAnsi } from "./ansi-renderer.js";
 
@@ -62,6 +63,117 @@ export async function listSessions(): Promise<PortalSessionInfo[] | null> {
 }
 
 // ---------------------------------------------------------------------------
+// List drivers
+// ---------------------------------------------------------------------------
+
+export async function listDrivers(): Promise<PortalDriverInfo[] | null> {
+  if (!fs.existsSync(PORTAL_SOCKET_PATH)) return null;
+
+  return new Promise((resolve) => {
+    const conn = net.createConnection(PORTAL_SOCKET_PATH);
+    let buffer = "";
+
+    const timeout = setTimeout(() => {
+      conn.destroy();
+      resolve(null);
+    }, 5000);
+
+    conn.on("connect", () => {
+      const msg: PortalClientMsg = { type: "portal_list_drivers" };
+      conn.write(JSON.stringify(msg) + "\n");
+    });
+
+    conn.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg: PortalServerMsg = JSON.parse(line);
+          if (msg.type === "portal_drivers") {
+            clearTimeout(timeout);
+            conn.destroy();
+            resolve(msg.drivers);
+            return;
+          }
+        } catch {
+          // Continue
+        }
+      }
+    });
+
+    conn.on("error", () => {
+      clearTimeout(timeout);
+      resolve(null);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Create a session
+// ---------------------------------------------------------------------------
+
+export async function createSession(
+  driverName: string,
+  cwd: string,
+): Promise<string | null> {
+  if (!fs.existsSync(PORTAL_SOCKET_PATH)) return null;
+
+  return new Promise((resolve) => {
+    const conn = net.createConnection(PORTAL_SOCKET_PATH);
+    let buffer = "";
+
+    const timeout = setTimeout(() => {
+      conn.destroy();
+      resolve(null);
+    }, 5000);
+
+    conn.on("connect", () => {
+      const msg: PortalClientMsg = {
+        type: "portal_create_session",
+        driverName,
+        cwd,
+      };
+      conn.write(JSON.stringify(msg) + "\n");
+    });
+
+    conn.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg: PortalServerMsg = JSON.parse(line);
+          if (msg.type === "portal_session_created") {
+            clearTimeout(timeout);
+            conn.destroy();
+            resolve(msg.sessionId);
+            return;
+          }
+          if (msg.type === "portal_error") {
+            clearTimeout(timeout);
+            conn.destroy();
+            resolve(null);
+            return;
+          }
+        } catch {
+          // Continue
+        }
+      }
+    });
+
+    conn.on("error", () => {
+      clearTimeout(timeout);
+      resolve(null);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Stream a session
 // ---------------------------------------------------------------------------
 
@@ -88,10 +200,15 @@ export async function streamSession(sessionId: string): Promise<void> {
 
     const enterAltScreen = () => {
       process.stdout.write("\x1b[?1049h"); // alternate screen
-      process.stdout.write("\x1b[?25h");   // show cursor
+      process.stdout.write("\x1b[?25l");   // hide hardware cursor (content renders its own)
+      process.stdout.write("\x1b[?1000h"); // enable mouse reporting (for scroll capture)
+      process.stdout.write("\x1b[?1006h"); // SGR extended mouse mode
     };
 
     const exitAltScreen = () => {
+      process.stdout.write("\x1b[?1006l"); // disable SGR mouse
+      process.stdout.write("\x1b[?1000l"); // disable mouse reporting
+      process.stdout.write("\x1b[?25h");   // restore hardware cursor
       process.stdout.write("\x1b[?1049l"); // restore main screen
     };
 
@@ -112,8 +229,16 @@ export async function streamSession(sessionId: string): Promise<void> {
 
     // -- Stdin forwarding --
 
+    const SCROLL_LINES = 3;
+
+    const sendScroll = (lines: number) => {
+      const msg: PortalClientMsg = { type: "portal_scroll", lines };
+      conn.write(JSON.stringify(msg) + "\n");
+    };
+
     const onStdin = (chunk: Buffer) => {
       const data = chunk.toString();
+      const byte = chunk[0];
 
       // Ctrl+C (0x03) → graceful disconnect
       if (data === "\x03") {
@@ -121,6 +246,43 @@ export async function streamSession(sessionId: string): Promise<void> {
         conn.write(JSON.stringify(msg) + "\n");
         exit(0);
         return;
+      }
+
+      // SGR mouse events — intercept scroll wheel, consume all others
+      if (data.includes("\x1b[<")) {
+        if (data.includes("\x1b[<64;")) {
+          sendScroll(-SCROLL_LINES);
+        } else if (data.includes("\x1b[<65;")) {
+          sendScroll(SCROLL_LINES);
+        }
+        // Drop all other mouse events (clicks, drags — coordinates are local)
+        return;
+      }
+
+      // Single-byte scroll shortcuts
+      if (chunk.length === 1 && byte !== undefined) {
+        // Ctrl+U = scroll up
+        if (byte === 0x15) {
+          sendScroll(-SCROLL_LINES);
+          return;
+        }
+        // Ctrl+D = scroll down
+        if (byte === 0x04) {
+          sendScroll(SCROLL_LINES);
+          return;
+        }
+      }
+
+      // Multi-byte escape sequences — PageUp/Down, Shift+Up/Down
+      if (data.startsWith("\x1b")) {
+        if (data === "\x1b[5~" || data === "\x1b[1;2A") {
+          sendScroll(-SCROLL_LINES);
+          return;
+        }
+        if (data === "\x1b[6~" || data === "\x1b[1;2B") {
+          sendScroll(SCROLL_LINES);
+          return;
+        }
       }
 
       // Forward everything else to the session
@@ -133,6 +295,10 @@ export async function streamSession(sessionId: string): Promise<void> {
     conn.on("connect", () => {
       connected = true;
       enterAltScreen();
+
+      // Clear any residual stdin listeners (e.g. from Ink picker) to prevent
+      // duplicate input forwarding
+      process.stdin.removeAllListeners("data");
 
       // Enter raw mode so we get individual keystrokes
       if (process.stdin.isTTY) {

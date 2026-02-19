@@ -404,7 +404,10 @@ export class SlackAdapter implements IConnector {
 
         let maxTs = lastSeen;
         for (const msg of result.messages) {
-          if (msg.ts <= lastSeen) continue;
+          // Re-read from map each iteration — Socket Mode may have updated it
+          // between our API call and now, preventing duplicate delivery
+          const currentLastSeen = this.threadLastSeen.get(threadTs) ?? threadTs;
+          if (msg.ts <= currentLastSeen) continue;
           if (msg.ts > maxTs) maxTs = msg.ts;
 
           if (msg.bot_id || msg.subtype === "bot_message") continue;

@@ -173,6 +173,10 @@ export class AgentSession extends EventEmitter {
     return this.screenBuffer.getContent();
   }
 
+  getPlainText(maxLines?: number): string[] {
+    return this.xterm.extractPlainText(maxLines);
+  }
+
   getCursorPos(): { x: number; y: number } {
     return { x: this.xterm.cursorX, y: this.xterm.cursorY };
   }

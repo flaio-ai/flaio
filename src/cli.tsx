@@ -4,6 +4,7 @@ import { render } from "ink";
 import { Command } from "commander";
 import { App } from "./app.js";
 import { listSessions, streamSession } from "./portal/portal-client.js";
+import { PortalPicker } from "./portal/portal-picker.js";
 
 const program = new Command();
 
@@ -53,8 +54,8 @@ program
   .description("Connect to a running agent-manager session from another terminal")
   .option("-l, --list", "List available sessions")
   .action(async (sessionId: string | undefined, opts: { list?: boolean }) => {
-    // Explicit --list flag or no sessionId → list sessions
-    if (opts.list || !sessionId) {
+    // Explicit --list flag → static table
+    if (opts.list) {
       const sessions = await listSessions();
       if (sessions === null) {
         process.stdout.write("agent-manager is not running.\n");
@@ -77,8 +78,36 @@ program
       process.exit(0);
     }
 
-    // Stream a specific session
-    await streamSession(sessionId);
+    // Explicit session ID → stream directly
+    if (sessionId) {
+      await streamSession(sessionId);
+      return;
+    }
+
+    // No session ID, no --list → interactive picker
+    const sessions = await listSessions();
+    if (sessions === null) {
+      process.stdout.write("agent-manager is not running.\n");
+      process.exit(1);
+    }
+
+    const cwd = process.cwd();
+    let selectedId: string | null = null;
+    const instance = render(
+      <PortalPicker
+        cwd={cwd}
+        onSelect={(id: string) => {
+          selectedId = id;
+          instance.unmount();
+        }}
+      />,
+    );
+
+    await instance.waitUntilExit();
+
+    if (selectedId) {
+      await streamSession(selectedId);
+    }
   });
 
 program.parse(process.argv);

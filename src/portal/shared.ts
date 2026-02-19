@@ -17,6 +17,12 @@ export interface PortalSessionInfo {
   status: string;
 }
 
+export interface PortalDriverInfo {
+  name: string;
+  displayName: string;
+  installed: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Client → Server messages
 // ---------------------------------------------------------------------------
@@ -39,11 +45,29 @@ export interface PortalUnsubscribeMsg {
   type: "portal_unsubscribe";
 }
 
+export interface PortalListDriversMsg {
+  type: "portal_list_drivers";
+}
+
+export interface PortalCreateSessionMsg {
+  type: "portal_create_session";
+  driverName: string;
+  cwd: string;
+}
+
+export interface PortalScrollMsg {
+  type: "portal_scroll";
+  lines: number;
+}
+
 export type PortalClientMsg =
   | PortalListMsg
   | PortalSubscribeMsg
   | PortalInputMsg
-  | PortalUnsubscribeMsg;
+  | PortalUnsubscribeMsg
+  | PortalListDriversMsg
+  | PortalCreateSessionMsg
+  | PortalScrollMsg;
 
 // ---------------------------------------------------------------------------
 // Server → Client messages
@@ -78,9 +102,21 @@ export interface PortalErrorMsg {
   message: string;
 }
 
+export interface PortalDriversMsg {
+  type: "portal_drivers";
+  drivers: PortalDriverInfo[];
+}
+
+export interface PortalSessionCreatedMsg {
+  type: "portal_session_created";
+  sessionId: string;
+}
+
 export type PortalServerMsg =
   | PortalSessionsMsg
   | PortalFrameMsg
   | PortalStatusMsg
   | PortalSessionEndedMsg
-  | PortalErrorMsg;
+  | PortalErrorMsg
+  | PortalDriversMsg
+  | PortalSessionCreatedMsg;

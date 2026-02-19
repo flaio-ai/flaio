@@ -9,6 +9,7 @@ import type { DetectedAgent } from "./agents/agent-detector.js";
 import { useTerminalSize } from "./ui/hooks/use-terminal-size.js";
 import { useKeybindings } from "./ui/hooks/use-keybindings.js";
 import { useRawInput } from "./ui/hooks/use-raw-input.js";
+import { usePortalConnected } from "./ui/hooks/use-portal-connected.js";
 import { appStore, getSessionInstance, startAgentDetector, stopAgentDetector } from "./store/app-store.js";
 import { settingsStore } from "./store/settings-store.js";
 import { startConnectors, stopConnectors } from "./store/connector-store.js";
@@ -50,6 +51,8 @@ export function App(): React.ReactElement {
     ? getSessionInstance(activeSessionId)
     : null;
 
+  const portalConnected = usePortalConnected(activeSessionId);
+
   const toggleHelp = useCallback(() => setShowHelp((v) => !v), []);
 
   useKeybindings({
@@ -70,8 +73,8 @@ export function App(): React.ReactElement {
   const useTopTabs = columns < 100;
   const showSidebar = sidebarVisible && !useTopTabs;
   const paneWidth = showSidebar ? columns - SIDEBAR_WIDTH : columns;
-  // statusBar(1) + mainPaneHeader(1) + topTabs(conditional 3 for bordered tabs)
-  const chromeRows = 1 + 1 + (sidebarVisible && useTopTabs ? 3 : 0);
+  // statusBar(1) + mainPaneHeader(3, bordered) + topTabs(conditional 3 for bordered tabs)
+  const chromeRows = 1 + 3 + (sidebarVisible && useTopTabs ? 3 : 0);
   const paneRows = rows - chromeRows;
 
   const handleNewSession = useCallback((driverName: string, cwd: string) => {
@@ -133,6 +136,7 @@ export function App(): React.ReactElement {
           columns={columns}
           rows={rows}
           detectedAgents={detectedAgents}
+          portalConnected={portalConnected}
         />
       )}
     </Box>

@@ -182,6 +182,24 @@ export class XtermBridge {
     return this.terminal.rows;
   }
 
+  /**
+   * Read plain text from the full scrollback + viewport buffer.
+   * Returns an array of trimmed-end strings, one per line.
+   */
+  extractPlainText(maxLines?: number): string[] {
+    const buffer = this.terminal.buffer.active;
+    const totalLines = buffer.length;
+    const start = maxLines ? Math.max(0, totalLines - maxLines) : 0;
+    const lines: string[] = [];
+
+    for (let i = start; i < totalLines; i++) {
+      const line = buffer.getLine(i);
+      lines.push(line ? line.translateToString(true) : "");
+    }
+
+    return lines;
+  }
+
   scrollLines(count: number): void {
     this.terminal.scrollLines(count);
   }

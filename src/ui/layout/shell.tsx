@@ -17,6 +17,7 @@ interface ShellProps {
   columns: number;
   rows: number;
   detectedAgents: DetectedAgent[];
+  portalConnected: boolean;
 }
 
 const SIDEBAR_WIDTH = 24;
@@ -51,6 +52,7 @@ export function Shell({
   columns,
   rows,
   detectedAgents,
+  portalConnected,
 }: ShellProps): React.ReactElement {
   const statusBarHeight = 1;
   const activeSessionState = sessions.find((s) => s.id === activeSessionId);
@@ -85,6 +87,7 @@ export function Shell({
           sessionState={activeSessionState}
           width={mainWidth}
           height={mainHeight}
+          portalConnected={portalConnected}
         />
       </Box>
 

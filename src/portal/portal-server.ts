@@ -1,6 +1,8 @@
 import net from "node:net";
 import fs from "node:fs";
 import { appStore, getSessionInstance } from "../store/app-store.js";
+import { getAllDrivers } from "../agents/agent-registry.js";
+import { portalStore } from "../store/portal-store.js";
 import type { AgentSession } from "../agents/agent-session.js";
 import type { ScreenContent } from "../terminal/screen-buffer.js";
 import {
@@ -9,6 +11,7 @@ import {
   type PortalClientMsg,
   type PortalServerMsg,
   type PortalSessionInfo,
+  type PortalDriverInfo,
 } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -152,6 +155,15 @@ export class PortalServer {
       case "portal_unsubscribe":
         this.handleUnsubscribe(client);
         break;
+      case "portal_list_drivers":
+        this.handleListDrivers(client);
+        break;
+      case "portal_create_session":
+        this.handleCreateSession(client, msg.driverName, msg.cwd);
+        break;
+      case "portal_scroll":
+        this.handleScroll(client, msg.lines);
+        break;
     }
   }
 
@@ -186,6 +198,7 @@ export class PortalServer {
     }
 
     client.subscribedSessionId = sessionId;
+    this.refreshPortalStore();
 
     // Send initial frame immediately
     this.sendFrame(client, session);
@@ -213,12 +226,60 @@ export class PortalServer {
     if (!client.subscribedSessionId) return;
     const session = getSessionInstance(client.subscribedSessionId);
     if (session) {
+      session.scrollToBottom();
       session.write(data);
+    }
+  }
+
+  private handleScroll(client: PortalClient, lines: number): void {
+    if (!client.subscribedSessionId) return;
+    const session = getSessionInstance(client.subscribedSessionId);
+    if (session) {
+      session.scroll(lines);
     }
   }
 
   private handleUnsubscribe(client: PortalClient): void {
     this.cleanupSubscription(client);
+  }
+
+  private async handleListDrivers(client: PortalClient): Promise<void> {
+    const allDrivers = getAllDrivers();
+    const drivers: PortalDriverInfo[] = await Promise.all(
+      allDrivers.map(async (d) => ({
+        name: d.name,
+        displayName: d.displayName,
+        installed: await d.checkInstalled(),
+      })),
+    );
+    this.send(client, { type: "portal_drivers", drivers });
+  }
+
+  private handleCreateSession(
+    client: PortalClient,
+    driverName: string,
+    cwd: string,
+  ): void {
+    try {
+      const session = appStore.getState().createSession(driverName, cwd);
+      if (!session) {
+        this.send(client, {
+          type: "portal_error",
+          message: `Driver "${driverName}" not found`,
+        });
+        return;
+      }
+      session.start();
+      this.send(client, {
+        type: "portal_session_created",
+        sessionId: session.id,
+      });
+    } catch (err) {
+      this.send(client, {
+        type: "portal_error",
+        message: `Failed to create session: ${err}`,
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -319,6 +380,17 @@ export class PortalServer {
     }
     client.pendingFrame = null;
     client.subscribedSessionId = null;
+    this.refreshPortalStore();
+  }
+
+  private refreshPortalStore(): void {
+    const ids = new Set<string>();
+    for (const client of this.clients.values()) {
+      if (client.subscribedSessionId) {
+        ids.add(client.subscribedSessionId);
+      }
+    }
+    portalStore.setState({ connectedSessionIds: ids });
   }
 
   private cleanupClient(client: PortalClient): void {

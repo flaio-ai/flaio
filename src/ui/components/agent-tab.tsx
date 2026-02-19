@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { AgentStatus } from "../../agents/drivers/base-driver.js";
+import { useSpinner } from "../hooks/use-spinner.js";
 
 export const STATUS_INDICATORS: Record<AgentStatus, { symbol: string; color: string }> = {
   idle: { symbol: "○", color: "gray" },
@@ -31,12 +32,15 @@ export function AgentTab({
   width,
 }: AgentTabProps): React.ReactElement {
   const indicator = STATUS_INDICATORS[status];
+  const spinnerFrame = useSpinner();
 
   // number(2) + space(1) + dot(1) = 4 chars of overhead inside the box
   // borders add 2 cols, so available inner width = (width ?? 20) - 2
   const innerWidth = (width ?? 20) - 2;
   const maxNameLen = Math.max(4, innerWidth - 4);
   const displayName = truncate(name, maxNameLen);
+
+  const statusSymbol = status === "running" ? spinnerFrame : indicator.symbol;
 
   return (
     <Box
@@ -51,7 +55,7 @@ export function AgentTab({
             {displayName}
           </Text>
         </Box>
-        <Text color={indicator.color}>{indicator.symbol}</Text>
+        <Text color={indicator.color}>{statusSymbol}</Text>
       </Box>
     </Box>
   );

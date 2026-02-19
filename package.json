@@ -2,6 +2,7 @@
   "name": "agent-manager",
   "version": "0.1.0",
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "agent-manager": "./dist/cli.js"
