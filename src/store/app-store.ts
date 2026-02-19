@@ -33,17 +33,19 @@ export interface AppState {
 // Keep actual AgentSession instances separate from serializable store state
 const sessionInstances: Map<string, AgentSession> = new Map();
 
-// Status locks: when a session ID is in this set, driver-originated
-// updateSessionStatus calls are ignored (prevents the 1s status poll
-// from overwriting transient states like waiting_permission).
-const statusLocks = new Set<string>();
+// Permission-pending guard: while a session is in this set, the driver's
+// "running" poll is suppressed so it can't overwrite "waiting_permission".
+// Unlike a full lock, non-running transitions (waiting_input, exited) are
+// allowed through and auto-clear the guard — this prevents stuck badges
+// even if the connector's requestPermission() never settles.
+const permissionPending = new Set<string>();
 
-export function lockSessionStatus(sessionId: string): void {
-  statusLocks.add(sessionId);
+export function setPermissionPending(sessionId: string): void {
+  permissionPending.add(sessionId);
 }
 
-export function unlockSessionStatus(sessionId: string): void {
-  statusLocks.delete(sessionId);
+export function clearPermissionPending(sessionId: string): void {
+  permissionPending.delete(sessionId);
 }
 
 const agentDetector = new AgentDetector();
@@ -91,7 +93,7 @@ export const appStore = createStore<AppState>((set, get) => ({
       instance.kill();
       sessionInstances.delete(sessionId);
     }
-    statusLocks.delete(sessionId);
+    permissionPending.delete(sessionId);
 
     set((prev) => {
       const sessions = prev.sessions.filter((s) => s.id !== sessionId);
@@ -134,9 +136,14 @@ export const appStore = createStore<AppState>((set, get) => ({
   },
 
   updateSessionStatus: (sessionId: string, status: AgentStatus) => {
-    // When a session is status-locked (e.g. waiting_permission), ignore
-    // driver-originated updates so the 1s status poll doesn't overwrite.
-    if (statusLocks.has(sessionId)) return;
+    if (permissionPending.has(sessionId)) {
+      // During a pending permission, suppress the driver's "running" poll
+      // so it can't overwrite the "waiting_permission" badge.
+      // Other transitions (waiting_input, exited) mean the agent moved on
+      // — auto-clear the guard and let the update through.
+      if (status === "running") return;
+      permissionPending.delete(sessionId);
+    }
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
         s.id === sessionId ? { ...s, status } : s,

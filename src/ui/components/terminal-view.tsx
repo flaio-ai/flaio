@@ -44,48 +44,17 @@ function renderSpan(span: Span, key: number): React.ReactElement | null {
   );
 }
 
-/** Compare two SpanLine arrays by value so React.memo can skip unchanged lines */
-function spanLinesEqual(a: SpanLine, b: SpanLine): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const sa = a[i]!;
-    const sb = b[i]!;
-    if (
-      sa.text !== sb.text ||
-      sa.fg !== sb.fg ||
-      sa.bg !== sb.bg ||
-      sa.bold !== sb.bold ||
-      sa.italic !== sb.italic ||
-      sa.underline !== sb.underline ||
-      sa.dim !== sb.dim ||
-      sa.inverse !== sb.inverse ||
-      sa.strikethrough !== sb.strikethrough
-    ) {
-      return false;
-    }
-  }
-  return true;
+function renderLine(line: SpanLine, lineIndex: number): React.ReactElement {
+  return (
+    <Box key={lineIndex} flexDirection="row" height={1}>
+      {line.length === 0 ? (
+        <Text> </Text>
+      ) : (
+        line.map((span, i) => renderSpan(span, i))
+      )}
+    </Box>
+  );
 }
-
-interface MemoizedLineProps {
-  line: SpanLine;
-  lineIndex: number;
-}
-
-const MemoizedLine = React.memo(
-  function MemoizedLine({ line, lineIndex }: MemoizedLineProps): React.ReactElement {
-    return (
-      <Box key={lineIndex} flexDirection="row" height={1}>
-        {line.length === 0 ? (
-          <Text> </Text>
-        ) : (
-          line.map((span, i) => renderSpan(span, i))
-        )}
-      </Box>
-    );
-  },
-  (prev, next) => spanLinesEqual(prev.line, next.line),
-);
 
 export function TerminalView({
   session,
@@ -135,9 +104,7 @@ export function TerminalView({
 
   return (
     <Box flexDirection="column" width={width} height={height}>
-      {paddedLines.map((line, i) => (
-        <MemoizedLine key={i} line={line} lineIndex={i} />
-      ))}
+      {paddedLines.map((line, i) => renderLine(line, i))}
     </Box>
   );
 }

@@ -5,7 +5,7 @@ import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
 import { PortalServer } from "../portal/portal-server.js";
 import { installHooks } from "../hooks/install.js";
-import { appStore, getSessionInstance, lockSessionStatus, unlockSessionStatus } from "./app-store.js";
+import { appStore, getSessionInstance, setPermissionPending, clearPermissionPending } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
 
@@ -168,9 +168,11 @@ function wireHookBridge(): void {
       const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
 
       // Show blue "waiting_permission" badge while awaiting connector reply.
-      // Set status first, then lock — lock would block updateSessionStatus.
+      // Set status first, then arm the guard so the driver's 1s poll can't
+      // overwrite it with "running".  The guard auto-clears if the agent
+      // transitions to waiting_input/exited (self-healing).
       appStore.getState().updateSessionStatus(sessionId, "waiting_permission");
-      lockSessionStatus(sessionId);
+      setPermissionPending(sessionId);
 
       (async () => {
         try {
@@ -190,7 +192,7 @@ function wireHookBridge(): void {
             payload: { allowed: false, message: "Connector error" },
           });
         } finally {
-          unlockSessionStatus(sessionId);
+          clearPermissionPending(sessionId);
           appStore.getState().updateSessionStatus(sessionId, "running");
         }
       })();
