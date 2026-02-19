@@ -69,20 +69,25 @@ Hooks communicate via Unix socket IPC (`/tmp/agent-manager/hooks.sock`) with new
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) — `npm install -g @google/gemini-cli`
 
-### Setup
+### Install from npm
 
 ```bash
-# Clone the repository
+npm install -g agent-manager
+```
+
+Then run it:
+
+```bash
+agent-manager
+```
+
+### Install from Source
+
+```bash
 git clone https://github.com/georgelivas/agent-manager.git
 cd agent-manager
-
-# Install dependencies
 npm install
-
-# Build
 npm run build
-
-# Run
 npm start
 ```
 
