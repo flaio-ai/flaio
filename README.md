@@ -434,26 +434,6 @@ Settings are persisted to `~/.config/agent-manager/settings.json` and validated 
 }
 ```
 
-## Legacy Standalone Hooks
-
-The `src/` directory also contains standalone hook scripts (`hook.js`, `stop-hook.js`, `post-tool-hook.js`, `stop-watcher.js`, `slack-client.js`, `config.js`) that work independently of the TUI. These provide direct Slack integration for Claude Code without running the full manager:
-
-```bash
-# Set up .env with SLACK_BOT_TOKEN and SLACK_CHANNEL_ID
-cp .env.example .env
-
-# Install standalone hooks
-node src/install.js install
-
-# Check hook status
-node src/install.js status
-
-# Remove standalone hooks
-node src/install.js uninstall
-```
-
-These are useful if you only need Slack-based permission approval without the terminal UI.
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.

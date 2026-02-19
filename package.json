@@ -4,6 +4,34 @@
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
   "license": "MIT",
   "type": "module",
+  "author": "George Livas",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/georgelivas/agent-manager.git"
+  },
+  "homepage": "https://github.com/georgelivas/agent-manager",
+  "bugs": {
+    "url": "https://github.com/georgelivas/agent-manager/issues"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "agents",
+    "claude",
+    "gemini",
+    "terminal",
+    "tui",
+    "ink",
+    "node-pty"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "agent-manager": "./dist/cli.js"
   },
@@ -12,6 +40,7 @@
     "build": "tsc",
     "start": "node dist/cli.js",
     "test": "vitest",
+    "prepublishOnly": "npm run build",
     "install-hooks": "tsx src/hooks/install.ts install",
     "uninstall-hooks": "tsx src/hooks/install.ts uninstall"
   },
