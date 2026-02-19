@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 
-export type AgentStatus = "idle" | "starting" | "running" | "waiting_input" | "exited";
+export type AgentStatus = "idle" | "starting" | "running" | "waiting_input" | "waiting_permission" | "exited";
 
 export interface SpawnConfig {
   command: string;

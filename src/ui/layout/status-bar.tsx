@@ -51,8 +51,8 @@ export function StatusBar({
         })}
         {activeSession && (
           <Text>
-            <Text color={activeSession.status === "running" ? "green" : activeSession.status === "waiting_input" ? "#FFA500" : activeSession.status === "exited" ? "red" : "gray"}>
-              {activeSession.status}
+            <Text color={activeSession.status === "running" ? "green" : activeSession.status === "waiting_input" ? "#FFA500" : activeSession.status === "waiting_permission" ? "#3B82F6" : activeSession.status === "exited" ? "red" : "gray"}>
+              {activeSession.status === "waiting_permission" ? "permission" : activeSession.status}
             </Text>
             <Text dimColor> | </Text>
           </Text>

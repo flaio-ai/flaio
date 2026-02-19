@@ -5,10 +5,9 @@ import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
 import { PortalServer } from "../portal/portal-server.js";
 import { installHooks } from "../hooks/install.js";
-import { appStore, getSessionInstance } from "./app-store.js";
+import { appStore, getSessionInstance, lockSessionStatus, unlockSessionStatus } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
-import type { ScreenContent } from "../terminal/screen-buffer.js";
 
 // ---------------------------------------------------------------------------
 // Connector status store — reactive state for the UI
@@ -168,6 +167,11 @@ function wireHookBridge(): void {
 
       const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
 
+      // Show blue "waiting_permission" badge while awaiting connector reply.
+      // Set status first, then lock — lock would block updateSessionStatus.
+      appStore.getState().updateSessionStatus(sessionId, "waiting_permission");
+      lockSessionStatus(sessionId);
+
       (async () => {
         try {
           const result = await connectorManager.requestPermission({
@@ -185,6 +189,9 @@ function wireHookBridge(): void {
             type: "permission_reply",
             payload: { allowed: false, message: "Connector error" },
           });
+        } finally {
+          unlockSessionStatus(sessionId);
+          appStore.getState().updateSessionStatus(sessionId, "running");
         }
       })();
     },
@@ -259,11 +266,15 @@ function wirePromptBridge(): void {
 
 /**
  * Extract only the agent's latest response.
- * First tries the viewport content (from the store, already processed by xterm).
+ * First tries the viewport content (from the session instance, already processed by xterm).
  * Falls back to the full scrollback buffer when the prompt scrolled off-screen.
  */
-function extractLatestResponse(sessionId: string, content: ScreenContent | undefined): string | null {
-  // Primary: use viewport content from the store (reliable — already flushed by xterm)
+function extractLatestResponse(sessionId: string): string | null {
+  const session = getSessionInstance(sessionId);
+  if (!session) return null;
+
+  // Primary: use viewport content from the session (reliable — already flushed by xterm)
+  const content = session.getContent();
   if (content && content.length > 0) {
     const viewportLines = content.map((line) =>
       line.map((span) => span.text).join("").trimEnd(),
@@ -273,8 +284,6 @@ function extractLatestResponse(sessionId: string, content: ScreenContent | undef
   }
 
   // Fallback: read scrollback for long responses where prompt scrolled off viewport
-  const session = getSessionInstance(sessionId);
-  if (!session) return null;
   return extractFromLines(session.getPlainText(500));
 }
 
@@ -369,7 +378,7 @@ function wireSessionNotifications(): void {
             .catch(() => {});
         } else if (s.status === "waiting_input" || s.status === "exited") {
           // Agent finished responding — extract only the latest response
-          const response = extractLatestResponse(s.id, s.content);
+          const response = extractLatestResponse(s.id);
           if (response && response !== lastPostedResponse.get(s.id)) {
             lastPostedResponse.set(s.id, response);
             connectorManager

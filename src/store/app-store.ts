@@ -3,7 +3,6 @@ import { AgentSession } from "../agents/agent-session.js";
 import { getDriver } from "../agents/agent-registry.js";
 import { AgentDetector, type DetectedAgent } from "../agents/agent-detector.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
-import type { ScreenContent } from "../terminal/screen-buffer.js";
 
 export interface SessionState {
   id: string;
@@ -11,7 +10,6 @@ export interface SessionState {
   displayName: string;
   cwd: string;
   status: AgentStatus;
-  content: ScreenContent;
 }
 
 export interface AppState {
@@ -29,12 +27,24 @@ export interface AppState {
   toggleSidebar: () => void;
   getActiveSession: () => AgentSession | null;
   updateSessionStatus: (sessionId: string, status: AgentStatus) => void;
-  updateSessionContent: (sessionId: string, content: ScreenContent) => void;
   adoptAgent: (agent: DetectedAgent, cols?: number, rows?: number) => Promise<AgentSession | null>;
 }
 
 // Keep actual AgentSession instances separate from serializable store state
 const sessionInstances: Map<string, AgentSession> = new Map();
+
+// Status locks: when a session ID is in this set, driver-originated
+// updateSessionStatus calls are ignored (prevents the 1s status poll
+// from overwriting transient states like waiting_permission).
+const statusLocks = new Set<string>();
+
+export function lockSessionStatus(sessionId: string): void {
+  statusLocks.add(sessionId);
+}
+
+export function unlockSessionStatus(sessionId: string): void {
+  statusLocks.delete(sessionId);
+}
 
 const agentDetector = new AgentDetector();
 
@@ -55,10 +65,6 @@ export const appStore = createStore<AppState>((set, get) => ({
       get().updateSessionStatus(session.id, status);
     });
 
-    session.on("content", (content) => {
-      get().updateSessionContent(session.id, content);
-    });
-
     session.on("exit", () => {
       get().closeSession(session.id);
     });
@@ -69,7 +75,6 @@ export const appStore = createStore<AppState>((set, get) => ({
       displayName: driver.displayName,
       cwd,
       status: "idle",
-      content: [],
     };
 
     set((prev) => ({
@@ -86,6 +91,7 @@ export const appStore = createStore<AppState>((set, get) => ({
       instance.kill();
       sessionInstances.delete(sessionId);
     }
+    statusLocks.delete(sessionId);
 
     set((prev) => {
       const sessions = prev.sessions.filter((s) => s.id !== sessionId);
@@ -128,17 +134,12 @@ export const appStore = createStore<AppState>((set, get) => ({
   },
 
   updateSessionStatus: (sessionId: string, status: AgentStatus) => {
+    // When a session is status-locked (e.g. waiting_permission), ignore
+    // driver-originated updates so the 1s status poll doesn't overwrite.
+    if (statusLocks.has(sessionId)) return;
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
         s.id === sessionId ? { ...s, status } : s,
-      ),
-    }));
-  },
-
-  updateSessionContent: (sessionId: string, content: ScreenContent) => {
-    set((prev) => ({
-      sessions: prev.sessions.map((s) =>
-        s.id === sessionId ? { ...s, content } : s,
       ),
     }));
   },
@@ -175,10 +176,6 @@ export const appStore = createStore<AppState>((set, get) => ({
       get().updateSessionStatus(session.id, status);
     });
 
-    session.on("content", (content) => {
-      get().updateSessionContent(session.id, content);
-    });
-
     // Don't auto-close adopted sessions — keep tab so user can see errors
     session.on("exit", () => {
       get().updateSessionStatus(session.id, "exited");
@@ -190,7 +187,6 @@ export const appStore = createStore<AppState>((set, get) => ({
       displayName: driver.displayName,
       cwd,
       status: "starting",
-      content: [],
     };
 
     set((prev) => ({

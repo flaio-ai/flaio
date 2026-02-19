@@ -7,7 +7,7 @@
   "author": "George Livas",
   "repository": {
     "type": "git",
-    "url": "https://github.com/georgelivas/agent-manager.git"
+    "url": "git+https://github.com/georgelivas/agent-manager.git"
   },
   "homepage": "https://github.com/georgelivas/agent-manager",
   "bugs": {
@@ -33,7 +33,7 @@
     "LICENSE"
   ],
   "bin": {
-    "agent-manager": "./dist/cli.js"
+    "agent-manager": "dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",

@@ -3,3 +3,8 @@ dist/
 .env
 *.log
 *.tsbuildinfo
+
+# Astro website
+website/node_modules/
+website/dist/
+website/.astro/

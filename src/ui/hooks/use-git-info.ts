@@ -24,10 +24,23 @@ export function useGitInfo(cwd: string | null): GitInfo | null {
         { cwd: cwd!, timeout: 3000 },
         (err, stdout) => {
           if (err) {
-            setInfo(null);
+            setInfo((prev) => (prev === null ? prev : null));
             return;
           }
-          setInfo(parseGitStatus(stdout));
+          const next = parseGitStatus(stdout);
+          setInfo((prev) => {
+            if (prev === null && next === null) return prev;
+            if (prev === null || next === null) return next;
+            if (
+              prev.branch === next.branch &&
+              prev.ahead === next.ahead &&
+              prev.behind === next.behind &&
+              prev.changes === next.changes
+            ) {
+              return prev;
+            }
+            return next;
+          });
         },
       );
     }

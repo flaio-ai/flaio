@@ -8,6 +8,7 @@ export const STATUS_INDICATORS: Record<AgentStatus, { symbol: string; color: str
   starting: { symbol: "◐", color: "yellow" },
   running: { symbol: "●", color: "green" },
   waiting_input: { symbol: "●", color: "#FFA500" },
+  waiting_permission: { symbol: "■", color: "#3B82F6" },
   exited: { symbol: "○", color: "red" },
 };
 
@@ -24,7 +25,13 @@ function truncate(str: string, max: number): string {
   return str.slice(0, max - 1) + "…";
 }
 
-export function AgentTab({
+/** Spinner that only mounts when the agent is running — avoids 150ms re-renders for idle/exited tabs */
+function SpinnerSymbol({ color }: { color: string }): React.ReactElement {
+  const frame = useSpinner();
+  return <Text color={color}>{frame}</Text>;
+}
+
+function AgentTabInner({
   name,
   status,
   isActive,
@@ -32,15 +39,12 @@ export function AgentTab({
   width,
 }: AgentTabProps): React.ReactElement {
   const indicator = STATUS_INDICATORS[status];
-  const spinnerFrame = useSpinner();
 
   // number(2) + space(1) + dot(1) = 4 chars of overhead inside the box
   // borders add 2 cols, so available inner width = (width ?? 20) - 2
   const innerWidth = (width ?? 20) - 2;
   const maxNameLen = Math.max(4, innerWidth - 4);
   const displayName = truncate(name, maxNameLen);
-
-  const statusSymbol = status === "running" ? spinnerFrame : indicator.symbol;
 
   return (
     <Box
@@ -55,8 +59,14 @@ export function AgentTab({
             {displayName}
           </Text>
         </Box>
-        <Text color={indicator.color}>{statusSymbol}</Text>
+        {status === "running" ? (
+          <SpinnerSymbol color={indicator.color} />
+        ) : (
+          <Text color={indicator.color}>{indicator.symbol}</Text>
+        )}
       </Box>
     </Box>
   );
 }
+
+export const AgentTab = React.memo(AgentTabInner);
