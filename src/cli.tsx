@@ -1,17 +1,23 @@
 #!/usr/bin/env node
 import React from "react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { render } from "ink";
 import { Command } from "commander";
 import { App } from "./app.js";
 import { listSessions, streamSession } from "./portal/portal-client.js";
 import { PortalPicker } from "./portal/portal-picker.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
+
 const program = new Command();
 
 program
   .name("agent-manager")
   .description("Terminal UI for managing multiple AI CLI agents")
-  .version("0.1.0")
+  .version(pkg.version)
   .action(() => {
     // Enter alternate screen buffer (like vim/less) so we own the full screen
     process.stdout.write("\x1B[?1049h");

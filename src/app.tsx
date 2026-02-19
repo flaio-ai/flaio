@@ -26,7 +26,10 @@ export function App(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showAdoptDialog, setShowAdoptDialog] = useState(false);
-  const { columns, rows } = useTerminalSize();
+  const { columns, rows: rawRows } = useTerminalSize();
+  // Reserve 1 row: Ink appends a trailing newline after the last line,
+  // which scrolls the alt-screen buffer and pushes the first row off-screen.
+  const rows = rawRows - 1;
 
   useEffect(() => {
     settingsStore.getState().load();

@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { SessionState } from "../../store/app-store.js";
 import { connectorStatusStore, type ConnectorBadge } from "../../store/connector-store.js";
 import type { ConnectorStatus } from "../../connectors/connector-interface.js";
+import { useUpdateCheck } from "../hooks/use-update-check.js";
 
 const CONNECTOR_ICONS: Record<string, string> = {
   slack: "#",
@@ -34,10 +35,17 @@ export function StatusBar({
   sessionCount,
 }: StatusBarProps): React.ReactElement {
   const connectors = useConnectorBadges();
+  const updateInfo = useUpdateCheck();
 
   return (
     <Box height={1} paddingX={1} justifyContent="flex-end">
       <Box>
+        {updateInfo && (
+          <Text>
+            <Text color="yellow">v{updateInfo.latest} available</Text>
+            <Text dimColor> | </Text>
+          </Text>
+        )}
         {connectors.map((c) => {
           const style = STATUS_STYLE[c.status];
           const icon = CONNECTOR_ICONS[c.name] ?? c.name;
