@@ -67,6 +67,14 @@ export class AgentSession extends EventEmitter {
     return this.pty.pid;
   }
 
+  get cols(): number {
+    return this.xterm.cols;
+  }
+
+  get rows(): number {
+    return this.xterm.rows;
+  }
+
   private setStatus(status: AgentStatus): void {
     if (this._status === status) return;
     this._status = status;

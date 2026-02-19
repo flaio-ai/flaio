@@ -3,6 +3,7 @@ import { ConnectorManager } from "../connectors/connector-manager.js";
 import { SlackAdapter, type SlackConfig } from "../connectors/adapters/slack-adapter.js";
 import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
+import { PortalServer } from "../portal/portal-server.js";
 import { installHooks } from "../hooks/install.js";
 import { appStore, getSessionInstance } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
@@ -41,6 +42,7 @@ function publishConnectorStatuses(): void {
 // ---------------------------------------------------------------------------
 const connectorManager = new ConnectorManager();
 const hookServer = new HookServer();
+const portalServer = new PortalServer();
 
 let started = false;
 let unsubSettings: (() => void) | null = null;
@@ -73,6 +75,7 @@ export async function startConnectors(): Promise<void> {
   installHooks({ silent: true });
 
   await hookServer.start();
+  await portalServer.start();
 
   wireHookBridge();
   wirePromptBridge();
@@ -107,6 +110,7 @@ export async function stopConnectors(): Promise<void> {
   lastPostedResponse.clear();
   lastSlackFields = null;
 
+  await portalServer.stop();
   await connectorManager.disconnectAll();
   publishConnectorStatuses();
   await hookServer.stop();

@@ -3,6 +3,7 @@ import React from "react";
 import { render } from "ink";
 import { Command } from "commander";
 import { App } from "./app.js";
+import { listSessions, streamSession } from "./portal/portal-client.js";
 
 const program = new Command();
 
@@ -45,6 +46,39 @@ program
     process.on("SIGTERM", () => {
       instance.unmount();
     });
+  });
+
+program
+  .command("portal [sessionId]")
+  .description("Connect to a running agent-manager session from another terminal")
+  .option("-l, --list", "List available sessions")
+  .action(async (sessionId: string | undefined, opts: { list?: boolean }) => {
+    // Explicit --list flag or no sessionId → list sessions
+    if (opts.list || !sessionId) {
+      const sessions = await listSessions();
+      if (sessions === null) {
+        process.stdout.write("agent-manager is not running.\n");
+        process.exit(1);
+      }
+      if (sessions.length === 0) {
+        process.stdout.write("No active sessions.\n");
+        process.exit(0);
+      }
+      // Table header
+      process.stdout.write(
+        `${"ID".padEnd(14)} ${"DRIVER".padEnd(12)} ${"STATUS".padEnd(16)} CWD\n`,
+      );
+      process.stdout.write(`${"─".repeat(14)} ${"─".repeat(12)} ${"─".repeat(16)} ${"─".repeat(30)}\n`);
+      for (const s of sessions) {
+        process.stdout.write(
+          `${s.id.padEnd(14)} ${s.displayName.padEnd(12)} ${s.status.padEnd(16)} ${s.cwd}\n`,
+        );
+      }
+      process.exit(0);
+    }
+
+    // Stream a specific session
+    await streamSession(sessionId);
   });
 
 program.parse(process.argv);
