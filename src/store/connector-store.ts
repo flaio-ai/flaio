@@ -4,6 +4,8 @@ import { SlackAdapter, type SlackConfig } from "../connectors/adapters/slack-ada
 import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
 import { PortalServer } from "../portal/portal-server.js";
+import { RelayClient } from "../relay/relay-client.js";
+import { setRelayLoggedIn } from "../relay/relay-store.js";
 import { installHooks } from "../hooks/install.js";
 import { appStore, getSessionInstance, setPermissionPending, clearPermissionPending } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
@@ -46,6 +48,7 @@ function publishConnectorStatuses(): void {
 const connectorManager = new ConnectorManager();
 const hookServer = new HookServer();
 const portalServer = new PortalServer();
+const relayClient = new RelayClient();
 
 let started = false;
 let unsubSettings: (() => void) | null = null;
@@ -88,6 +91,10 @@ export async function startConnectors(): Promise<void> {
   wireSessionNotifications();
   await syncSlackFromConfig();
   wireConfigReactivity();
+
+  // Start relay if enabled and authenticated
+  await syncRelayFromConfig();
+  wireRelayConfigReactivity();
 }
 
 /**
@@ -102,9 +109,19 @@ export async function stopConnectors(): Promise<void> {
     debounceTimer = null;
   }
 
+  if (relayDebounceTimer) {
+    clearTimeout(relayDebounceTimer);
+    relayDebounceTimer = null;
+  }
+
   if (unsubSettings) {
     unsubSettings();
     unsubSettings = null;
+  }
+
+  if (unsubRelaySettings) {
+    unsubRelaySettings();
+    unsubRelaySettings = null;
   }
 
   if (unsubSessions) {
@@ -117,6 +134,7 @@ export async function stopConnectors(): Promise<void> {
   lastPostTime.clear();
   lastSlackFields = null;
 
+  await relayClient.stop();
   await portalServer.stop();
   await connectorManager.disconnectAll();
   publishConnectorStatuses();
@@ -558,6 +576,59 @@ function wireConfigReactivity(): void {
       });
     }, 1000);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Relay client lifecycle
+// ---------------------------------------------------------------------------
+
+let relayDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let relaySyncInProgress = false;
+let lastRelayFields: string | null = null;
+let unsubRelaySettings: (() => void) | null = null;
+
+async function syncRelayFromConfig(): Promise<void> {
+  const { config } = settingsStore.getState();
+  const relay = config.relay;
+
+  setRelayLoggedIn(!!relay.authToken);
+
+  // Stop relay if disabled or no token
+  if (!relay.enabled || !relay.authToken) {
+    await relayClient.stop();
+    return;
+  }
+
+  // Start if auto-connect is on
+  if (relay.autoConnect) {
+    await relayClient.start();
+  }
+}
+
+function wireRelayConfigReactivity(): void {
+  lastRelayFields = serializeRelayConfig();
+
+  unsubRelaySettings = settingsStore.subscribe(() => {
+    const current = serializeRelayConfig();
+    if (current === lastRelayFields) return;
+    lastRelayFields = current;
+
+    if (relayDebounceTimer) clearTimeout(relayDebounceTimer);
+    relayDebounceTimer = setTimeout(() => {
+      relayDebounceTimer = null;
+      if (relaySyncInProgress) return;
+      relaySyncInProgress = true;
+      syncRelayFromConfig().finally(() => {
+        relaySyncInProgress = false;
+      });
+    }, 1000);
+  });
+}
+
+function serializeRelayConfig(): string {
+  const { config } = settingsStore.getState();
+  const r = config.relay;
+  return JSON.stringify([r.enabled, r.authToken, r.autoConnect]);
 }
 
 function serializeSlackConfig(): string {

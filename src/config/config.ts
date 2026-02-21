@@ -27,6 +27,17 @@ const TelegramConfigSchema = z.object({
   timeout: z.number().default(DEFAULTS.connectors.telegram.timeout),
 });
 
+const RelayConfigSchema = z.object({
+  enabled: z.boolean().default(DEFAULTS.relay.enabled),
+  authToken: z.string().optional(),
+  refreshToken: z.string().optional(),
+  autoConnect: z.boolean().default(DEFAULTS.relay.autoConnect),
+  defaultShareMode: z
+    .enum(["read-only", "read-write"])
+    .default(DEFAULTS.relay.defaultShareMode),
+  maxReplayBufferKB: z.number().default(DEFAULTS.relay.maxReplayBufferKB),
+});
+
 const UiConfigSchema = z.object({
   sidebarWidth: z.number().default(DEFAULTS.ui.sidebarWidth),
   narrowBreakpoint: z.number().default(DEFAULTS.ui.narrowBreakpoint),
@@ -48,12 +59,14 @@ const AppConfigSchema = z.object({
       detectorInterval: z.number().default(DEFAULTS.agents.detectorInterval),
     })
     .default({}),
+  relay: RelayConfigSchema.default({}),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 export type SlackConfig = z.infer<typeof SlackConfigSchema>;
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
+export type RelayConfig = z.infer<typeof RelayConfigSchema>;
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "agent-manager");
 const CONFIG_FILE = path.join(CONFIG_DIR, "settings.json");

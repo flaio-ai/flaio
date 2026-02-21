@@ -45,6 +45,7 @@ export class AgentSession extends EventEmitter {
         this.recentOutput = this.recentOutput.slice(-1000);
       }
       this.screenBuffer.markDirty();
+      this.emit("raw_data", data);
     });
 
     this.pty.on("exit", (code) => {
@@ -179,6 +180,12 @@ export class AgentSession extends EventEmitter {
 
   getCursorPos(): { x: number; y: number } {
     return { x: this.xterm.cursorX, y: this.xterm.cursorY };
+  }
+
+  /** Subscribe to raw PTY data events (for relay streaming). */
+  onRawData(listener: (data: string) => void): () => void {
+    this.on("raw_data", listener);
+    return () => this.removeListener("raw_data", listener);
   }
 
   private startStatusChecking(): void {

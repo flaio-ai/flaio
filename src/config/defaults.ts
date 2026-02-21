@@ -20,4 +20,10 @@ export const DEFAULTS = {
       timeout: 300000,
     },
   },
+  relay: {
+    enabled: false,
+    autoConnect: true,
+    defaultShareMode: "read-only" as const,
+    maxReplayBufferKB: 100,
+  },
 } as const;

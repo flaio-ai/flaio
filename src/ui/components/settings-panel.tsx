@@ -8,7 +8,7 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type Section = "connectors" | "ui" | "agents";
+type Section = "connectors" | "ui" | "agents" | "relay";
 
 interface FieldDef {
   label: string;
@@ -56,6 +56,18 @@ function getUiFields(): FieldDef[] {
     { label: "Sidebar Width", type: "number", getValue: () => cfg().ui.sidebarWidth, setValue: (v) => store().updateUi({ sidebarWidth: v }) },
     { label: "Narrow Breakpoint", type: "number", getValue: () => cfg().ui.narrowBreakpoint, setValue: (v) => store().updateUi({ narrowBreakpoint: v }) },
     { label: "Target FPS", type: "number", getValue: () => cfg().ui.targetFps, setValue: (v) => store().updateUi({ targetFps: v }) },
+  ];
+}
+
+function getRelayFields(): FieldDef[] {
+  const store = () => settingsStore.getState();
+  const cfg = () => store().config;
+  return [
+    { label: "Remote Access: Enabled", type: "boolean", getValue: () => cfg().relay.enabled, setValue: (v) => store().updateRelay({ enabled: v }) },
+    { label: "Remote Access: Logged In", type: "boolean", getValue: () => !!cfg().relay.authToken, setValue: () => {} },
+    { label: "Auto-Connect", type: "boolean", getValue: () => cfg().relay.autoConnect, setValue: (v) => store().updateRelay({ autoConnect: v }) },
+    { label: "Default Share Mode", type: "string", getValue: () => cfg().relay.defaultShareMode, setValue: (v) => { if (v === "read-only" || v === "read-write") store().updateRelay({ defaultShareMode: v }); } },
+    { label: "Replay Buffer (KB)", type: "number", getValue: () => cfg().relay.maxReplayBufferKB, setValue: (v) => store().updateRelay({ maxReplayBufferKB: v }) },
   ];
 }
 
@@ -122,7 +134,7 @@ export function SettingsPanel({
   const [editingField, setEditingField] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : getUiFields();
+  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : section === "relay" ? getRelayFields() : getUiFields();
 
   useInput((input, key) => {
     if (editingField !== null) {
@@ -139,7 +151,7 @@ export function SettingsPanel({
     }
 
     if (key.tab) {
-      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : "connectors");
+      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : s === "agents" ? "relay" : "connectors");
       setFocusedIndex(0);
       return;
     }
@@ -219,6 +231,14 @@ export function SettingsPanel({
           color={section === "agents" ? "cyan" : undefined}
         >
           Agents
+        </Text>
+        <Text> | </Text>
+        <Text
+          bold={section === "relay"}
+          underline={section === "relay"}
+          color={section === "relay" ? "cyan" : undefined}
+        >
+          Remote
         </Text>
       </Box>
 
