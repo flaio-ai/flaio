@@ -7,6 +7,10 @@ import type {
   SessionNotification,
 } from "./connector-interface.js";
 
+import { makeDebugLog } from "./debug.js";
+
+const debugLog = makeDebugLog("connector-mgr");
+
 export class ConnectorManager extends EventEmitter {
   private connectors: Map<string, IConnector> = new Map();
 
@@ -85,9 +89,14 @@ export class ConnectorManager extends EventEmitter {
       (c) => c.status === "connected",
     );
 
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       connected.map((c) => c.postToolResult(result)),
     );
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === "rejected") {
+        debugLog(`postToolResult failed on ${connected[i].name}: ${(results[i] as PromiseRejectedResult).reason}`);
+      }
+    }
   }
 
   /** Broadcast a notification to all connected connectors */
@@ -96,8 +105,13 @@ export class ConnectorManager extends EventEmitter {
       (c) => c.status === "connected",
     );
 
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       connected.map((c) => c.postNotification(notification)),
     );
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === "rejected") {
+        debugLog(`postNotification(${notification.type}) failed on ${connected[i].name}: ${(results[i] as PromiseRejectedResult).reason}`);
+      }
+    }
   }
 }

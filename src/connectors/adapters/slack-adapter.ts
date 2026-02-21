@@ -18,6 +18,10 @@ export interface SlackConfig {
   timeout?: number;
 }
 
+import { makeDebugLog } from "../debug.js";
+
+const debugLog = makeDebugLog("slack");
+
 export class SlackAdapter implements IConnector {
   readonly name = "slack";
   readonly displayName = "Slack";
@@ -30,6 +34,9 @@ export class SlackAdapter implements IConnector {
   private sessionThreads: Map<string, string> = new Map(); // sessionId → thread root ts
   private threadToSession: Map<string, string> = new Map(); // thread root ts → sessionId
   private botUserId: string | null = null;
+
+  // Typing placeholders — maps sessionId → placeholder message ts
+  private typingMessages: Map<string, string> = new Map();
 
   // Thread polling for inbound prompts (reliable fallback for Socket Mode)
   private threadLastSeen: Map<string, string> = new Map(); // threadRootTs → last processed msg ts
@@ -104,6 +111,7 @@ export class SlackAdapter implements IConnector {
     this.sessionThreads.clear();
     this.threadToSession.clear();
     this.threadLastSeen.clear();
+    this.typingMessages.clear();
     this.botUserId = null;
     this._status = "disconnected";
   }
@@ -114,6 +122,11 @@ export class SlackAdapter implements IConnector {
     }
 
     const threadTs = await this.ensureSessionThread(request.sessionId, request.cwd);
+
+    if (!threadTs) {
+      debugLog(`permission request dropped for ${request.sessionId}: no thread`);
+      return { allowed: false, message: "Could not create Slack thread" };
+    }
 
     const inputStr = JSON.stringify(request.toolInput, null, 2);
     const truncated = inputStr.length > 2500 ? inputStr.slice(0, 2500) + "\n..." : inputStr;
@@ -185,7 +198,8 @@ export class SlackAdapter implements IConnector {
       }
 
       return reply;
-    } catch {
+    } catch (err) {
+      debugLog(`permission request API error for ${request.sessionId}:`, String(err));
       return { allowed: false, message: "Slack API error" };
     }
   }
@@ -194,6 +208,7 @@ export class SlackAdapter implements IConnector {
     if (!this.webClient) return;
 
     const threadTs = await this.ensureSessionThread(result.sessionId);
+    if (!threadTs) return;
 
     const inputStr = JSON.stringify(result.input, null, 2);
     const truncInput = inputStr.length > 500 ? inputStr.slice(0, 500) + "..." : inputStr;
@@ -235,12 +250,55 @@ export class SlackAdapter implements IConnector {
 
     const threadTs = await this.ensureSessionThread(notification.sessionId, notification.cwd);
 
-    // Agent response — post the message text directly, no label prefix
+    // If thread creation failed, we can't post — drop the message with a log
+    if (!threadTs) {
+      debugLog(`dropping ${notification.type} for ${notification.sessionId}: no thread`);
+      return;
+    }
+
+    // Typing placeholder — post "_Thinking..._" and store its ts for later editing
+    if (notification.type === "typing") {
+      try {
+        const result = await this.webClient.chat.postMessage({
+          channel: this.config.channelId,
+          thread_ts: threadTs,
+          text: "_Thinking..._",
+          unfurl_links: false,
+        });
+        if (result.ts) {
+          this.typingMessages.set(notification.sessionId, result.ts as string);
+          debugLog(`posted typing placeholder for ${notification.sessionId}`);
+        }
+      } catch (err) {
+        debugLog(`typing placeholder failed for ${notification.sessionId}:`, String(err));
+      }
+      return;
+    }
+
+    // Agent response — edit the typing placeholder in-place, or post a new message
     if (notification.type === "response") {
       const truncated =
         notification.message.length > 3000
           ? notification.message.slice(0, 3000) + "\n..."
           : notification.message;
+
+      const placeholderTs = this.typingMessages.get(notification.sessionId);
+      if (placeholderTs) {
+        this.typingMessages.delete(notification.sessionId);
+        try {
+          await this.webClient.chat.update({
+            channel: this.config.channelId,
+            ts: placeholderTs,
+            text: truncated,
+            unfurl_links: false,
+          });
+          debugLog(`edited typing placeholder with response for ${notification.sessionId} (${truncated.length} chars)`);
+          return;
+        } catch (err) {
+          debugLog(`chat.update failed for ${notification.sessionId}, falling back to new message:`, String(err));
+          // Fall through to post a new message
+        }
+      }
 
       try {
         await this.webClient.chat.postMessage({
@@ -249,10 +307,28 @@ export class SlackAdapter implements IConnector {
           text: truncated,
           unfurl_links: false,
         });
-      } catch {
-        // Non-critical
+        debugLog(`posted response to ${notification.sessionId} (${truncated.length} chars)`);
+      } catch (err) {
+        debugLog(`response post failed for ${notification.sessionId}:`, String(err));
       }
       return;
+    }
+
+    // On stopped — delete any leftover typing placeholder (agent exited without response)
+    if (notification.type === "stopped") {
+      const placeholderTs = this.typingMessages.get(notification.sessionId);
+      if (placeholderTs) {
+        this.typingMessages.delete(notification.sessionId);
+        try {
+          await this.webClient.chat.delete({
+            channel: this.config.channelId,
+            ts: placeholderTs,
+          });
+          debugLog(`deleted orphaned typing placeholder for ${notification.sessionId}`);
+        } catch (err) {
+          debugLog(`failed to delete typing placeholder for ${notification.sessionId}:`, String(err));
+        }
+      }
     }
 
     const typeLabels: Record<string, string> = {
@@ -275,8 +351,8 @@ export class SlackAdapter implements IConnector {
         text,
         unfurl_links: false,
       });
-    } catch {
-      // Non-critical
+    } catch (err) {
+      debugLog(`${notification.type} post failed for ${notification.sessionId}:`, String(err));
     }
 
     // Clean up maps when session ends
@@ -295,7 +371,7 @@ export class SlackAdapter implements IConnector {
   // Thread management
   // ---------------------------------------------------------------------------
 
-  private async ensureSessionThread(sessionId: string, cwd?: string): Promise<string> {
+  private async ensureSessionThread(sessionId: string, cwd?: string): Promise<string | null> {
     const existing = this.sessionThreads.get(sessionId);
     if (existing) return existing;
 
@@ -310,21 +386,32 @@ export class SlackAdapter implements IConnector {
       .filter(Boolean)
       .join("\n");
 
-    try {
-      const result = await this.webClient.chat.postMessage({
-        channel: this.config.channelId,
-        text,
-        unfurl_links: false,
-      });
+    // Retry once on failure (transient network errors)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await this.webClient.chat.postMessage({
+          channel: this.config.channelId,
+          text,
+          unfurl_links: false,
+        });
 
-      const ts = result.ts as string;
-      this.sessionThreads.set(sessionId, ts);
-      this.threadToSession.set(ts, sessionId);
-      this.threadLastSeen.set(ts, ts);
-      return ts;
-    } catch {
-      return "";
+        const ts = result.ts as string;
+        if (ts) {
+          this.sessionThreads.set(sessionId, ts);
+          this.threadToSession.set(ts, sessionId);
+          this.threadLastSeen.set(ts, ts);
+          return ts;
+        }
+      } catch (err) {
+        debugLog(`ensureSessionThread attempt ${attempt + 1} failed for ${sessionId}:`, String(err));
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
     }
+
+    debugLog(`ensureSessionThread gave up for ${sessionId}`);
+    return null;
   }
 
   // ---------------------------------------------------------------------------

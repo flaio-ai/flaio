@@ -9,6 +9,10 @@ import { appStore, getSessionInstance, setPermissionPending, clearPermissionPend
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
 
+import { makeDebugLog } from "../connectors/debug.js";
+
+const debugLog = makeDebugLog("connector");
+
 // ---------------------------------------------------------------------------
 // Connector status store — reactive state for the UI
 // ---------------------------------------------------------------------------
@@ -49,8 +53,11 @@ let unsubSessions: (() => void) | null = null;
 
 // Session status tracking for notification transitions
 const prevStatuses = new Map<string, AgentStatus>();
-// Dedup: avoid posting the same response twice (waiting_input → exited)
+// Dedup: avoid posting the same response twice (waiting_input → exited, or hook + status transition)
 const lastPostedResponse = new Map<string, string>();
+// Track last post time per session to debounce rapid transitions
+const lastPostTime = new Map<string, number>();
+const DEDUP_WINDOW_MS = 3000;
 
 // Debounce + mutex state for config reactivity
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -107,6 +114,7 @@ export async function stopConnectors(): Promise<void> {
 
   prevStatuses.clear();
   lastPostedResponse.clear();
+  lastPostTime.clear();
   lastSlackFields = null;
 
   await portalServer.stop();
@@ -218,6 +226,18 @@ function wireHookBridge(): void {
     const lower = message.toLowerCase();
     if (lower.includes("waiting for") || lower.includes("needs input") || lower.includes("needs your input")) return;
 
+    // Dedup: skip if we just posted this exact content via wireSessionNotifications
+    if (message === lastPostedResponse.get(sessionId)) {
+      const lastTime = lastPostTime.get(sessionId) ?? 0;
+      if (Date.now() - lastTime < DEDUP_WINDOW_MS) {
+        debugLog(`dedup: skipping hook notification for ${sessionId} (same as recent post)`);
+        return;
+      }
+    }
+
+    lastPostedResponse.set(sessionId, message);
+    lastPostTime.set(sessionId, Date.now());
+
     connectorManager
       .postNotification({
         sessionId,
@@ -225,7 +245,9 @@ function wireHookBridge(): void {
         message,
         cwd,
       })
-      .catch(() => {});
+      .catch((err) => {
+        debugLog(`hook notification post failed for ${sessionId}:`, String(err));
+      });
   });
 
   // stop: session stopped notification (only for managed agents)
@@ -242,7 +264,9 @@ function wireHookBridge(): void {
         message: `Session exited (code ${payload.exitCode ?? "?"})`,
         cwd,
       })
-      .catch(() => {});
+      .catch((err) => {
+        debugLog(`stop notification failed for ${sessionId}:`, String(err));
+      });
   });
 }
 
@@ -294,12 +318,15 @@ function extractLatestResponse(sessionId: string): string | null {
  * and strip terminal chrome / hook output.
  */
 function extractFromLines(allLines: string[]): string | null {
-  // Find the last user prompt line: starts with ❯ followed by actual text
+  // Find the last user prompt line — several prompt styles:
+  // "❯ sometext", "$ sometext", or Claude Code's "human>" / "H:"
+  // NOTE: ">" is intentionally excluded — it matches Markdown blockquotes
+  // (`> quoted text`) which appear in agent responses, causing truncation.
   let promptIdx = -1;
   for (let i = allLines.length - 1; i >= 0; i--) {
     const l = allLines[i];
-    // Match "❯ sometext" but not a bare "❯" (empty prompt)
-    if (/^❯\s+\S/.test(l)) {
+    // Match "❯ sometext" or "$ sometext" but not bare prompts
+    if (/^[❯$]\s+\S/.test(l)) {
       promptIdx = i;
       break;
     }
@@ -313,24 +340,25 @@ function extractFromLines(allLines: string[]): string | null {
   // Filter out terminal chrome and noise
   const cleaned = after.filter((l) => {
     if (!l) return false;
-    // Dividers
-    if (/^[─━]+$/.test(l)) return false;
+    // Dividers (solid lines of dashes, equals, etc.)
+    if (/^[─━═\-]+$/.test(l)) return false;
     // Box drawing borders
     if (/^[╭╰╮╯│┌└┐┘├┤┬┴┼]/.test(l)) return false;
     if (/[╭╰╮╯│┌└┐┘├┤┬┴┼]$/.test(l.trimEnd())) return false;
-    // Empty prompt line
-    if (/^❯\s*$/.test(l)) return false;
-    // Hook output
-    if (/^\s*⏺\s+Ran \d+/.test(l)) return false;
+    // Empty prompt line (excludes ">" — see prompt-detection note above)
+    if (/^[❯$]\s*$/.test(l)) return false;
+    // Hook output lines
+    if (/^\s*⏺\s+(Ran|Running|Read|Edit|Write|Bash|Glob|Grep|Task)\b/.test(l)) return false;
     if (/^\s*[⎿]\s/.test(l)) return false;
     if (/hook error/i.test(l)) return false;
-    // Status bar / shortcuts / IDE hints (anywhere on line)
+    // Claude Code status/chrome lines
     if (/\?\s+for shortcuts/i.test(l)) return false;
     if (/\/ide\s+for\s/i.test(l)) return false;
     if (/\/help/i.test(l) && /shortcuts|commands/i.test(l)) return false;
-    // Update notice
+    // Update/install notices
     if (/update available/i.test(l)) return false;
     if (/npm install -g/i.test(l)) return false;
+    if (/npm update/i.test(l)) return false;
     // Cost / token stats bar
     if (/^\s*\$[\d.]+\s+(cost|total)/i.test(l)) return false;
     if (/tokens?[:\s]+[\d,]+/i.test(l) && /cost|input|output/i.test(l)) return false;
@@ -341,6 +369,10 @@ function extractFromLines(allLines: string[]): string | null {
     // Compact mode tip, auto-update notice
     if (/^\s*tip:/i.test(l)) return false;
     if (/^\s*Run\s.*to update/i.test(l)) return false;
+    // Progress bars / spinners
+    if (/^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s/.test(l)) return false;
+    // ANSI escape-only lines (after stripping — but these appear as empty)
+    if (l.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "").trim() === "") return false;
     return true;
   });
 
@@ -377,32 +409,71 @@ function wireSessionNotifications(): void {
               message: `Session started (${s.displayName})`,
               cwd: s.cwd,
             })
-            .catch(() => {});
+            .catch((err) => {
+              debugLog(`started notification failed for ${s.id}:`, String(err));
+            });
+        } else if (
+          s.status === "running" &&
+          (prev === "waiting_input" || prev === "idle")
+        ) {
+          // Agent started working — emit typing notification for placeholder
+          connectorManager
+            .postNotification({
+              sessionId: s.id,
+              type: "typing",
+              message: "Thinking...",
+              cwd: s.cwd,
+            })
+            .catch((err) => {
+              debugLog(`typing notification failed for ${s.id}:`, String(err));
+            });
         } else if (s.status === "waiting_input" || s.status === "exited") {
-          // Agent finished responding — extract only the latest response
-          const response = extractLatestResponse(s.id);
-          if (response && response !== lastPostedResponse.get(s.id)) {
-            lastPostedResponse.set(s.id, response);
-            connectorManager
-              .postNotification({
-                sessionId: s.id,
-                type: "response",
-                message: response,
-                cwd: s.cwd,
-              })
-              .catch(() => {});
-          }
+          // Agent finished responding — extract latest response after a short
+          // delay so the ScreenBuffer's 30fps debounce can flush fresh content.
+          const sessionId = s.id;
+          const cwd = s.cwd;
+          const displayName = s.displayName;
+          const isExited = s.status === "exited";
 
-          if (s.status === "exited") {
-            connectorManager
-              .postNotification({
-                sessionId: s.id,
-                type: "stopped",
-                message: `Session exited (${s.displayName})`,
-                cwd: s.cwd,
-              })
-              .catch(() => {});
-          }
+          setTimeout(() => {
+            const response = extractLatestResponse(sessionId);
+            if (response) {
+              // Dedup: skip if same content posted recently (hook or prior transition)
+              const lastContent = lastPostedResponse.get(sessionId);
+              const lastTime = lastPostTime.get(sessionId) ?? 0;
+              if (response === lastContent && Date.now() - lastTime < DEDUP_WINDOW_MS) {
+                debugLog(`dedup: skipping status-transition post for ${sessionId}`);
+              } else {
+                lastPostedResponse.set(sessionId, response);
+                lastPostTime.set(sessionId, Date.now());
+                connectorManager
+                  .postNotification({
+                    sessionId,
+                    type: "response",
+                    message: response,
+                    cwd,
+                  })
+                  .catch((err) => {
+                    debugLog(`response post failed for ${sessionId}:`, String(err));
+                  });
+              }
+            } else {
+              debugLog(`no extractable response for ${sessionId} after transition`);
+            }
+
+            if (isExited) {
+              connectorManager
+                .postNotification({
+                  sessionId,
+                  type: "stopped",
+                  message: `Session exited (${displayName})`,
+                  cwd,
+                })
+                .catch((err) => {
+                  debugLog(`exit notification failed for ${sessionId}:`, String(err));
+                });
+            }
+          }, 150);
         }
       }
     }
@@ -412,6 +483,7 @@ function wireSessionNotifications(): void {
       if (!currentIds.has(id)) {
         prevStatuses.delete(id);
         lastPostedResponse.delete(id);
+        lastPostTime.delete(id);
       }
     }
   });

@@ -21,7 +21,7 @@ export interface ToolResult {
 
 export interface SessionNotification {
   sessionId: string;
-  type: "started" | "stopped" | "waiting_input" | "error" | "response";
+  type: "started" | "stopped" | "waiting_input" | "error" | "response" | "typing";
   message: string;
   cwd?: string;
 }
