@@ -36,6 +36,7 @@ const RelayConfigSchema = z.object({
     .enum(["read-only", "read-write"])
     .default(DEFAULTS.relay.defaultShareMode),
   maxReplayBufferKB: z.number().default(DEFAULTS.relay.maxReplayBufferKB),
+  e2eEncryption: z.boolean().default(DEFAULTS.relay.e2eEncryption),
 });
 
 const UiConfigSchema = z.object({

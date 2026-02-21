@@ -25,5 +25,6 @@ export const DEFAULTS = {
     autoConnect: true,
     defaultShareMode: "read-only" as const,
     maxReplayBufferKB: 100,
+    e2eEncryption: true,
   },
 } as const;

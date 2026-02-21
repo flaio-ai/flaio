@@ -36,6 +36,8 @@ export interface CliRegisterSessionMsg {
   status: string;
   cols: number;
   rows: number;
+  /** Base64-encoded ECDH P-256 public key (present when E2E is enabled) */
+  publicKey?: string;
 }
 
 export interface CliUnregisterSessionMsg {
@@ -60,13 +62,40 @@ export interface CliPongMsg {
   type: "cli_pong";
 }
 
+export interface CliSessionPublicKeyMsg {
+  type: "cli_session_public_key";
+  sessionId: string;
+  /** Base64-encoded ECDH P-256 public key */
+  publicKey: string;
+}
+
+export interface CliWrappedKeyMsg {
+  type: "cli_wrapped_key";
+  sessionId: string;
+  viewerId: string;
+  /** Encrypted SCK (wire format: base64(nonce || ciphertext || tag)) */
+  wrappedKey: string;
+}
+
+export interface CliEncryptedPtyDataMsg {
+  type: "cli_encrypted_pty_data";
+  sessionId: string;
+  /** Encrypted PTY output (wire format: base64(nonce || ciphertext || tag)) */
+  data: string;
+  /** Monotonic sequence number for ordering */
+  seq: number;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
   | CliUnregisterSessionMsg
   | CliPtyDataMsg
   | CliSessionStatusMsg
-  | CliPongMsg;
+  | CliPongMsg
+  | CliSessionPublicKeyMsg
+  | CliWrappedKeyMsg
+  | CliEncryptedPtyDataMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -115,6 +144,22 @@ export interface WebPongMsg {
   type: "web_pong";
 }
 
+export interface WebViewerPublicKeyMsg {
+  type: "web_viewer_public_key";
+  sessionId: string;
+  viewerId: string;
+  /** Base64-encoded ECDH P-256 public key */
+  publicKey: string;
+}
+
+export interface WebEncryptedInputMsg {
+  type: "web_encrypted_input";
+  sessionId: string;
+  viewerId: string;
+  /** Encrypted keystrokes (wire format: base64(nonce || ciphertext || tag)) */
+  data: string;
+}
+
 export type BrowserToRelayMsg =
   | WebAuthMsg
   | WebListSessionsMsg
@@ -123,7 +168,9 @@ export type BrowserToRelayMsg =
   | WebInputMsg
   | WebResizeMsg
   | WebCreateSessionMsg
-  | WebPongMsg;
+  | WebPongMsg
+  | WebViewerPublicKeyMsg
+  | WebEncryptedInputMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → CLI messages
@@ -175,6 +222,22 @@ export interface RelayPingMsg {
   type: "relay_ping";
 }
 
+export interface RelayViewerPublicKeyMsg {
+  type: "relay_viewer_public_key";
+  sessionId: string;
+  viewerId: string;
+  /** Base64-encoded ECDH P-256 public key from viewer */
+  publicKey: string;
+}
+
+export interface RelayEncryptedInputMsg {
+  type: "relay_encrypted_input";
+  sessionId: string;
+  viewerId: string;
+  /** Encrypted keystrokes from viewer (wire format: base64(nonce || ciphertext || tag)) */
+  data: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -183,7 +246,9 @@ export type RelayToCliMsg =
   | RelayViewerJoinedMsg
   | RelayViewerLeftMsg
   | RelayCreateSessionMsg
-  | RelayPingMsg;
+  | RelayPingMsg
+  | RelayViewerPublicKeyMsg
+  | RelayEncryptedInputMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages
@@ -230,6 +295,30 @@ export interface RelayWebPingMsg {
   type: "relay_ping";
 }
 
+export interface RelaySessionPublicKeyMsg {
+  type: "relay_session_public_key";
+  sessionId: string;
+  /** Base64-encoded ECDH P-256 public key from CLI */
+  publicKey: string;
+}
+
+export interface RelayWrappedKeyMsg {
+  type: "relay_wrapped_key";
+  sessionId: string;
+  viewerId: string;
+  /** Encrypted SCK (wire format: base64(nonce || ciphertext || tag)) */
+  wrappedKey: string;
+}
+
+export interface RelayEncryptedPtyDataMsg {
+  type: "relay_encrypted_pty_data";
+  sessionId: string;
+  /** Encrypted PTY output (wire format: base64(nonce || ciphertext || tag)) */
+  data: string;
+  /** Monotonic sequence number for ordering */
+  seq: number;
+}
+
 export type RelayToBrowserMsg =
   | RelayWebAuthOkMsg
   | RelayWebAuthFailMsg
@@ -238,7 +327,10 @@ export type RelayToBrowserMsg =
   | RelaySessionStatusMsg
   | RelaySessionEndedMsg
   | RelaySessionCreatedMsg
-  | RelayWebPingMsg;
+  | RelayWebPingMsg
+  | RelaySessionPublicKeyMsg
+  | RelayWrappedKeyMsg
+  | RelayEncryptedPtyDataMsg;
 
 // ---------------------------------------------------------------------------
 // Constants

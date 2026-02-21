@@ -11,6 +11,8 @@ export type RelayConnectionStatus =
   | "connected"
   | "error";
 
+export type SessionEncryptionStatus = "none" | "key-exchange" | "active";
+
 export interface RelayState {
   /** Current WebSocket connection status */
   connectionStatus: RelayConnectionStatus;
@@ -22,6 +24,8 @@ export interface RelayState {
   sessionViewerCounts: Map<string, number>;
   /** Whether the user is logged in (has auth token) */
   isLoggedIn: boolean;
+  /** Per-session E2E encryption status */
+  sessionEncryptionStatus: Map<string, SessionEncryptionStatus>;
 }
 
 export const relayStore = createStore<RelayState>(() => ({
@@ -30,6 +34,7 @@ export const relayStore = createStore<RelayState>(() => ({
   totalViewerCount: 0,
   sessionViewerCounts: new Map(),
   isLoggedIn: false,
+  sessionEncryptionStatus: new Map(),
 }));
 
 export function setRelayConnectionStatus(
@@ -71,6 +76,19 @@ export function clearViewerCounts(): void {
     totalViewerCount: 0,
     sessionViewerCounts: new Map(),
   });
+}
+
+export function setSessionEncryptionStatus(
+  sessionId: string,
+  status: SessionEncryptionStatus,
+): void {
+  const statuses = new Map(relayStore.getState().sessionEncryptionStatus);
+  if (status === "none") {
+    statuses.delete(sessionId);
+  } else {
+    statuses.set(sessionId, status);
+  }
+  relayStore.setState({ sessionEncryptionStatus: statuses });
 }
 
 export function setRelayLoggedIn(loggedIn: boolean): void {

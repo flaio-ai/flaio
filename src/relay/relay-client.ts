@@ -8,12 +8,24 @@ import {
 } from "./relay-protocol.js";
 import {
   setRelayConnectionStatus,
+  setSessionEncryptionStatus,
   updateViewerCount,
   clearViewerCounts,
 } from "./relay-store.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
 import type { AgentSession } from "../agents/agent-session.js";
+import {
+  generateSessionKeyPair,
+  generateSessionContentKey,
+  importPeerPublicKey,
+  deriveKeyEncryptionKey,
+  wrapSessionContentKey,
+  encryptData,
+  decryptData,
+  type SessionKeyPair,
+  type SessionContentKey,
+} from "./relay-crypto.js";
 
 import { makeDebugLog } from "../connectors/debug.js";
 
@@ -23,10 +35,23 @@ const debugLog = makeDebugLog("relay");
 // Per-session tracking
 // ---------------------------------------------------------------------------
 
+interface ViewerCryptoState {
+  kek: CryptoKey;
+  keyDelivered: boolean;
+}
+
 interface TrackedSession {
   sessionId: string;
   rawDataUnsub: (() => void) | null;
   statusUnsub: (() => void) | null;
+  /** ECDH key pair for this session (null when E2E disabled) */
+  keyPair: SessionKeyPair | null;
+  /** Session Content Key — encrypts all PTY data (null when E2E disabled) */
+  sck: SessionContentKey | null;
+  /** Per-viewer KEK state */
+  viewerKeys: Map<string, ViewerCryptoState>;
+  /** Monotonic sequence counter for encrypted PTY data ordering */
+  encryptSeq: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +130,10 @@ export class RelayClient extends EventEmitter {
     this.replayBuffer = new ReplayBuffer(maxKB);
   }
 
+  private get e2eEnabled(): boolean {
+    return settingsStore.getState().config.relay.e2eEncryption;
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -115,7 +144,7 @@ export class RelayClient extends EventEmitter {
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
 
-    this.watchSessions();
+    await this.watchSessions();
     await this.connect();
   }
 
@@ -190,6 +219,11 @@ export class RelayClient extends EventEmitter {
         this.clearHeartbeat();
         clearViewerCounts();
 
+        // Clear viewer keys on disconnect — viewers must re-handshake
+        for (const tracked of this.trackedSessions.values()) {
+          tracked.viewerKeys.clear();
+        }
+
         if (this.shouldReconnect) {
           setRelayConnectionStatus("disconnected");
           this.scheduleReconnect();
@@ -248,6 +282,7 @@ export class RelayClient extends EventEmitter {
       case "relay_viewer_left":
         debugLog(`relay: viewer ${msg.viewerId} left session ${msg.sessionId}`);
         updateViewerCount(msg.sessionId, -1);
+        this.cleanupViewerCrypto(msg.sessionId, msg.viewerId);
         break;
 
       case "relay_create_session":
@@ -257,6 +292,14 @@ export class RelayClient extends EventEmitter {
       case "relay_ping":
         this.send({ type: "cli_pong" });
         this.resetPongTimer();
+        break;
+
+      case "relay_viewer_public_key":
+        this.handleViewerPublicKey(msg.sessionId, msg.viewerId, msg.publicKey);
+        break;
+
+      case "relay_encrypted_input":
+        this.handleEncryptedInput(msg.sessionId, msg.viewerId, msg.data);
         break;
     }
   }
@@ -290,15 +333,156 @@ export class RelayClient extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
+  // E2E key exchange handlers
+  // -------------------------------------------------------------------------
+
+  private async handleViewerPublicKey(
+    sessionId: string,
+    viewerId: string,
+    peerPubKeyBase64: string,
+  ): Promise<void> {
+    const tracked = this.trackedSessions.get(sessionId);
+    if (!tracked?.keyPair || !tracked.sck) {
+      debugLog(`relay: viewer key for ${sessionId} but no E2E state`);
+      return;
+    }
+
+    try {
+      setSessionEncryptionStatus(sessionId, "key-exchange");
+
+      const peerPubKey = await importPeerPublicKey(peerPubKeyBase64);
+      const kek = await deriveKeyEncryptionKey(
+        tracked.keyPair.privateKey,
+        peerPubKey,
+        tracked.keyPair.publicKeyBase64,
+        peerPubKeyBase64,
+      );
+
+      // Wrap SCK for this viewer
+      const wrappedKey = await wrapSessionContentKey(tracked.sck, kek);
+
+      tracked.viewerKeys.set(viewerId, { kek, keyDelivered: true });
+
+      // Send wrapped SCK to viewer (via relay)
+      this.send({
+        type: "cli_wrapped_key",
+        sessionId,
+        viewerId,
+        wrappedKey,
+      });
+
+      debugLog(`relay: delivered wrapped SCK to viewer ${viewerId} for ${sessionId}`);
+      setSessionEncryptionStatus(sessionId, "active");
+
+      // Send replay buffer encrypted for the new viewer
+      await this.sendEncryptedReplay(tracked);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: key exchange failed for viewer ${viewerId}: ${message}`);
+    }
+  }
+
+  private async handleEncryptedInput(
+    sessionId: string,
+    viewerId: string,
+    encryptedData: string,
+  ): Promise<void> {
+    const shareMode = settingsStore.getState().config.relay.defaultShareMode;
+    if (shareMode === "read-only") {
+      debugLog(`relay: ignoring encrypted input for ${sessionId} (read-only mode)`);
+      return;
+    }
+
+    const tracked = this.trackedSessions.get(sessionId);
+    if (!tracked?.sck) {
+      debugLog(`relay: encrypted input for ${sessionId} but no SCK`);
+      return;
+    }
+
+    const session = getSessionInstance(sessionId);
+    if (!session) return;
+
+    try {
+      const plaintext = await decryptData(encryptedData, tracked.sck);
+      session.scrollToBottom();
+      session.write(plaintext.toString("utf-8"));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: failed to decrypt input from ${viewerId}: ${message}`);
+      // Silently drop — never crash
+    }
+  }
+
+  private cleanupViewerCrypto(sessionId: string, viewerId: string): void {
+    const tracked = this.trackedSessions.get(sessionId);
+    if (tracked) {
+      tracked.viewerKeys.delete(viewerId);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Encrypted PTY data sending
+  // -------------------------------------------------------------------------
+
+  private async sendPtyData(tracked: TrackedSession, rawData: string): Promise<void> {
+    if (tracked.sck) {
+      // E2E enabled — encrypt with SCK
+      try {
+        const plaintext = Buffer.from(rawData, "utf-8");
+        const encrypted = await encryptData(plaintext, tracked.sck);
+        const seq = tracked.encryptSeq++;
+        this.send({
+          type: "cli_encrypted_pty_data",
+          sessionId: tracked.sessionId,
+          data: encrypted,
+          seq,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        debugLog(`relay: encrypt PTY data failed: ${message}`);
+      }
+    } else {
+      // Plaintext fallback (E2E disabled)
+      const base64 = Buffer.from(rawData, "utf-8").toString("base64");
+      this.send({
+        type: "cli_pty_data",
+        sessionId: tracked.sessionId,
+        data: base64,
+      });
+    }
+  }
+
+  private async sendEncryptedReplay(tracked: TrackedSession): Promise<void> {
+    if (!tracked.sck) return;
+
+    const chunks = this.replayBuffer.get(tracked.sessionId);
+    for (const chunk of chunks) {
+      try {
+        const plaintext = Buffer.from(chunk, "utf-8");
+        const encrypted = await encryptData(plaintext, tracked.sck);
+        const seq = tracked.encryptSeq++;
+        this.send({
+          type: "cli_encrypted_pty_data",
+          sessionId: tracked.sessionId,
+          data: encrypted,
+          seq,
+        });
+      } catch {
+        debugLog("relay: failed to encrypt replay chunk");
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Session tracking — watch appStore for session add/remove
   // -------------------------------------------------------------------------
 
-  private watchSessions(): void {
+  private async watchSessions(): Promise<void> {
     let prevIds = new Set(appStore.getState().sessions.map((s) => s.id));
 
     // Track existing sessions
     for (const s of appStore.getState().sessions) {
-      this.trackSession(s.id);
+      await this.trackSession(s.id);
     }
 
     this.storeUnsub = appStore.subscribe((state) => {
@@ -307,8 +491,9 @@ export class RelayClient extends EventEmitter {
       // New sessions
       for (const id of currentIds) {
         if (!prevIds.has(id)) {
-          this.trackSession(id);
-          this.registerSession(id);
+          this.trackSession(id).then(() => {
+            this.registerSession(id);
+          });
         }
       }
 
@@ -321,6 +506,7 @@ export class RelayClient extends EventEmitter {
             this.trackedSessions.delete(id);
           }
           this.replayBuffer.remove(id);
+          setSessionEncryptionStatus(id, "none");
           this.send({ type: "cli_unregister_session", sessionId: id });
         }
       }
@@ -329,23 +515,42 @@ export class RelayClient extends EventEmitter {
     });
   }
 
-  private trackSession(sessionId: string): void {
+  private async trackSession(sessionId: string): Promise<void> {
     if (this.trackedSessions.has(sessionId)) return;
 
     const session = getSessionInstance(sessionId);
     if (!session) return;
 
+    // Generate crypto state if E2E enabled
+    let keyPair: SessionKeyPair | null = null;
+    let sck: SessionContentKey | null = null;
+
+    if (this.e2eEnabled) {
+      try {
+        keyPair = await generateSessionKeyPair();
+        sck = await generateSessionContentKey();
+        debugLog(`relay: generated E2E keys for session ${sessionId}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        debugLog(`relay: failed to generate E2E keys: ${message}`);
+        // Continue without E2E — will use plaintext fallback
+      }
+    }
+
     const tracked: TrackedSession = {
       sessionId,
       rawDataUnsub: null,
       statusUnsub: null,
+      keyPair,
+      sck,
+      viewerKeys: new Map(),
+      encryptSeq: 0,
     };
 
     // Stream raw PTY data to relay
     tracked.rawDataUnsub = session.onRawData((data: string) => {
       this.replayBuffer.push(sessionId, data);
-      const base64 = Buffer.from(data, "utf-8").toString("base64");
-      this.send({ type: "cli_pty_data", sessionId, data: base64 });
+      this.sendPtyData(tracked, data);
     });
 
     // Forward status changes
@@ -367,6 +572,11 @@ export class RelayClient extends EventEmitter {
       tracked.statusUnsub();
       tracked.statusUnsub = null;
     }
+    // Clear crypto state
+    tracked.keyPair = null;
+    tracked.sck = null;
+    tracked.viewerKeys.clear();
+    setSessionEncryptionStatus(tracked.sessionId, "none");
   }
 
   // -------------------------------------------------------------------------
@@ -384,6 +594,8 @@ export class RelayClient extends EventEmitter {
     const instance = getSessionInstance(sessionId);
     if (!sessionState || !instance) return;
 
+    const tracked = this.trackedSessions.get(sessionId);
+
     this.send({
       type: "cli_register_session",
       sessionId,
@@ -393,6 +605,7 @@ export class RelayClient extends EventEmitter {
       status: sessionState.status,
       cols: instance.cols,
       rows: instance.rows,
+      publicKey: tracked?.keyPair?.publicKeyBase64,
     });
   }
 
@@ -463,7 +676,10 @@ export class RelayClient extends EventEmitter {
     if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return;
 
     // Backpressure: drop PTY data if buffer is backing up
-    if (msg.type === "cli_pty_data" && this.ws.bufferedAmount > 256 * 1024) {
+    if (
+      (msg.type === "cli_pty_data" || msg.type === "cli_encrypted_pty_data") &&
+      this.ws.bufferedAmount > 256 * 1024
+    ) {
       return;
     }
 
