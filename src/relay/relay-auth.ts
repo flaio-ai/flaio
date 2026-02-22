@@ -2,7 +2,6 @@ import http from "node:http";
 import { once } from "node:events";
 import { exec } from "node:child_process";
 import { settingsStore } from "../store/settings-store.js";
-import { AUTH_URL } from "./relay-protocol.js";
 
 /**
  * Run the browser-based OAuth login flow:
@@ -25,7 +24,8 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
   }
   const port = addr.port;
 
-  const authUrl = `${AUTH_URL}?port=${port}`;
+  const authBaseUrl = settingsStore.getState().config.relay.authUrl;
+  const authUrl = `${authBaseUrl}?port=${port}`;
   process.stdout.write(`Opening browser to authenticate...\n`);
   process.stdout.write(`If the browser doesn't open, visit:\n  ${authUrl}\n\n`);
 

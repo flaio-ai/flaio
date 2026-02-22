@@ -1,6 +1,5 @@
 import { EventEmitter } from "node:events";
 import {
-  RELAY_URL,
   PING_INTERVAL_MS,
   PONG_TIMEOUT_MS,
   type CliToRelayMsg,
@@ -195,7 +194,8 @@ export class RelayClient extends EventEmitter {
       // Dynamic import — ws is a dependency we expect to be available
       const { default: WebSocket } = await import("ws");
 
-      this.ws = new WebSocket(RELAY_URL);
+      const relayUrl = settingsStore.getState().config.relay.relayUrl;
+      this.ws = new WebSocket(relayUrl);
 
       this.ws.on("open", () => {
         debugLog("relay: connected to relay server");

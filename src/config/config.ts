@@ -37,6 +37,8 @@ const RelayConfigSchema = z.object({
     .default(DEFAULTS.relay.defaultShareMode),
   maxReplayBufferKB: z.number().default(DEFAULTS.relay.maxReplayBufferKB),
   e2eEncryption: z.boolean().default(DEFAULTS.relay.e2eEncryption),
+  relayUrl: z.string().default(DEFAULTS.relay.relayUrl),
+  authUrl: z.string().default(DEFAULTS.relay.authUrl),
 });
 
 const UiConfigSchema = z.object({
