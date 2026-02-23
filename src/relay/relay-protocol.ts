@@ -86,6 +86,15 @@ export interface CliEncryptedPtyDataMsg {
   seq: number;
 }
 
+export interface CliBrowseDirResultMsg {
+  type: "cli_browse_dir_result";
+  requestId: string;
+  viewerId: string;
+  resolvedPath: string;
+  directories: string[];
+  error: string | null;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -95,7 +104,8 @@ export type CliToRelayMsg =
   | CliPongMsg
   | CliSessionPublicKeyMsg
   | CliWrappedKeyMsg
-  | CliEncryptedPtyDataMsg;
+  | CliEncryptedPtyDataMsg
+  | CliBrowseDirResultMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -160,6 +170,12 @@ export interface WebEncryptedInputMsg {
   data: string;
 }
 
+export interface WebBrowseDirMsg {
+  type: "web_browse_dir";
+  requestId: string;
+  path: string;
+}
+
 export type BrowserToRelayMsg =
   | WebAuthMsg
   | WebListSessionsMsg
@@ -170,7 +186,8 @@ export type BrowserToRelayMsg =
   | WebCreateSessionMsg
   | WebPongMsg
   | WebViewerPublicKeyMsg
-  | WebEncryptedInputMsg;
+  | WebEncryptedInputMsg
+  | WebBrowseDirMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → CLI messages
@@ -238,6 +255,13 @@ export interface RelayEncryptedInputMsg {
   data: string;
 }
 
+export interface RelayBrowseDirMsg {
+  type: "relay_browse_dir";
+  requestId: string;
+  viewerId: string;
+  path: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -248,7 +272,8 @@ export type RelayToCliMsg =
   | RelayCreateSessionMsg
   | RelayPingMsg
   | RelayViewerPublicKeyMsg
-  | RelayEncryptedInputMsg;
+  | RelayEncryptedInputMsg
+  | RelayBrowseDirMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages
@@ -319,6 +344,14 @@ export interface RelayEncryptedPtyDataMsg {
   seq: number;
 }
 
+export interface RelayBrowseDirResultMsg {
+  type: "relay_browse_dir_result";
+  requestId: string;
+  resolvedPath: string;
+  directories: string[];
+  error: string | null;
+}
+
 export type RelayToBrowserMsg =
   | RelayWebAuthOkMsg
   | RelayWebAuthFailMsg
@@ -330,7 +363,8 @@ export type RelayToBrowserMsg =
   | RelayWebPingMsg
   | RelaySessionPublicKeyMsg
   | RelayWrappedKeyMsg
-  | RelayEncryptedPtyDataMsg;
+  | RelayEncryptedPtyDataMsg
+  | RelayBrowseDirResultMsg;
 
 // ---------------------------------------------------------------------------
 // Constants

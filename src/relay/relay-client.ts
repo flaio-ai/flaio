@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import {
   PING_INTERVAL_MS,
   PONG_TIMEOUT_MS,
@@ -291,6 +293,10 @@ export class RelayClient extends EventEmitter {
         this.handleRelayCreateSession(msg.driverName, msg.cwd);
         break;
 
+      case "relay_browse_dir":
+        this.handleBrowseDir(msg.requestId, msg.viewerId, msg.path);
+        break;
+
       case "relay_ping":
         this.send({ type: "cli_pong" });
         this.resetPongTimer();
@@ -359,6 +365,43 @@ export class RelayClient extends EventEmitter {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: failed to create session: ${message}`);
+    }
+  }
+
+  private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
+    // Expand leading tilde
+    const resolvedPath = dirPath.startsWith("~/")
+      ? dirPath.replace("~", process.env.HOME ?? os.homedir())
+      : dirPath === "~"
+        ? process.env.HOME ?? os.homedir()
+        : dirPath;
+
+    try {
+      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      const directories = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+      this.send({
+        type: "cli_browse_dir_result",
+        requestId,
+        viewerId,
+        resolvedPath: path.resolve(resolvedPath),
+        directories,
+        error: null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: browse dir failed: ${message}`);
+      this.send({
+        type: "cli_browse_dir_result",
+        requestId,
+        viewerId,
+        resolvedPath: path.resolve(resolvedPath),
+        directories: [],
+        error: message,
+      });
     }
   }
 
