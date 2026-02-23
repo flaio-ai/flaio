@@ -100,6 +100,49 @@ export function getAuthToken(): string | null {
   return config.relay.authToken ?? null;
 }
 
+// Firebase Web API key (public — same as in the web app)
+const FIREBASE_API_KEY = "AIzaSyC8QMRjys-y0VNAKp_FxdTBGwiANKUVDbI";
+
+/**
+ * Refresh the Firebase ID token using the stored refresh token.
+ * Returns the new ID token, or null if refresh failed.
+ */
+export async function refreshAuthToken(): Promise<string | null> {
+  const { config } = settingsStore.getState();
+  const refreshToken = config.relay.refreshToken;
+  if (!refreshToken) return null;
+
+  try {
+    const res = await fetch(
+      `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+      },
+    );
+
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as {
+      id_token?: string;
+      refresh_token?: string;
+    };
+
+    if (!data.id_token) return null;
+
+    // Persist the new tokens
+    settingsStore.getState().updateRelay({
+      authToken: data.id_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+    });
+
+    return data.id_token;
+  } catch {
+    return null;
+  }
+}
+
 function openBrowser(url: string): void {
   const cmd =
     process.platform === "darwin"

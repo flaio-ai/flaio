@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import os from "node:os";
 import {
   PING_INTERVAL_MS,
   PONG_TIMEOUT_MS,
@@ -11,6 +12,7 @@ import {
   updateViewerCount,
   clearViewerCounts,
 } from "./relay-store.js";
+import { refreshAuthToken } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
 import type { AgentSession } from "../agents/agent-session.js";
@@ -262,8 +264,8 @@ export class RelayClient extends EventEmitter {
       case "relay_auth_fail":
         debugLog(`relay: auth failed: ${msg.reason}`);
         setRelayConnectionStatus("error", `Auth failed: ${msg.reason}`);
-        // Don't reconnect on auth failure — token is bad
-        this.shouldReconnect = false;
+        // Try refreshing the token before giving up
+        this.handleAuthFailure();
         break;
 
       case "relay_input":
@@ -304,6 +306,19 @@ export class RelayClient extends EventEmitter {
     }
   }
 
+  private async handleAuthFailure(): Promise<void> {
+    debugLog("relay: attempting token refresh...");
+    const newToken = await refreshAuthToken();
+    if (newToken) {
+      debugLog("relay: token refreshed, reconnecting");
+      this.reconnectAttempt = 0;
+      this.scheduleReconnect();
+    } else {
+      debugLog("relay: token refresh failed — giving up");
+      this.shouldReconnect = false;
+    }
+  }
+
   private handleRelayInput(sessionId: string, base64Data: string): void {
     const shareMode = settingsStore.getState().config.relay.defaultShareMode;
     if (shareMode === "read-only") {
@@ -326,9 +341,24 @@ export class RelayClient extends EventEmitter {
   }
 
   private handleRelayCreateSession(driverName: string, cwd: string): void {
-    const session = appStore.getState().createSession(driverName, cwd);
-    if (session) {
-      session.start();
+    // Expand leading tilde — Node.js doesn't do this automatically
+    const resolvedCwd = cwd.startsWith("~/")
+      ? cwd.replace("~", process.env.HOME ?? os.homedir())
+      : cwd === "~"
+        ? process.env.HOME ?? os.homedir()
+        : cwd;
+
+    debugLog(`relay: create session request: driver=${driverName} cwd=${resolvedCwd}`);
+    try {
+      const session = appStore.getState().createSession(driverName, resolvedCwd);
+      if (session) {
+        session.start();
+      } else {
+        debugLog(`relay: createSession returned null (driver "${driverName}" not found?)`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: failed to create session: ${message}`);
     }
   }
 
@@ -491,8 +521,15 @@ export class RelayClient extends EventEmitter {
       // New sessions
       for (const id of currentIds) {
         if (!prevIds.has(id)) {
+          // Register immediately so the session appears in the browser right away
+          this.registerSession(id);
+          // Then track async for E2E crypto and PTY data streaming
           this.trackSession(id).then(() => {
-            this.registerSession(id);
+            // Re-register with public key once E2E keys are generated
+            const tracked = this.trackedSessions.get(id);
+            if (tracked?.keyPair) {
+              this.registerSession(id);
+            }
           });
         }
       }
