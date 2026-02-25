@@ -20,4 +20,13 @@ export const DEFAULTS = {
       timeout: 300000,
     },
   },
+  relay: {
+    enabled: false,
+    autoConnect: true,
+    defaultShareMode: "read-only" as const,
+    maxReplayBufferKB: 100,
+    e2eEncryption: true,
+    relayUrl: "wss://relay.agentmanager.dev",
+    authUrl: "https://app.agentmanager.dev/auth/cli",
+  },
 } as const;

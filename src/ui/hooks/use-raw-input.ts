@@ -21,14 +21,20 @@ export function useRawInput(
   const sessionRef = useRef(activeSession);
   sessionRef.current = activeSession;
 
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+
   useEffect(() => {
-    if (!enabled || !stdin) return;
+    if (!stdin) return;
 
     setRawMode(true);
 
-    const onData = (data: Buffer) => {
-      const str = data.toString();
-      const byte = data[0];
+    const onData = (data: Buffer | string) => {
+      if (!enabledRef.current) return;
+      // Ink 6 sets stdin.setEncoding('utf8'), so data arrives as a string.
+      // Support both for safety.
+      const str = typeof data === "string" ? data : data.toString();
+      const charCode = str.charCodeAt(0);
       const session = sessionRef.current;
 
       // SGR mouse events: ESC[< prefix. Only handle scroll wheel
@@ -45,29 +51,29 @@ export function useRawInput(
         return;
       }
 
-      // Single-byte control characters
-      if (data.length === 1 && byte !== undefined) {
+      // Single-character control keys
+      if (str.length === 1) {
         // Skip global shortcuts — handled by useKeybindings/useInput
         if (
-          byte === 0x14 || // Ctrl+T
-          byte === 0x17 || // Ctrl+W
-          byte === 0x0e || // Ctrl+N
-          byte === 0x10 || // Ctrl+P
-          byte === 0x02 || // Ctrl+B
-          byte === 0x11 || // Ctrl+Q
-          byte === 0x13 || // Ctrl+S
-          byte === 0x07    // Ctrl+G (help)
+          charCode === 0x14 || // Ctrl+T
+          charCode === 0x17 || // Ctrl+W
+          charCode === 0x0e || // Ctrl+N
+          charCode === 0x10 || // Ctrl+P
+          charCode === 0x02 || // Ctrl+B
+          charCode === 0x11 || // Ctrl+Q
+          charCode === 0x13 || // Ctrl+S
+          charCode === 0x07    // Ctrl+G (help)
         ) {
           return;
         }
 
         if (session) {
           // Scroll: Ctrl+U = 0x15 (up), Ctrl+D = 0x04 (down)
-          if (byte === 0x15) {
+          if (charCode === 0x15) {
             session.scroll(-SCROLL_LINES);
             return;
           }
-          if (byte === 0x04) {
+          if (charCode === 0x04) {
             session.scroll(SCROLL_LINES);
             return;
           }
@@ -76,8 +82,8 @@ export function useRawInput(
 
       // Alt shortcuts — handled by useKeybindings, must intercept before PTY
       // ESC prefix form (terminal configured with Option=Esc)
-      if (data.length === 2 && data[0] === 0x1b) {
-        const second = data[1]!;
+      if (str.length === 2 && str.charCodeAt(0) === 0x1b) {
+        const second = str.charCodeAt(1);
         if (second >= 0x31 && second <= 0x39) return; // Alt+1-9
         if (second === 0x61) return; // Alt+A (adopt)
       }
@@ -110,5 +116,5 @@ export function useRawInput(
     return () => {
       stdin.off("data", onData);
     };
-  }, [enabled, stdin, setRawMode]);
+  }, [stdin, setRawMode]);
 }

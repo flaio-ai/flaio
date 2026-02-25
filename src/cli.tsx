@@ -8,6 +8,8 @@ import { Command } from "commander";
 import { App } from "./app.js";
 import { listSessions, streamSession } from "./portal/portal-client.js";
 import { PortalPicker } from "./portal/portal-picker.js";
+import { login, logout, isLoggedIn } from "./relay/relay-auth.js";
+import { settingsStore } from "./store/settings-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
@@ -27,6 +29,7 @@ program
     // (hold Shift to select text in most terminal emulators)
     process.stdout.write("\x1B[?1000h");
     process.stdout.write("\x1B[?1006h");
+
     const cleanup = () => {
       // Disable mouse reporting
       process.stdout.write("\x1B[?1006l");
@@ -38,6 +41,7 @@ program
 
     const instance = render(<App />, {
       exitOnCtrlC: false,
+      maxFps: 15,
     });
 
     // Clean up on exit
@@ -114,6 +118,52 @@ program
     if (selectedId) {
       await streamSession(selectedId);
     }
+  });
+
+program
+  .command("login")
+  .description("Authenticate with the remote relay service")
+  .action(async () => {
+    // Ensure settings are loaded
+    if (!settingsStore.getState().loaded) {
+      settingsStore.getState().load();
+    }
+
+    if (isLoggedIn()) {
+      process.stdout.write("Already logged in. Use `agent-manager logout` to sign out first.\n");
+      process.exit(0);
+    }
+
+    const result = await login();
+    if (result.success) {
+      // Enable relay by default after login
+      settingsStore.getState().updateRelay({ enabled: true });
+      process.stdout.write("Logged in successfully. Remote access is now enabled.\n");
+      process.exit(0);
+    } else {
+      process.stderr.write(`Login failed: ${result.error}\n`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("logout")
+  .description("Sign out from the remote relay service")
+  .action(() => {
+    // Ensure settings are loaded
+    if (!settingsStore.getState().loaded) {
+      settingsStore.getState().load();
+    }
+
+    if (!isLoggedIn()) {
+      process.stdout.write("Not logged in.\n");
+      process.exit(0);
+    }
+
+    logout();
+    settingsStore.getState().updateRelay({ enabled: false });
+    process.stdout.write("Logged out. Remote access has been disabled.\n");
+    process.exit(0);
   });
 
 program.parse(process.argv);

@@ -13,6 +13,7 @@ export interface SettingsState {
     patch: Record<string, unknown>,
   ) => void;
   updateUi: (patch: Record<string, unknown>) => void;
+  updateRelay: (patch: Record<string, unknown>) => void;
 }
 
 export const settingsStore = createStore<SettingsState>((set, get) => ({
@@ -57,6 +58,19 @@ export const settingsStore = createStore<SettingsState>((set, get) => ({
         ...prev.config,
         ui: {
           ...prev.config.ui,
+          ...patch,
+        },
+      },
+    }));
+    get().save();
+  },
+
+  updateRelay: (patch) => {
+    set((prev) => ({
+      config: {
+        ...prev.config,
+        relay: {
+          ...prev.config.relay,
           ...patch,
         },
       },
