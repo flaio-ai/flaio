@@ -77,8 +77,8 @@ export function useKeybindings(actions: KeybindingActions): void {
       return;
     }
 
-    // Ctrl+G: Toggle help
-    if (key.ctrl && input === "g") {
+    // Ctrl+G or ? (when no session): Toggle help
+    if ((key.ctrl && input === "g") || (input === "?" && !store.activeSessionId)) {
       actions.onToggleHelp();
       return;
     }

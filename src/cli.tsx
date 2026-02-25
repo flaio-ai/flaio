@@ -29,6 +29,7 @@ program
     // (hold Shift to select text in most terminal emulators)
     process.stdout.write("\x1B[?1000h");
     process.stdout.write("\x1B[?1006h");
+
     const cleanup = () => {
       // Disable mouse reporting
       process.stdout.write("\x1B[?1006l");
@@ -40,6 +41,7 @@ program
 
     const instance = render(<App />, {
       exitOnCtrlC: false,
+      maxFps: 15,
     });
 
     // Clean up on exit

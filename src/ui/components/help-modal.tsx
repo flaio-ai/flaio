@@ -19,7 +19,7 @@ const KEYBINDINGS: Array<[string, string]> = [
   ["Ctrl+D", "Scroll down"],
   ["Mouse Wheel", "Scroll up/down"],
   ["Shift+Drag", "Select text (terminal)"],
-  ["Ctrl+G", "Toggle this help"],
+  ["Ctrl+G / ?", "Toggle this help"],
   ["Esc", "Close modal / cancel"],
 ];
 
