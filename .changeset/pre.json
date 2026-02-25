@@ -1,0 +1,8 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "agent-manager": "0.1.2"
+  },
+  "changesets": []
+}
