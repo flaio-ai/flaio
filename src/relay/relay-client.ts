@@ -7,7 +7,11 @@ import {
   PONG_TIMEOUT_MS,
   type CliToRelayMsg,
   type RelayToCliMsg,
+  type RelayStartPlanningMsg,
+  type RelayStartImplementationMsg,
+  type RelayRequestChangesMsg,
 } from "./relay-protocol.js";
+import { ticketTracker } from "./ticket-tracker.js";
 import {
   setRelayConnectionStatus,
   setSessionEncryptionStatus,
@@ -198,7 +202,7 @@ export class RelayClient extends EventEmitter {
       // Dynamic import — ws is a dependency we expect to be available
       const { default: WebSocket } = await import("ws");
 
-      const relayUrl = settingsStore.getState().config.relay.relayUrl;
+      const relayUrl = process.env.RELAY_URL || settingsStore.getState().config.relay.relayUrl;
       this.ws = new WebSocket(relayUrl);
 
       this.ws.on("open", () => {
@@ -309,6 +313,18 @@ export class RelayClient extends EventEmitter {
       case "relay_encrypted_input":
         this.handleEncryptedInput(msg.sessionId, msg.viewerId, msg.data);
         break;
+
+      case "relay_start_planning":
+        this.handleStartPlanning(msg);
+        break;
+
+      case "relay_start_implementation":
+        this.handleStartImplementation(msg);
+        break;
+
+      case "relay_request_changes":
+        this.handleRequestChanges(msg);
+        break;
     }
   }
 
@@ -403,6 +419,170 @@ export class RelayClient extends EventEmitter {
         error: message,
       });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 3: Ticket dev-loop handlers
+  // -------------------------------------------------------------------------
+
+  private handleStartPlanning(msg: RelayStartPlanningMsg): void {
+    const resolvedCwd = msg.cwd.startsWith("~/")
+      ? msg.cwd.replace("~", process.env.HOME ?? os.homedir())
+      : msg.cwd === "~"
+        ? process.env.HOME ?? os.homedir()
+        : msg.cwd;
+
+    const planningPrompt = [
+      "You are planning the implementation of a ticket.",
+      "",
+      `Title: ${msg.ticketTitle}`,
+      `Description: ${msg.ticketDescription}`,
+      "",
+      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      "",
+      "Please analyze the requirements and create a detailed implementation plan. Include:",
+      "- Files to create/modify",
+      "- Key implementation steps",
+      "- Any potential issues or considerations",
+    ].join("\n");
+
+    debugLog(`relay: start planning ticket=${msg.ticketId} cwd=${resolvedCwd}`);
+
+    try {
+      const session = appStore.getState().createSession("claude", resolvedCwd);
+      if (!session) {
+        debugLog("relay: failed to create planning session");
+        return;
+      }
+
+      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle);
+
+      this.send({
+        type: "cli_ticket_status",
+        ticketId: msg.ticketId,
+        sessionId: session.id,
+        status: "planning",
+      });
+
+      session.start({ prompt: planningPrompt });
+
+      // Monitor session status for plan completion
+      const onStatus = (status: string) => {
+        if (status === "waiting_input" || status === "exited") {
+          session.removeListener("status", onStatus);
+
+          const plainText = session.getPlainText(500).join("\n");
+
+          ticketTracker.updateStatus(msg.ticketId, "plan_ready");
+
+          this.send({
+            type: "cli_plan_ready",
+            ticketId: msg.ticketId,
+            sessionId: session.id,
+            plan: plainText,
+          });
+
+          this.send({
+            type: "cli_ticket_status",
+            ticketId: msg.ticketId,
+            sessionId: session.id,
+            status: "plan_ready",
+          });
+        }
+      };
+      session.on("status", onStatus);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: handleStartPlanning error: ${message}`);
+    }
+  }
+
+  private handleStartImplementation(msg: RelayStartImplementationMsg): void {
+    const resolvedCwd = msg.cwd.startsWith("~/")
+      ? msg.cwd.replace("~", process.env.HOME ?? os.homedir())
+      : msg.cwd === "~"
+        ? process.env.HOME ?? os.homedir()
+        : msg.cwd;
+
+    const implementPrompt = [
+      "You are implementing a plan. Follow the plan exactly.",
+      "",
+      "Plan:",
+      msg.plan,
+      "",
+      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      "",
+      "Implement the plan step by step. When done, create a git branch and commit your changes.",
+    ].join("\n");
+
+    debugLog(`relay: start implementation ticket=${msg.ticketId} cwd=${resolvedCwd}`);
+
+    try {
+      const session = appStore.getState().createSession("claude", resolvedCwd);
+      if (!session) {
+        debugLog("relay: failed to create implementation session");
+        return;
+      }
+
+      ticketTracker.startImplementation(msg.ticketId, session.id);
+
+      this.send({
+        type: "cli_ticket_status",
+        ticketId: msg.ticketId,
+        sessionId: session.id,
+        status: "implementing",
+      });
+
+      session.start({ prompt: implementPrompt });
+
+      // Monitor session status for implementation completion
+      const onStatus = (status: string) => {
+        if (status === "waiting_input" || status === "exited") {
+          session.removeListener("status", onStatus);
+
+          const plainText = session.getPlainText(500).join("\n");
+
+          ticketTracker.updateStatus(msg.ticketId, "done");
+
+          this.send({
+            type: "cli_implementation_done",
+            ticketId: msg.ticketId,
+            sessionId: session.id,
+            summary: plainText,
+            gitContext: {},
+          });
+
+          this.send({
+            type: "cli_ticket_status",
+            ticketId: msg.ticketId,
+            sessionId: session.id,
+            status: "done",
+          });
+        }
+      };
+      session.on("status", onStatus);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: handleStartImplementation error: ${message}`);
+    }
+  }
+
+  private handleRequestChanges(msg: RelayRequestChangesMsg): void {
+    debugLog(`relay: request changes ticket=${msg.ticketId} session=${msg.sessionId}`);
+
+    const sessionId = ticketTracker.getSessionForTicket(msg.ticketId);
+    if (!sessionId) {
+      debugLog(`relay: no tracked session for ticket ${msg.ticketId}`);
+      return;
+    }
+
+    const session = getSessionInstance(sessionId);
+    if (!session) {
+      debugLog(`relay: session instance ${sessionId} not found for changes request`);
+      return;
+    }
+
+    session.write(msg.feedback + "\n");
   }
 
   // -------------------------------------------------------------------------

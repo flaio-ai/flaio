@@ -24,7 +24,7 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
   }
   const port = addr.port;
 
-  const authBaseUrl = settingsStore.getState().config.relay.authUrl;
+  const authBaseUrl = process.env.AUTH_URL || settingsStore.getState().config.relay.authUrl;
   const authUrl = `${authBaseUrl}?port=${port}`;
   process.stdout.write(`Opening browser to authenticate...\n`);
   process.stdout.write(`If the browser doesn't open, visit:\n  ${authUrl}\n\n`);
