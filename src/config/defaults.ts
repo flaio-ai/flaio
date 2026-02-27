@@ -26,7 +26,7 @@ export const DEFAULTS = {
     defaultShareMode: "read-only" as const,
     maxReplayBufferKB: 100,
     e2eEncryption: true,
-    relayUrl: "wss://relay.agentmanager.dev",
-    authUrl: "https://app.agentmanager.dev/auth/cli",
+    relayUrl: "wss://api.charliesagents.app",
+    authUrl: "https://charliesagents.app/auth/cli",
   },
 } as const;
