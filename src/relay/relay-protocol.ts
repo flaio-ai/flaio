@@ -370,8 +370,8 @@ export type RelayToBrowserMsg =
 // Constants
 // ---------------------------------------------------------------------------
 
-export const RELAY_URL = "wss://relay.agentmanager.dev";
-export const AUTH_URL = "https://app.agentmanager.dev/auth/cli";
+export const RELAY_URL = "wss://api.charliesagents.app";
+export const AUTH_URL = "https://charliesagents.app/auth/cli";
 
 /** Heartbeat interval in ms */
 export const PING_INTERVAL_MS = 30_000;
