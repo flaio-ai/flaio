@@ -5,6 +5,7 @@
     "agent-manager": "0.1.2"
   },
   "changesets": [
-    "relay-client-beta"
+    "relay-client-beta",
+    "update-relay-urls"
   ]
 }

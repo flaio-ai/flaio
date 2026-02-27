@@ -1,5 +1,11 @@
 # agent-manager
 
+## 0.2.0-beta.1
+
+### Patch Changes
+
+- a2bfd53: Update relay URLs to charliesagents.app production domain
+
 ## 0.2.0-beta.0
 
 ### Minor Changes
