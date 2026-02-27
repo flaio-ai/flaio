@@ -4,5 +4,7 @@
   "initialVersions": {
     "agent-manager": "0.1.2"
   },
-  "changesets": []
+  "changesets": [
+    "relay-client-beta"
+  ]
 }
