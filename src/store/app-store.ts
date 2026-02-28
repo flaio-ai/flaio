@@ -10,6 +10,10 @@ export interface SessionState {
   displayName: string;
   cwd: string;
   status: AgentStatus;
+  /** Whether this session is interactive (TUI) or non-interactive (print mode) */
+  interactive?: boolean;
+  /** The CLI command string that was used to spawn this session */
+  command?: string;
 }
 
 export interface AppState {
@@ -27,6 +31,7 @@ export interface AppState {
   toggleSidebar: () => void;
   getActiveSession: () => AgentSession | null;
   updateSessionStatus: (sessionId: string, status: AgentStatus) => void;
+  setSessionMeta: (sessionId: string, meta: { interactive?: boolean; command?: string }) => void;
   adoptAgent: (agent: DetectedAgent, cols?: number, rows?: number) => Promise<AgentSession | null>;
 }
 
@@ -133,6 +138,14 @@ export const appStore = createStore<AppState>((set, get) => ({
     const { activeSessionId } = get();
     if (!activeSessionId) return null;
     return sessionInstances.get(activeSessionId) ?? null;
+  },
+
+  setSessionMeta: (sessionId: string, meta: { interactive?: boolean; command?: string }) => {
+    set((prev) => ({
+      sessions: prev.sessions.map((s) =>
+        s.id === sessionId ? { ...s, ...meta } : s,
+      ),
+    }));
   },
 
   updateSessionStatus: (sessionId: string, status: AgentStatus) => {

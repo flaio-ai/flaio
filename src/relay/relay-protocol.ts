@@ -16,6 +16,10 @@ export interface RelaySessionInfo {
   status: string;
   cols: number;
   rows: number;
+  /** Whether this session is interactive (TUI) or non-interactive (print mode) */
+  interactive?: boolean;
+  /** The CLI command string that was used to spawn this session */
+  command?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +42,10 @@ export interface CliRegisterSessionMsg {
   rows: number;
   /** Base64-encoded ECDH P-256 public key (present when E2E is enabled) */
   publicKey?: string;
+  /** Whether this session is interactive (TUI) or non-interactive (print mode) */
+  interactive?: boolean;
+  /** The CLI command string that was used to spawn this session */
+  command?: string;
 }
 
 export interface CliUnregisterSessionMsg {
@@ -95,6 +103,33 @@ export interface CliBrowseDirResultMsg {
   error: string | null;
 }
 
+// Phase 3: Ticket lifecycle messages (CLI -> Relay)
+
+export interface CliPlanReadyMsg {
+  type: "cli_plan_ready";
+  ticketId: string;
+  sessionId: string;
+  plan: string;
+  iteration: number;
+  feedback: string | null;
+}
+
+export interface CliImplementationDoneMsg {
+  type: "cli_implementation_done";
+  ticketId: string;
+  sessionId: string;
+  summary: string;
+  gitContext: { branch?: string; prUrl?: string };
+}
+
+export interface CliTicketStatusMsg {
+  type: "cli_ticket_status";
+  ticketId: string;
+  sessionId: string;
+  status: "planning" | "plan_ready" | "implementing" | "done" | "error";
+  message?: string;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -105,7 +140,10 @@ export type CliToRelayMsg =
   | CliSessionPublicKeyMsg
   | CliWrappedKeyMsg
   | CliEncryptedPtyDataMsg
-  | CliBrowseDirResultMsg;
+  | CliBrowseDirResultMsg
+  | CliPlanReadyMsg
+  | CliImplementationDoneMsg
+  | CliTicketStatusMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -262,6 +300,44 @@ export interface RelayBrowseDirMsg {
   path: string;
 }
 
+// Phase 3: Ticket lifecycle messages (Relay -> CLI)
+
+export interface RelayStartPlanningMsg {
+  type: "relay_start_planning";
+  ticketId: string;
+  ticketTitle: string;
+  ticketDescription: string;
+  systemInstructions: string[];
+  cwd: string;
+  previousPlan?: string;
+  feedback?: string;
+  iteration?: number;
+}
+
+export interface RelayStartInteractivePlanningMsg {
+  type: "relay_start_interactive_planning";
+  ticketId: string;
+  ticketTitle: string;
+  ticketDescription: string;
+  systemInstructions: string[];
+  cwd: string;
+}
+
+export interface RelayStartImplementationMsg {
+  type: "relay_start_implementation";
+  ticketId: string;
+  plan: string;
+  systemInstructions: string[];
+  cwd: string;
+}
+
+export interface RelayRequestChangesMsg {
+  type: "relay_request_changes";
+  ticketId: string;
+  sessionId: string;
+  feedback: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -273,7 +349,11 @@ export type RelayToCliMsg =
   | RelayPingMsg
   | RelayViewerPublicKeyMsg
   | RelayEncryptedInputMsg
-  | RelayBrowseDirMsg;
+  | RelayBrowseDirMsg
+  | RelayStartPlanningMsg
+  | RelayStartInteractivePlanningMsg
+  | RelayStartImplementationMsg
+  | RelayRequestChangesMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

@@ -2,9 +2,11 @@ import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import type { ScreenContent, SpanLine, Span } from "../../terminal/screen-buffer.js";
 import type { AgentSession } from "../../agents/agent-session.js";
+import type { SessionState } from "../../store/app-store.js";
 
 interface TerminalViewProps {
   session: AgentSession | null;
+  sessionState?: SessionState;
   width: number;
   height: number;
 }
@@ -58,6 +60,7 @@ function renderLine(line: SpanLine, lineIndex: number): React.ReactElement {
 
 export function TerminalView({
   session,
+  sessionState,
   width,
   height,
 }: TerminalViewProps): React.ReactElement {
@@ -93,6 +96,9 @@ export function TerminalView({
     );
   }
 
+  // Check if this session is non-interactive (print mode)
+  const isNonInteractive = sessionState?.interactive === false;
+
   // Take exactly `height` lines — xterm viewport handles scrollback
   const visibleLines = content.slice(0, height);
 
@@ -104,6 +110,34 @@ export function TerminalView({
 
   return (
     <Box flexDirection="column" width={width} height={height}>
+      {isNonInteractive && (
+        <Box
+          flexDirection="column"
+          alignItems="center"
+          justifyContent="center"
+          width={width}
+          height={height}
+          position="absolute"
+        >
+          <Box
+            flexDirection="column"
+            alignItems="center"
+            borderStyle="round"
+            borderColor="#7c3aed"
+            paddingX={3}
+            paddingY={1}
+          >
+            <Text color="#7c3aed" bold>
+              ◈ Non-Interactive Session
+            </Text>
+            <Text dimColor> </Text>
+            <Text dimColor>This session is running in print mode.</Text>
+            {sessionState?.command && (
+              <Text dimColor>{sessionState.command}</Text>
+            )}
+          </Box>
+        </Box>
+      )}
       {paddedLines.map((line, i) => renderLine(line, i))}
     </Box>
   );

@@ -8,6 +8,7 @@ import {
   type CliToRelayMsg,
   type RelayToCliMsg,
   type RelayStartPlanningMsg,
+  type RelayStartInteractivePlanningMsg,
   type RelayStartImplementationMsg,
   type RelayRequestChangesMsg,
 } from "./relay-protocol.js";
@@ -318,6 +319,10 @@ export class RelayClient extends EventEmitter {
         this.handleStartPlanning(msg);
         break;
 
+      case "relay_start_interactive_planning":
+        this.handleStartInteractivePlanning(msg);
+        break;
+
       case "relay_start_implementation":
         this.handleStartImplementation(msg);
         break;
@@ -362,13 +367,18 @@ export class RelayClient extends EventEmitter {
     session.resize(cols, rows);
   }
 
+  private resolveCwd(cwd: string): string {
+    if (cwd.startsWith("~/")) {
+      return cwd.replace("~", process.env.HOME ?? os.homedir());
+    }
+    if (cwd === "~") {
+      return process.env.HOME ?? os.homedir();
+    }
+    return cwd;
+  }
+
   private handleRelayCreateSession(driverName: string, cwd: string): void {
-    // Expand leading tilde — Node.js doesn't do this automatically
-    const resolvedCwd = cwd.startsWith("~/")
-      ? cwd.replace("~", process.env.HOME ?? os.homedir())
-      : cwd === "~"
-        ? process.env.HOME ?? os.homedir()
-        : cwd;
+    const resolvedCwd = this.resolveCwd(cwd);
 
     debugLog(`relay: create session request: driver=${driverName} cwd=${resolvedCwd}`);
     try {
@@ -385,12 +395,7 @@ export class RelayClient extends EventEmitter {
   }
 
   private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
-    // Expand leading tilde
-    const resolvedPath = dirPath.startsWith("~/")
-      ? dirPath.replace("~", process.env.HOME ?? os.homedir())
-      : dirPath === "~"
-        ? process.env.HOME ?? os.homedir()
-        : dirPath;
+    const resolvedPath = this.resolveCwd(dirPath);
 
     try {
       const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
@@ -426,13 +431,10 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private handleStartPlanning(msg: RelayStartPlanningMsg): void {
-    const resolvedCwd = msg.cwd.startsWith("~/")
-      ? msg.cwd.replace("~", process.env.HOME ?? os.homedir())
-      : msg.cwd === "~"
-        ? process.env.HOME ?? os.homedir()
-        : msg.cwd;
+    const resolvedCwd = this.resolveCwd(msg.cwd);
+    const iteration = msg.iteration ?? 0;
 
-    const planningPrompt = [
+    const promptParts = [
       "You are planning the implementation of a ticket.",
       "",
       `Title: ${msg.ticketTitle}`,
@@ -440,13 +442,40 @@ export class RelayClient extends EventEmitter {
       "",
       ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
       "",
-      "Please analyze the requirements and create a detailed implementation plan. Include:",
-      "- Files to create/modify",
-      "- Key implementation steps",
-      "- Any potential issues or considerations",
-    ].join("\n");
+    ];
 
-    debugLog(`relay: start planning ticket=${msg.ticketId} cwd=${resolvedCwd}`);
+    if (msg.previousPlan && msg.feedback) {
+      promptParts.push(
+        "A previous plan was created but the user requested revisions.",
+        "",
+        "Previous Plan:",
+        msg.previousPlan,
+        "",
+        "User Feedback:",
+        msg.feedback,
+        "",
+        "Revise the plan based on the feedback above.",
+      );
+    } else {
+      promptParts.push(
+        "Analyze the requirements and create a detailed implementation plan.",
+      );
+    }
+
+    promptParts.push(
+      "",
+      "The plan must include:",
+      "- Files to create/modify",
+      "- Key implementation steps with code snippets where helpful",
+      "- Any potential issues or considerations",
+      "",
+      "IMPORTANT: Output ONLY the complete plan. Do NOT add a summary, introduction, or conclusion.",
+      "Your entire output will be captured and shown to the user as the plan.",
+    );
+
+    const planningPrompt = promptParts.join("\n");
+
+    debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${resolvedCwd}`);
 
     try {
       const session = appStore.getState().createSession("claude", resolvedCwd);
@@ -464,45 +493,107 @@ export class RelayClient extends EventEmitter {
         status: "planning",
       });
 
-      session.start({ prompt: planningPrompt });
+      // Accumulate raw PTY output for plan capture.
+      // We can't rely on xterm buffer because the app-store's exit listener
+      // calls kill() → xterm.dispose() before we can read it.
+      let rawOutput = "";
+      const rawUnsub = session.onRawData((data) => {
+        rawOutput += data;
+      });
 
-      // Monitor session status for plan completion
-      const onStatus = (status: string) => {
-        if (status === "waiting_input" || status === "exited") {
-          session.removeListener("status", onStatus);
+      session.start({
+        prompt: planningPrompt,
+        mode: "print",
+        allowedTools: ["Read", "Glob", "Grep", "Bash(git *)"],
+      });
 
-          const plainText = session.getPlainText(500).join("\n");
+      // Set session metadata so clients know this is non-interactive
+      const command = `claude --allowedTools Read,Glob,Grep,"Bash(git *)" -p "<planning prompt>"`;
+      appStore.getState().setSessionMeta(session.id, { interactive: false, command });
+      this.registerSession(session.id);
 
-          ticketTracker.updateStatus(msg.ticketId, "plan_ready");
+      // In print mode, claude -p exits when done — listen for exit
+      const onExit = () => {
+        rawUnsub();
+        // Strip ANSI escape sequences from raw PTY output
+        const plainText = rawOutput.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
 
-          this.send({
-            type: "cli_plan_ready",
-            ticketId: msg.ticketId,
-            sessionId: session.id,
-            plan: plainText,
-          });
+        ticketTracker.updateStatus(msg.ticketId, "plan_ready");
 
-          this.send({
-            type: "cli_ticket_status",
-            ticketId: msg.ticketId,
-            sessionId: session.id,
-            status: "plan_ready",
-          });
-        }
+        this.send({
+          type: "cli_plan_ready",
+          ticketId: msg.ticketId,
+          sessionId: session.id,
+          plan: plainText,
+          iteration,
+          feedback: msg.feedback ?? null,
+        });
+
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: session.id,
+          status: "plan_ready",
+        });
       };
-      session.on("status", onStatus);
+      session.on("exit", onExit);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: handleStartPlanning error: ${message}`);
     }
   }
 
+  private handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): void {
+    const resolvedCwd = this.resolveCwd(msg.cwd);
+
+    const planningPrompt = [
+      "You are planning the implementation of a ticket.",
+      "",
+      `Title: ${msg.ticketTitle}`,
+      `Description: ${msg.ticketDescription}`,
+      "",
+      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      "",
+      "Please analyze the requirements and create a detailed implementation plan. Include:",
+      "- Files to create/modify",
+      "- Key implementation steps",
+      "- Any potential issues or considerations",
+    ].join("\n");
+
+    debugLog(`relay: start interactive planning ticket=${msg.ticketId} cwd=${resolvedCwd}`);
+
+    try {
+      const session = appStore.getState().createSession("claude", resolvedCwd);
+      if (!session) {
+        debugLog("relay: failed to create interactive planning session");
+        return;
+      }
+
+      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle);
+
+      this.send({
+        type: "cli_ticket_status",
+        ticketId: msg.ticketId,
+        sessionId: session.id,
+        status: "planning",
+      });
+
+      session.start({ prompt: planningPrompt });
+
+      // Set session metadata so clients know this is interactive
+      appStore.getState().setSessionMeta(session.id, {
+        interactive: true,
+        command: `claude "<planning prompt>"`,
+      });
+      this.registerSession(session.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: handleStartInteractivePlanning error: ${message}`);
+    }
+  }
+
   private handleStartImplementation(msg: RelayStartImplementationMsg): void {
-    const resolvedCwd = msg.cwd.startsWith("~/")
-      ? msg.cwd.replace("~", process.env.HOME ?? os.homedir())
-      : msg.cwd === "~"
-        ? process.env.HOME ?? os.homedir()
-        : msg.cwd;
+    const resolvedCwd = this.resolveCwd(msg.cwd);
 
     const implementPrompt = [
       "You are implementing a plan. Follow the plan exactly.",
@@ -534,6 +625,13 @@ export class RelayClient extends EventEmitter {
       });
 
       session.start({ prompt: implementPrompt });
+
+      // Set session metadata so clients know this is interactive
+      appStore.getState().setSessionMeta(session.id, {
+        interactive: true,
+        command: `claude "<implementation prompt>"`,
+      });
+      this.registerSession(session.id);
 
       // Monitor session status for implementation completion
       const onStatus = (status: string) => {
@@ -866,6 +964,8 @@ export class RelayClient extends EventEmitter {
       cols: instance.cols,
       rows: instance.rows,
       publicKey: tracked?.keyPair?.publicKeyBase64,
+      interactive: sessionState.interactive,
+      command: sessionState.command,
     });
   }
 

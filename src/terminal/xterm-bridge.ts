@@ -96,7 +96,7 @@ export class XtermBridge {
       cols,
       rows,
       allowProposedApi: true,
-      scrollback: 1000,
+      scrollback: 10_000,
     });
   }
 

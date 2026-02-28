@@ -82,11 +82,17 @@ export class AgentSession extends EventEmitter {
     this.emit("status", status);
   }
 
-  start(options?: { prompt?: string }): void {
+  start(options?: {
+    prompt?: string;
+    mode?: "interactive" | "print";
+    allowedTools?: string[];
+  }): void {
     this.setStatus("starting");
     const config = this.driver.buildSpawnArgs({
       cwd: this.cwd,
       prompt: options?.prompt,
+      mode: options?.mode,
+      allowedTools: options?.allowedTools,
     });
 
     this.pty.spawn({
