@@ -75,10 +75,20 @@ export function App(): React.ReactElement {
   const SIDEBAR_WIDTH = 24;
   const useTopTabs = columns < 100;
   const showSidebar = sidebarVisible && !useTopTabs;
-  const paneWidth = showSidebar ? columns - SIDEBAR_WIDTH : columns;
+  const paneWidth = (showSidebar ? columns - SIDEBAR_WIDTH : columns) - 2;
   // statusBar(1) + mainPaneHeader(3, bordered) + topTabs(conditional 3 for bordered tabs)
   const chromeRows = 1 + 3 + (sidebarVisible && useTopTabs ? 3 : 0);
   const paneRows = rows - chromeRows;
+
+  useEffect(() => {
+    if (paneWidth <= 0 || paneRows <= 0) return;
+    for (const session of sessions) {
+      const instance = getSessionInstance(session.id);
+      if (instance) {
+        instance.resize(paneWidth, paneRows);
+      }
+    }
+  }, [paneWidth, paneRows, sessions]);
 
   const handleNewSession = useCallback((driverName: string, cwd: string) => {
     const session = appStore.getState().createSession(driverName, cwd, paneWidth, paneRows);
