@@ -86,6 +86,7 @@ export function MainPane({
       {/* Terminal area */}
       <TerminalView
         session={session}
+        sessionState={sessionState}
         width={width}
         height={termHeight > 0 ? termHeight : 1}
       />

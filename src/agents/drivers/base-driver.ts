@@ -26,7 +26,12 @@ export abstract class BaseDriver {
   abstract checkInstalled(): Promise<boolean>;
 
   /** Build spawn arguments for a new session */
-  abstract buildSpawnArgs(options: { cwd: string; prompt?: string }): SpawnConfig;
+  abstract buildSpawnArgs(options: {
+    cwd: string;
+    prompt?: string;
+    mode?: "interactive" | "print";
+    allowedTools?: string[];
+  }): SpawnConfig;
 
   /** Build spawn arguments to resume an existing session */
   abstract buildResumeArgs(options: {

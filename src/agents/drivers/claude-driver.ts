@@ -15,10 +15,24 @@ export class ClaudeDriver extends BaseDriver {
     }
   }
 
-  buildSpawnArgs(options: { cwd: string; prompt?: string }): SpawnConfig {
+  buildSpawnArgs(options: {
+    cwd: string;
+    prompt?: string;
+    mode?: "interactive" | "print";
+    allowedTools?: string[];
+  }): SpawnConfig {
     const args: string[] = [];
+    if (options.allowedTools?.length) {
+      args.push("--allowedTools", options.allowedTools.join(","));
+    }
     if (options.prompt) {
-      args.push("-p", options.prompt);
+      if (options.mode === "print") {
+        // Non-interactive print mode — exits after output
+        args.push("-p", options.prompt);
+      } else {
+        // Interactive TUI mode (default)
+        args.push(options.prompt);
+      }
     }
     return { command: this.resolveCommand(), args };
   }
@@ -30,7 +44,7 @@ export class ClaudeDriver extends BaseDriver {
   }): SpawnConfig {
     const args = ["--resume", options.sessionId];
     if (options.prompt) {
-      args.push("-p", options.prompt);
+      args.push(options.prompt);
     }
     return { command: this.resolveCommand(), args };
   }
