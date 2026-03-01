@@ -103,6 +103,16 @@ export interface CliBrowseDirResultMsg {
   error: string | null;
 }
 
+export interface CliBrowseFilesResultMsg {
+  type: "cli_browse_files_result";
+  requestId: string;
+  viewerId: string;
+  resolvedPath: string;
+  directories: string[];
+  files: string[];
+  error: string | null;
+}
+
 // Phase 3: Ticket lifecycle messages (CLI -> Relay)
 
 export interface CliPlanReadyMsg {
@@ -141,6 +151,7 @@ export type CliToRelayMsg =
   | CliWrappedKeyMsg
   | CliEncryptedPtyDataMsg
   | CliBrowseDirResultMsg
+  | CliBrowseFilesResultMsg
   | CliPlanReadyMsg
   | CliImplementationDoneMsg
   | CliTicketStatusMsg;
@@ -300,6 +311,13 @@ export interface RelayBrowseDirMsg {
   path: string;
 }
 
+export interface RelayBrowseFilesMsg {
+  type: "relay_browse_files";
+  requestId: string;
+  viewerId: string;
+  path: string;
+}
+
 // Phase 3: Ticket lifecycle messages (Relay -> CLI)
 
 export interface RelayStartPlanningMsg {
@@ -350,6 +368,7 @@ export type RelayToCliMsg =
   | RelayViewerPublicKeyMsg
   | RelayEncryptedInputMsg
   | RelayBrowseDirMsg
+  | RelayBrowseFilesMsg
   | RelayStartPlanningMsg
   | RelayStartInteractivePlanningMsg
   | RelayStartImplementationMsg

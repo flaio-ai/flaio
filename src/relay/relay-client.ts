@@ -302,6 +302,10 @@ export class RelayClient extends EventEmitter {
         this.handleBrowseDir(msg.requestId, msg.viewerId, msg.path);
         break;
 
+      case "relay_browse_files":
+        this.handleBrowseFiles(msg.requestId, msg.viewerId, msg.path);
+        break;
+
       case "relay_ping":
         this.send({ type: "cli_pong" });
         this.resetPongTimer();
@@ -421,6 +425,44 @@ export class RelayClient extends EventEmitter {
         viewerId,
         resolvedPath: path.resolve(resolvedPath),
         directories: [],
+        error: message,
+      });
+    }
+  }
+
+  private async handleBrowseFiles(requestId: string, viewerId: string, dirPath: string): Promise<void> {
+    const resolvedPath = this.resolveCwd(dirPath);
+
+    try {
+      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      const directories = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+      const files = entries
+        .filter((e) => e.isFile() && !e.name.startsWith("."))
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+      this.send({
+        type: "cli_browse_files_result",
+        requestId,
+        viewerId,
+        resolvedPath: path.resolve(resolvedPath),
+        directories,
+        files,
+        error: null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: browse files failed: ${message}`);
+      this.send({
+        type: "cli_browse_files_result",
+        requestId,
+        viewerId,
+        resolvedPath: path.resolve(resolvedPath),
+        directories: [],
+        files: [],
         error: message,
       });
     }
