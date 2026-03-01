@@ -140,6 +140,18 @@ export interface CliTicketStatusMsg {
   message?: string;
 }
 
+export interface CliGitInfoResultMsg {
+  type: "cli_git_info_result";
+  requestId: string;
+  viewerId: string;
+  branch: string | null;
+  remoteUrl: string | null;
+  commits: { hash: string; message: string; author: string; timestamp: number }[];
+  changedFiles: number;
+  isClean: boolean;
+  error: string | null;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -154,7 +166,8 @@ export type CliToRelayMsg =
   | CliBrowseFilesResultMsg
   | CliPlanReadyMsg
   | CliImplementationDoneMsg
-  | CliTicketStatusMsg;
+  | CliTicketStatusMsg
+  | CliGitInfoResultMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -356,6 +369,13 @@ export interface RelayRequestChangesMsg {
   feedback: string;
 }
 
+export interface RelayRequestGitInfoMsg {
+  type: "relay_request_git_info";
+  requestId: string;
+  viewerId: string;
+  cwd: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -372,7 +392,8 @@ export type RelayToCliMsg =
   | RelayStartPlanningMsg
   | RelayStartInteractivePlanningMsg
   | RelayStartImplementationMsg
-  | RelayRequestChangesMsg;
+  | RelayRequestChangesMsg
+  | RelayRequestGitInfoMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

@@ -334,6 +334,10 @@ export class RelayClient extends EventEmitter {
       case "relay_request_changes":
         this.handleRequestChanges(msg);
         break;
+
+      case "relay_request_git_info":
+        this.handleRequestGitInfo(msg.requestId, msg.viewerId, msg.cwd);
+        break;
     }
   }
 
@@ -463,6 +467,79 @@ export class RelayClient extends EventEmitter {
         resolvedPath: path.resolve(resolvedPath),
         directories: [],
         files: [],
+        error: message,
+      });
+    }
+  }
+
+  private async handleRequestGitInfo(requestId: string, viewerId: string, cwd: string): Promise<void> {
+    const resolvedPath = this.resolveCwd(cwd);
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+
+    const execGit = async (args: string[]): Promise<string> => {
+      const { stdout } = await execFileAsync("git", args, {
+        cwd: resolvedPath,
+        timeout: 5000,
+      });
+      return stdout.trim();
+    };
+
+    try {
+      // Run git commands in parallel
+      const [branchResult, remoteResult, logResult, statusResult] = await Promise.allSettled([
+        execGit(["rev-parse", "--abbrev-ref", "HEAD"]),
+        execGit(["remote", "get-url", "origin"]),
+        execGit(["log", "--format=%H%n%s%n%an%n%ct", "-5"]),
+        execGit(["status", "--porcelain"]),
+      ]);
+
+      const branch = branchResult.status === "fulfilled" ? branchResult.value : null;
+      const remoteUrl = remoteResult.status === "fulfilled" ? remoteResult.value : null;
+
+      // Parse commits from git log output
+      const commits: { hash: string; message: string; author: string; timestamp: number }[] = [];
+      if (logResult.status === "fulfilled" && logResult.value) {
+        const lines = logResult.value.split("\n");
+        for (let i = 0; i + 3 < lines.length; i += 4) {
+          commits.push({
+            hash: lines[i]!,
+            message: lines[i + 1]!,
+            author: lines[i + 2]!,
+            timestamp: parseInt(lines[i + 3]!, 10),
+          });
+        }
+      }
+
+      // Parse status output
+      const statusOutput = statusResult.status === "fulfilled" ? statusResult.value : "";
+      const changedFiles = statusOutput ? statusOutput.split("\n").filter(Boolean).length : 0;
+      const isClean = changedFiles === 0;
+
+      this.send({
+        type: "cli_git_info_result",
+        requestId,
+        viewerId,
+        branch,
+        remoteUrl,
+        commits,
+        changedFiles,
+        isClean,
+        error: null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: git info failed: ${message}`);
+      this.send({
+        type: "cli_git_info_result",
+        requestId,
+        viewerId,
+        branch: null,
+        remoteUrl: null,
+        commits: [],
+        changedFiles: 0,
+        isClean: true,
         error: message,
       });
     }
