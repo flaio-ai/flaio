@@ -83,6 +83,8 @@ export interface CliWrappedKeyMsg {
   viewerId: string;
   /** Encrypted SCK (wire format: base64(nonce || ciphertext || tag)) */
   wrappedKey: string;
+  /** Base64-encoded HKDF salt used for KEK derivation */
+  salt: string;
 }
 
 export interface CliEncryptedPtyDataMsg {
@@ -369,6 +371,11 @@ export interface RelayRequestChangesMsg {
   feedback: string;
 }
 
+export interface RelayCloseSessionMsg {
+  type: "relay_close_session";
+  sessionId: string;
+}
+
 export interface RelayRequestGitInfoMsg {
   type: "relay_request_git_info";
   requestId: string;
@@ -393,6 +400,7 @@ export type RelayToCliMsg =
   | RelayStartInteractivePlanningMsg
   | RelayStartImplementationMsg
   | RelayRequestChangesMsg
+  | RelayCloseSessionMsg
   | RelayRequestGitInfoMsg;
 
 // ---------------------------------------------------------------------------
@@ -453,6 +461,8 @@ export interface RelayWrappedKeyMsg {
   viewerId: string;
   /** Encrypted SCK (wire format: base64(nonce || ciphertext || tag)) */
   wrappedKey: string;
+  /** Base64-encoded HKDF salt used for KEK derivation */
+  salt: string;
 }
 
 export interface RelayEncryptedPtyDataMsg {

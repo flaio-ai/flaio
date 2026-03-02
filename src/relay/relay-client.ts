@@ -36,6 +36,8 @@ import {
 } from "./relay-crypto.js";
 
 import { makeDebugLog } from "../connectors/debug.js";
+import { RelayToCliMsgSchema } from "./relay-message-schemas.js";
+import { RateLimiter } from "./rate-limiter.js";
 
 const debugLog = makeDebugLog("relay");
 
@@ -132,6 +134,11 @@ export class RelayClient extends EventEmitter {
 
   private started = false;
 
+  // Rate limiters
+  private inputLimiter = new RateLimiter(30, 30); // 30 inputs/sec per key
+  private browseLimiter = new RateLimiter(10, 10); // 10 browse requests/sec
+  private createSessionLimiter = new RateLimiter(1, 0.2); // 1 per 5 seconds
+
   constructor() {
     super();
     const maxKB = settingsStore.getState().config.relay.maxReplayBufferKB;
@@ -176,6 +183,9 @@ export class RelayClient extends EventEmitter {
     this.trackedSessions.clear();
     this.replayBuffer.clear();
     clearViewerCounts();
+    this.inputLimiter.clear();
+    this.browseLimiter.clear();
+    this.createSessionLimiter.clear();
 
     if (this.ws) {
       this.ws.close(1000);
@@ -215,10 +225,15 @@ export class RelayClient extends EventEmitter {
 
       this.ws.on("message", (raw) => {
         try {
-          const msg: RelayToCliMsg = JSON.parse(raw.toString());
-          this.handleMessage(msg);
+          const parsed = JSON.parse(raw.toString());
+          const result = RelayToCliMsgSchema.safeParse(parsed);
+          if (!result.success) {
+            debugLog(`relay: invalid message schema: ${result.error.message}`);
+            return;
+          }
+          this.handleMessage(result.data);
         } catch {
-          debugLog("relay: invalid message from relay");
+          debugLog("relay: invalid JSON from relay");
         }
       });
 
@@ -338,6 +353,11 @@ export class RelayClient extends EventEmitter {
       case "relay_request_git_info":
         this.handleRequestGitInfo(msg.requestId, msg.viewerId, msg.cwd);
         break;
+
+      case "relay_close_session":
+        debugLog(`relay: close session request for ${msg.sessionId}`);
+        appStore.getState().closeSession(msg.sessionId);
+        break;
     }
   }
 
@@ -358,6 +378,11 @@ export class RelayClient extends EventEmitter {
     const shareMode = settingsStore.getState().config.relay.defaultShareMode;
     if (shareMode === "read-only") {
       debugLog(`relay: ignoring input for ${sessionId} (read-only mode)`);
+      return;
+    }
+
+    if (!this.inputLimiter.allow(sessionId)) {
+      debugLog(`relay: rate limited input for ${sessionId}`);
       return;
     }
 
@@ -386,6 +411,11 @@ export class RelayClient extends EventEmitter {
   }
 
   private handleRelayCreateSession(driverName: string, cwd: string): void {
+    if (!this.createSessionLimiter.allow("global")) {
+      debugLog("relay: rate limited session creation");
+      return;
+    }
+
     const resolvedCwd = this.resolveCwd(cwd);
 
     debugLog(`relay: create session request: driver=${driverName} cwd=${resolvedCwd}`);
@@ -403,6 +433,19 @@ export class RelayClient extends EventEmitter {
   }
 
   private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
+    if (!this.browseLimiter.allow(viewerId)) {
+      debugLog(`relay: rate limited browse dir from ${viewerId}`);
+      this.send({
+        type: "cli_browse_dir_result",
+        requestId,
+        viewerId,
+        resolvedPath: dirPath,
+        directories: [],
+        error: "Rate limited — try again",
+      });
+      return;
+    }
+
     const resolvedPath = this.resolveCwd(dirPath);
 
     try {
@@ -435,6 +478,20 @@ export class RelayClient extends EventEmitter {
   }
 
   private async handleBrowseFiles(requestId: string, viewerId: string, dirPath: string): Promise<void> {
+    if (!this.browseLimiter.allow(viewerId)) {
+      debugLog(`relay: rate limited browse files from ${viewerId}`);
+      this.send({
+        type: "cli_browse_files_result",
+        requestId,
+        viewerId,
+        resolvedPath: dirPath,
+        directories: [],
+        files: [],
+        error: "Rate limited — try again",
+      });
+      return;
+    }
+
     const resolvedPath = this.resolveCwd(dirPath);
 
     try {
@@ -821,7 +878,7 @@ export class RelayClient extends EventEmitter {
       setSessionEncryptionStatus(sessionId, "key-exchange");
 
       const peerPubKey = await importPeerPublicKey(peerPubKeyBase64);
-      const kek = await deriveKeyEncryptionKey(
+      const { kek, salt } = await deriveKeyEncryptionKey(
         tracked.keyPair.privateKey,
         peerPubKey,
         tracked.keyPair.publicKeyBase64,
@@ -833,12 +890,13 @@ export class RelayClient extends EventEmitter {
 
       tracked.viewerKeys.set(viewerId, { kek, keyDelivered: true });
 
-      // Send wrapped SCK to viewer (via relay)
+      // Send wrapped SCK + salt to viewer (via relay)
       this.send({
         type: "cli_wrapped_key",
         sessionId,
         viewerId,
         wrappedKey,
+        salt,
       });
 
       debugLog(`relay: delivered wrapped SCK to viewer ${viewerId} for ${sessionId}`);
@@ -860,6 +918,11 @@ export class RelayClient extends EventEmitter {
     const shareMode = settingsStore.getState().config.relay.defaultShareMode;
     if (shareMode === "read-only") {
       debugLog(`relay: ignoring encrypted input for ${sessionId} (read-only mode)`);
+      return;
+    }
+
+    if (!this.inputLimiter.allow(viewerId)) {
+      debugLog(`relay: rate limited encrypted input from ${viewerId}`);
       return;
     }
 
@@ -911,8 +974,13 @@ export class RelayClient extends EventEmitter {
         const message = err instanceof Error ? err.message : String(err);
         debugLog(`relay: encrypt PTY data failed: ${message}`);
       }
+    } else if (this.e2eEnabled) {
+      // E2E is enabled but no SCK — key generation must have failed.
+      // Do NOT send plaintext — drop the data and flag the failure.
+      debugLog(`relay: dropping PTY data for ${tracked.sessionId} — E2E enabled but no SCK`);
+      setSessionEncryptionStatus(tracked.sessionId, "failed");
     } else {
-      // Plaintext fallback (E2E disabled)
+      // Plaintext is intentionally allowed (e2eEncryption: false in config)
       const base64 = Buffer.from(rawData, "utf-8").toString("base64");
       this.send({
         type: "cli_pty_data",
@@ -1009,8 +1077,9 @@ export class RelayClient extends EventEmitter {
         debugLog(`relay: generated E2E keys for session ${sessionId}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        debugLog(`relay: failed to generate E2E keys: ${message}`);
-        // Continue without E2E — will use plaintext fallback
+        debugLog(`relay: CRITICAL: E2E key generation failed: ${message}`);
+        setSessionEncryptionStatus(sessionId, "failed");
+        return; // Abort — do not stream data without E2E
       }
     }
 
@@ -1049,7 +1118,10 @@ export class RelayClient extends EventEmitter {
       tracked.statusUnsub();
       tracked.statusUnsub = null;
     }
-    // Clear crypto state
+    // Zero out raw key material before clearing references
+    if (tracked.sck?.rawBytes) {
+      tracked.sck.rawBytes.fill(0);
+    }
     tracked.keyPair = null;
     tracked.sck = null;
     tracked.viewerKeys.clear();

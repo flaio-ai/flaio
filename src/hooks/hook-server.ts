@@ -45,9 +45,12 @@ export class HookServer extends EventEmitter {
       });
 
       this.server.on("error", reject);
+
+      // Set restrictive umask before listen so the socket is created
+      // with owner-only permissions (no race window)
+      const oldUmask = process.umask(0o077);
       this.server.listen(SOCKET_PATH, () => {
-        // Make socket accessible
-        fs.chmodSync(SOCKET_PATH, 0o600);
+        process.umask(oldUmask);
         resolve();
       });
     });
