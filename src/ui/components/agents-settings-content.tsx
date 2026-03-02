@@ -2,6 +2,17 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {
+  installHookScripts,
+  getClaudeHooksConfig,
+  getClaudeStatusLineConfig,
+  getGeminiHooksConfig,
+  mergeSettingsFile,
+  areClaudeHooksConfigured,
+  areGeminiHooksConfigured,
+} from "../../agents/sideband/hook-scripts.js";
+import os from "node:os";
+import path from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,9 +79,13 @@ interface AgentsSettingsContentProps {
   isActive: boolean;
 }
 
+type HooksStatus = "checking" | "configured" | "not_configured" | "installing" | "done" | "error";
+
 export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps): React.ReactElement {
   const [subTab, setSubTab] = useState(0);
   const [agents, setAgents] = useState<AgentVersionInfo[]>(initAgents);
+  const [hooksStatus, setHooksStatus] = useState<{ claude: HooksStatus; gemini: HooksStatus }>({ claude: "checking", gemini: "checking" });
+  const [hooksError, setHooksError] = useState<string | null>(null);
 
   const checkVersions = useCallback((currentAgents: AgentVersionInfo[]) => {
     let cancelled = false;
@@ -119,6 +134,44 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
   useEffect(() => {
     return checkVersions(agents);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Check hooks status on mount
+  useEffect(() => {
+    Promise.all([areClaudeHooksConfigured(), areGeminiHooksConfigured()]).then(
+      ([claude, gemini]) => {
+        setHooksStatus({
+          claude: claude ? "configured" : "not_configured",
+          gemini: gemini ? "configured" : "not_configured",
+        });
+      },
+    );
+  }, []);
+
+  const handleSetupHooks = useCallback(async () => {
+    setHooksStatus((prev) => ({ ...prev, claude: "installing", gemini: "installing" }));
+    setHooksError(null);
+    try {
+      const { hookPath, statusLinePath } = await installHookScripts();
+
+      const claudeSettingsPath = path.join(os.homedir(), ".claude", "settings.json");
+      const hooksCfg = getClaudeHooksConfig(hookPath);
+      const statusLineCfg = getClaudeStatusLineConfig(statusLinePath);
+      await mergeSettingsFile(claudeSettingsPath, { ...hooksCfg, ...statusLineCfg });
+
+      const geminiSettingsPath = path.join(os.homedir(), ".gemini", "settings.json");
+      const geminiCfg = getGeminiHooksConfig(hookPath);
+      await mergeSettingsFile(geminiSettingsPath, geminiCfg);
+
+      setHooksStatus({ claude: "done", gemini: "done" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setHooksError(msg);
+      setHooksStatus((prev) => ({
+        claude: prev.claude === "installing" ? "error" : prev.claude,
+        gemini: prev.gemini === "installing" ? "error" : prev.gemini,
+      }));
+    }
   }, []);
 
   const handleAction = useCallback((idx: number) => {
@@ -212,6 +265,10 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       toggleMethod(subTab);
       return;
     }
+    if (input === "h") {
+      handleSetupHooks();
+      return;
+    }
     if (key.return) {
       handleAction(subTab);
     }
@@ -280,6 +337,42 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
               <Text color="red">{agent.error}</Text>
               <Text dimColor>(Enter to retry)</Text>
             </Box>
+          )}
+        </Box>
+
+        {/* Sideband hooks status */}
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>─── Sideband Hooks ───</Text>
+          {(() => {
+            const hs = agent.command === "claude" ? hooksStatus.claude : hooksStatus.gemini;
+            return (
+              <Box marginTop={0}>
+                <Text>
+                  Hooks:      {hs === "checking" ? <Text color="yellow">checking...</Text>
+                    : hs === "configured" || hs === "done" ? <Text color="green">configured</Text>
+                    : hs === "installing" ? <Text color="yellow">installing...</Text>
+                    : hs === "error" ? <Text color="red">error</Text>
+                    : <Text color="gray">not configured</Text>}
+                </Text>
+              </Box>
+            );
+          })()}
+          {(() => {
+            const hs = agent.command === "claude" ? hooksStatus.claude : hooksStatus.gemini;
+            if (hs === "not_configured" || hs === "error") {
+              return (
+                <Box>
+                  <Text color="cyan" bold>[ Setup Hooks ]  (h)</Text>
+                </Box>
+              );
+            }
+            if (hs === "done") {
+              return <Text color="green">Hooks installed successfully</Text>;
+            }
+            return null;
+          })()}
+          {hooksError && (
+            <Text color="red">{hooksError}</Text>
           )}
         </Box>
       </Box>

@@ -3,6 +3,29 @@ import { PtyManager } from "../terminal/pty-manager.js";
 import { XtermBridge } from "../terminal/xterm-bridge.js";
 import { ScreenBuffer, type ScreenContent } from "../terminal/screen-buffer.js";
 import type { BaseDriver, AgentStatus } from "./drivers/base-driver.js";
+import { SidebandReceiver } from "./sideband/sideband-receiver.js";
+import {
+  resolveFromClaudeHook,
+  resolveFromGeminiHook,
+  resolveFromGeminiOscTitle,
+  extractOscTitle,
+  type DetailedStatus,
+  type ResolvedStatus,
+  type HookEvent,
+} from "./sideband/status-resolver.js";
+import { sessionMetadataStore, type SessionMetadata } from "./session-metadata.js";
+
+/** Map a basic AgentStatus to a DetailedStatus for PTY polling fallback. */
+function statusToDetailed(status: AgentStatus): DetailedStatus {
+  switch (status) {
+    case "running": return { state: "running", detail: "general" };
+    case "waiting_input": return { state: "waiting_input", detail: "prompt" };
+    case "waiting_permission": return { state: "waiting_permission", detail: "tool_approval" };
+    case "starting": return { state: "starting" };
+    case "exited": return { state: "exited" };
+    case "idle": return { state: "idle" };
+  }
+}
 
 let nextId = 1;
 
@@ -15,9 +38,17 @@ export class AgentSession extends EventEmitter {
   private xterm: XtermBridge;
   private screenBuffer: ScreenBuffer;
   private _status: AgentStatus = "idle";
+  private _detailedStatus: DetailedStatus = { state: "idle" };
+  private _currentTool: string | undefined;
   private recentOutput = "";
   private lastOutputTime = 0;
   private statusCheckTimer: ReturnType<typeof setInterval> | null = null;
+
+  private sideband: SidebandReceiver;
+  /** True once first hook event is received — hooks take priority over PTY polling. */
+  private sidebandActive = false;
+  /** Timestamp of the last hook event received. */
+  private lastHookTime = 0;
 
   constructor(
     private driver: BaseDriver,
@@ -34,8 +65,9 @@ export class AgentSession extends EventEmitter {
     this.pty = new PtyManager();
     this.xterm = new XtermBridge(cols, rows);
     this.screenBuffer = new ScreenBuffer(30);
+    this.sideband = new SidebandReceiver(this.id);
 
-    // Wire PTY output → xterm → screen buffer
+    // Wire PTY output → xterm → screen buffer + OSC parsing
     this.pty.on("data", (data) => {
       this.xterm.write(data);
       this.recentOutput += data;
@@ -46,11 +78,25 @@ export class AgentSession extends EventEmitter {
       }
       this.screenBuffer.markDirty();
       this.emit("raw_data", data);
+
+      // Gemini OSC title parsing (priority 2)
+      if (this.driverName === "gemini" && !this.sidebandActive) {
+        const title = extractOscTitle(data);
+        if (title) {
+          const resolved = resolveFromGeminiOscTitle(title);
+          if (resolved) {
+            this.applyResolvedStatus(resolved);
+          }
+        }
+      }
     });
 
     this.pty.on("exit", (code) => {
       this.stopStatusChecking();
       this.setStatus("exited");
+      this._detailedStatus = { state: "exited" };
+      this._currentTool = undefined;
+      this.emit("detailed_status", this._detailedStatus, undefined);
       this.emit("exit", code);
     });
 
@@ -58,10 +104,35 @@ export class AgentSession extends EventEmitter {
       const cursor = { x: this.xterm.cursorX, y: this.xterm.cursorY };
       this.emit("content", content, cursor);
     });
+
+    // Wire sideband hook events (priority 1)
+    this.sideband.on("hook", (event: HookEvent) => {
+      this.sidebandActive = true;
+      this.lastHookTime = Date.now();
+      const resolver = this.driverName === "gemini"
+        ? resolveFromGeminiHook
+        : resolveFromClaudeHook;
+      const resolved = resolver(event);
+      this.applyResolvedStatus(resolved);
+    });
+
+    // Wire sideband metadata events
+    this.sideband.on("metadata", (metadata: SessionMetadata) => {
+      sessionMetadataStore.update(this.id, metadata);
+      this.emit("metadata", metadata);
+    });
   }
 
   get status(): AgentStatus {
     return this._status;
+  }
+
+  get detailedStatus(): DetailedStatus {
+    return this._detailedStatus;
+  }
+
+  get currentTool(): string | undefined {
+    return this._currentTool;
   }
 
   get pid(): number | null {
@@ -82,12 +153,26 @@ export class AgentSession extends EventEmitter {
     this.emit("status", status);
   }
 
-  start(options?: {
+  private applyResolvedStatus(resolved: ResolvedStatus): void {
+    // Don't overwrite terminal states
+    if (this._status === "exited") return;
+
+    this._currentTool = resolved.toolName;
+    this._detailedStatus = resolved.detailed;
+    this.setStatus(resolved.agentStatus);
+    this.emit("detailed_status", resolved.detailed, resolved.toolName);
+  }
+
+  async start(options?: {
     prompt?: string;
     mode?: "interactive" | "print";
     allowedTools?: string[];
-  }): void {
+  }): Promise<void> {
     this.setStatus("starting");
+
+    // Start sideband before spawning so the temp dir is ready
+    await this.sideband.start();
+
     const config = this.driver.buildSpawnArgs({
       cwd: this.cwd,
       prompt: options?.prompt,
@@ -99,7 +184,7 @@ export class AgentSession extends EventEmitter {
       command: config.command,
       args: config.args,
       cwd: this.cwd,
-      env: config.env,
+      env: { ...config.env, ...this.sideband.getSpawnEnv() },
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });
@@ -109,8 +194,11 @@ export class AgentSession extends EventEmitter {
     this.setStatus("running");
   }
 
-  resume(sessionId: string, prompt?: string): void {
+  async resume(sessionId: string, prompt?: string): Promise<void> {
     this.setStatus("starting");
+
+    await this.sideband.start();
+
     const config = this.driver.buildResumeArgs({
       cwd: this.cwd,
       sessionId,
@@ -121,7 +209,7 @@ export class AgentSession extends EventEmitter {
       command: config.command,
       args: config.args,
       cwd: this.cwd,
-      env: config.env,
+      env: { ...config.env, ...this.sideband.getSpawnEnv() },
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });
@@ -131,15 +219,18 @@ export class AgentSession extends EventEmitter {
     this.setStatus("running");
   }
 
-  continueSession(): void {
+  async continueSession(): Promise<void> {
     this.setStatus("starting");
+
+    await this.sideband.start();
+
     const config = this.driver.buildContinueArgs({ cwd: this.cwd });
 
     this.pty.spawn({
       command: config.command,
       args: config.args,
       cwd: this.cwd,
-      env: config.env,
+      env: { ...config.env, ...this.sideband.getSpawnEnv() },
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });
@@ -173,6 +264,8 @@ export class AgentSession extends EventEmitter {
     this.screenBuffer.stop();
     this.pty.kill();
     this.xterm.dispose();
+    this.sideband.stop();
+    sessionMetadataStore.remove(this.id);
     this.setStatus("exited");
   }
 
@@ -197,9 +290,13 @@ export class AgentSession extends EventEmitter {
   private startStatusChecking(): void {
     this.statusCheckTimer = setInterval(() => {
       if (this._status === "exited" || this._status === "idle") return;
+      // When hooks are active and recent (within 10s), trust them over PTY polling
+      if (this.sidebandActive && (Date.now() - this.lastHookTime) < 10_000) return;
       const idleMs = this.lastOutputTime > 0 ? Date.now() - this.lastOutputTime : 0;
       const detected = this.driver.detectStatus(this.recentOutput, idleMs);
-      this.setStatus(detected);
+      // Update both status AND detailedStatus to keep them in sync
+      const detailed = statusToDetailed(detected);
+      this.applyResolvedStatus({ agentStatus: detected, detailed });
     }, 1000);
   }
 

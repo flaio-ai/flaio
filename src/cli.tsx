@@ -2,6 +2,7 @@
 import React from "react";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "node:path";
 import { render } from "ink";
 import { Command } from "commander";
@@ -10,6 +11,15 @@ import { listSessions, streamSession } from "./portal/portal-client.js";
 import { PortalPicker } from "./portal/portal-picker.js";
 import { login, logout, isLoggedIn } from "./relay/relay-auth.js";
 import { settingsStore } from "./store/settings-store.js";
+import {
+  installHookScripts,
+  getClaudeHooksConfig,
+  getClaudeStatusLineConfig,
+  getGeminiHooksConfig,
+  mergeSettingsFile,
+  areClaudeHooksConfigured,
+  areGeminiHooksConfigured,
+} from "./agents/sideband/hook-scripts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
@@ -164,6 +174,63 @@ program
     settingsStore.getState().updateRelay({ enabled: false });
     process.stdout.write("Logged out. Remote access has been disabled.\n");
     process.exit(0);
+  });
+
+program
+  .command("setup-hooks")
+  .description("Install sideband hook scripts for Claude Code and Gemini CLI")
+  .option("--claude-only", "Only configure Claude Code hooks")
+  .option("--gemini-only", "Only configure Gemini CLI hooks")
+  .option("--check", "Check if hooks are already configured")
+  .action(async (opts: { claudeOnly?: boolean; geminiOnly?: boolean; check?: boolean }) => {
+    if (opts.check) {
+      const [claudeOk, geminiOk] = await Promise.all([
+        areClaudeHooksConfigured(),
+        areGeminiHooksConfigured(),
+      ]);
+      process.stdout.write(`Claude Code hooks: ${claudeOk ? "configured" : "not configured"}\n`);
+      process.stdout.write(`Gemini CLI hooks:  ${geminiOk ? "configured" : "not configured"}\n`);
+      process.exit(0);
+    }
+
+    try {
+      // 1. Install hook scripts to disk
+      const { hookPath, statusLinePath } = await installHookScripts();
+      process.stdout.write(`Hook scripts installed:\n  ${hookPath}\n  ${statusLinePath}\n\n`);
+
+      // 2. Merge into Claude Code settings
+      if (!opts.geminiOnly) {
+        const claudeSettingsPath = path.join(
+          process.env.HOME ?? os.homedir(),
+          ".claude",
+          "settings.json",
+        );
+        const hooksCfg = getClaudeHooksConfig(hookPath);
+        const statusLineCfg = getClaudeStatusLineConfig(statusLinePath);
+        await mergeSettingsFile(claudeSettingsPath, { ...hooksCfg, ...statusLineCfg });
+        process.stdout.write(`Claude Code settings updated: ${claudeSettingsPath}\n`);
+      }
+
+      // 3. Merge into Gemini CLI settings
+      if (!opts.claudeOnly) {
+        const geminiSettingsPath = path.join(
+          process.env.HOME ?? os.homedir(),
+          ".gemini",
+          "settings.json",
+        );
+        const geminiCfg = getGeminiHooksConfig(hookPath);
+        await mergeSettingsFile(geminiSettingsPath, geminiCfg);
+        process.stdout.write(`Gemini CLI settings updated:  ${geminiSettingsPath}\n`);
+      }
+
+      process.stdout.write("\nHooks configured successfully. Existing hooks have been preserved.\n");
+      process.stdout.write("Hook scripts are no-ops when not running under code-relay.\n");
+      process.exit(0);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Failed to setup hooks: ${message}\n`);
+      process.exit(1);
+    }
   });
 
 program.parse(process.argv);

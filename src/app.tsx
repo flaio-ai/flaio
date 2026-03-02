@@ -93,7 +93,7 @@ export function App(): React.ReactElement {
   const handleNewSession = useCallback((driverName: string, cwd: string) => {
     const session = appStore.getState().createSession(driverName, cwd, paneWidth, paneRows);
     if (session) {
-      session.start();
+      session.start().catch(() => {});
     }
     setShowNewSession(false);
   }, [paneWidth, paneRows]);

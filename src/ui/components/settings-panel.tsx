@@ -56,6 +56,7 @@ function getUiFields(): FieldDef[] {
     { label: "Sidebar Width", type: "number", getValue: () => cfg().ui.sidebarWidth, setValue: (v) => store().updateUi({ sidebarWidth: v }) },
     { label: "Narrow Breakpoint", type: "number", getValue: () => cfg().ui.narrowBreakpoint, setValue: (v) => store().updateUi({ narrowBreakpoint: v }) },
     { label: "Target FPS", type: "number", getValue: () => cfg().ui.targetFps, setValue: (v) => store().updateUi({ targetFps: v }) },
+    { label: "Show Cost", type: "boolean", getValue: () => cfg().ui.showCost, setValue: (v) => store().updateUi({ showCost: v }) },
   ];
 }
 
@@ -261,7 +262,7 @@ export function SettingsPanel({
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | Enter: action | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
+        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
       </Box>
     </Box>
   );
