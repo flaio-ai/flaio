@@ -269,7 +269,7 @@ export class PortalServer {
         });
         return;
       }
-      session.start();
+      session.start().catch(() => {});
       this.send(client, {
         type: "portal_session_created",
         sessionId: session.id,

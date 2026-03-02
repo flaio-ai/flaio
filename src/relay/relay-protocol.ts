@@ -20,6 +20,24 @@ export interface RelaySessionInfo {
   interactive?: boolean;
   /** The CLI command string that was used to spawn this session */
   command?: string;
+  /** Detailed state from sideband hooks */
+  detailedState?: string;
+  /** Detailed sub-state */
+  detailedDetail?: string;
+  /** Current tool name */
+  currentTool?: string;
+  /** Model display name from status line */
+  modelDisplayName?: string;
+  /** Cumulative cost USD */
+  totalCostUsd?: number;
+  /** Context window usage percentage */
+  usedPercentage?: number;
+  /** Lines added this session */
+  totalLinesAdded?: number;
+  /** Lines removed this session */
+  totalLinesRemoved?: number;
+  /** Whether cost display is enabled (CLI setting) */
+  showCost?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +82,28 @@ export interface CliSessionStatusMsg {
   type: "cli_session_status";
   sessionId: string;
   status: string;
+  /** Detailed state from sideband hooks (e.g. "running", "waiting_input") */
+  detailedState?: string;
+  /** Detailed sub-state (e.g. "tool_use", "thinking", "prompt") */
+  detailedDetail?: string;
+  /** Current tool name if a tool is in use */
+  currentTool?: string;
+}
+
+export interface CliSessionMetadataMsg {
+  type: "cli_session_metadata";
+  sessionId: string;
+  modelId?: string;
+  modelDisplayName?: string;
+  totalCostUsd?: number;
+  totalDurationMs?: number;
+  totalLinesAdded?: number;
+  totalLinesRemoved?: number;
+  usedPercentage?: number;
+  contextTotalTokens?: number;
+  contextUsedTokens?: number;
+  /** Whether cost display is enabled (CLI setting) */
+  showCost?: boolean;
 }
 
 export interface CliPongMsg {
@@ -160,6 +200,7 @@ export type CliToRelayMsg =
   | CliUnregisterSessionMsg
   | CliPtyDataMsg
   | CliSessionStatusMsg
+  | CliSessionMetadataMsg
   | CliPongMsg
   | CliSessionPublicKeyMsg
   | CliWrappedKeyMsg
@@ -432,6 +473,26 @@ export interface RelaySessionStatusMsg {
   type: "relay_session_status";
   sessionId: string;
   status: string;
+  /** Detailed state from sideband hooks */
+  detailedState?: string;
+  /** Detailed sub-state */
+  detailedDetail?: string;
+  /** Current tool name */
+  currentTool?: string;
+}
+
+export interface RelaySessionMetadataMsg {
+  type: "relay_session_metadata";
+  sessionId: string;
+  modelId?: string;
+  modelDisplayName?: string;
+  totalCostUsd?: number;
+  totalDurationMs?: number;
+  totalLinesAdded?: number;
+  totalLinesRemoved?: number;
+  usedPercentage?: number;
+  contextTotalTokens?: number;
+  contextUsedTokens?: number;
 }
 
 export interface RelaySessionEndedMsg {
@@ -488,6 +549,7 @@ export type RelayToBrowserMsg =
   | RelaySessionsMsg
   | RelayPtyDataMsg
   | RelaySessionStatusMsg
+  | RelaySessionMetadataMsg
   | RelaySessionEndedMsg
   | RelaySessionCreatedMsg
   | RelayWebPingMsg

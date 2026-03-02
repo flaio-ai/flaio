@@ -45,6 +45,7 @@ const UiConfigSchema = z.object({
   sidebarWidth: z.number().default(DEFAULTS.ui.sidebarWidth),
   narrowBreakpoint: z.number().default(DEFAULTS.ui.narrowBreakpoint),
   targetFps: z.number().default(DEFAULTS.ui.targetFps),
+  showCost: z.boolean().default(false),
 });
 
 const AppConfigSchema = z.object({

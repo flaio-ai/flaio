@@ -3,6 +3,7 @@ import { AgentSession } from "../agents/agent-session.js";
 import { getDriver } from "../agents/agent-registry.js";
 import { AgentDetector, type DetectedAgent } from "../agents/agent-detector.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
+import type { DetailedStatus } from "../agents/sideband/status-resolver.js";
 
 export interface SessionState {
   id: string;
@@ -14,6 +15,22 @@ export interface SessionState {
   interactive?: boolean;
   /** The CLI command string that was used to spawn this session */
   command?: string;
+  /** Rich status from sideband hooks */
+  detailedStatus?: DetailedStatus;
+  /** Current tool being used (from hook events) */
+  currentTool?: string;
+  /** Model ID e.g. "claude-opus-4-6" (from status line metadata) */
+  modelId?: string;
+  /** Model display name (from status line metadata) */
+  modelDisplayName?: string;
+  /** Cumulative cost in USD (from status line metadata) */
+  totalCostUsd?: number;
+  /** Context window usage percentage 0-100 (from status line metadata) */
+  usedPercentage?: number;
+  /** Lines added this session */
+  totalLinesAdded?: number;
+  /** Lines removed this session */
+  totalLinesRemoved?: number;
 }
 
 export interface AppState {
@@ -31,6 +48,8 @@ export interface AppState {
   toggleSidebar: () => void;
   getActiveSession: () => AgentSession | null;
   updateSessionStatus: (sessionId: string, status: AgentStatus) => void;
+  updateSessionDetailed: (sessionId: string, detailed: DetailedStatus, toolName?: string) => void;
+  updateSessionMetadata: (sessionId: string, meta: { modelId?: string; modelDisplayName?: string; totalCostUsd?: number; usedPercentage?: number; totalLinesAdded?: number; totalLinesRemoved?: number }) => void;
   setSessionMeta: (sessionId: string, meta: { interactive?: boolean; command?: string }) => void;
   adoptAgent: (agent: DetectedAgent, cols?: number, rows?: number) => Promise<AgentSession | null>;
 }
@@ -70,6 +89,21 @@ export const appStore = createStore<AppState>((set, get) => ({
 
     session.on("status", (status) => {
       get().updateSessionStatus(session.id, status);
+    });
+
+    session.on("detailed_status", (detailed: DetailedStatus, toolName?: string) => {
+      get().updateSessionDetailed(session.id, detailed, toolName);
+    });
+
+    session.on("metadata", (metadata: { modelId?: string; modelDisplayName?: string; totalCostUsd?: number; totalLinesAdded?: number; totalLinesRemoved?: number; contextWindow?: { usedPercentage?: number } }) => {
+      get().updateSessionMetadata(session.id, {
+        modelId: metadata.modelId,
+        modelDisplayName: metadata.modelDisplayName,
+        totalCostUsd: metadata.totalCostUsd,
+        usedPercentage: metadata.contextWindow?.usedPercentage,
+        totalLinesAdded: metadata.totalLinesAdded,
+        totalLinesRemoved: metadata.totalLinesRemoved,
+      });
     });
 
     session.on("exit", () => {
@@ -148,6 +182,27 @@ export const appStore = createStore<AppState>((set, get) => ({
     }));
   },
 
+  updateSessionDetailed: (sessionId: string, detailed: DetailedStatus, toolName?: string) => {
+    // When sideband reports a state other than waiting_permission,
+    // clear the permission guard so updateSessionStatus isn't blocked
+    if (detailed.state !== "waiting_permission" && permissionPending.has(sessionId)) {
+      permissionPending.delete(sessionId);
+    }
+    set((prev) => ({
+      sessions: prev.sessions.map((s) =>
+        s.id === sessionId ? { ...s, detailedStatus: detailed, currentTool: toolName } : s,
+      ),
+    }));
+  },
+
+  updateSessionMetadata: (sessionId: string, meta: { modelId?: string; modelDisplayName?: string; totalCostUsd?: number; usedPercentage?: number; totalLinesAdded?: number; totalLinesRemoved?: number }) => {
+    set((prev) => ({
+      sessions: prev.sessions.map((s) =>
+        s.id === sessionId ? { ...s, ...meta } : s,
+      ),
+    }));
+  },
+
   updateSessionStatus: (sessionId: string, status: AgentStatus) => {
     if (permissionPending.has(sessionId)) {
       // During a pending permission, suppress the driver's "running" poll
@@ -196,6 +251,21 @@ export const appStore = createStore<AppState>((set, get) => ({
       get().updateSessionStatus(session.id, status);
     });
 
+    session.on("detailed_status", (detailed: DetailedStatus, toolName?: string) => {
+      get().updateSessionDetailed(session.id, detailed, toolName);
+    });
+
+    session.on("metadata", (metadata: { modelId?: string; modelDisplayName?: string; totalCostUsd?: number; totalLinesAdded?: number; totalLinesRemoved?: number; contextWindow?: { usedPercentage?: number } }) => {
+      get().updateSessionMetadata(session.id, {
+        modelId: metadata.modelId,
+        modelDisplayName: metadata.modelDisplayName,
+        totalCostUsd: metadata.totalCostUsd,
+        usedPercentage: metadata.contextWindow?.usedPercentage,
+        totalLinesAdded: metadata.totalLinesAdded,
+        totalLinesRemoved: metadata.totalLinesRemoved,
+      });
+    });
+
     // Don't auto-close adopted sessions — keep tab so user can see errors
     session.on("exit", () => {
       get().updateSessionStatus(session.id, "exited");
@@ -214,7 +284,7 @@ export const appStore = createStore<AppState>((set, get) => ({
       activeSessionId: session.id,
     }));
 
-    session.continueSession();
+    await session.continueSession();
     return session;
   },
 }));

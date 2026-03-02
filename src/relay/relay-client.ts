@@ -38,6 +38,7 @@ import {
 import { makeDebugLog } from "../connectors/debug.js";
 import { RelayToCliMsgSchema } from "./relay-message-schemas.js";
 import { RateLimiter } from "./rate-limiter.js";
+import { sessionMetadataStore } from "../agents/session-metadata.js";
 
 const debugLog = makeDebugLog("relay");
 
@@ -422,7 +423,7 @@ export class RelayClient extends EventEmitter {
     try {
       const session = appStore.getState().createSession(driverName, resolvedCwd);
       if (session) {
-        session.start();
+        session.start().catch((err) => debugLog(`relay: session start failed: ${err}`));
       } else {
         debugLog(`relay: createSession returned null (driver "${driverName}" not found?)`);
       }
@@ -681,7 +682,7 @@ export class RelayClient extends EventEmitter {
         prompt: planningPrompt,
         mode: "print",
         allowedTools: ["Read", "Glob", "Grep", "Bash(git *)"],
-      });
+      }).catch((err) => debugLog(`relay: planning session start failed: ${err}`));
 
       // Set session metadata so clients know this is non-interactive
       const command = `claude --allowedTools Read,Glob,Grep,"Bash(git *)" -p "<planning prompt>"`;
@@ -754,7 +755,7 @@ export class RelayClient extends EventEmitter {
         status: "planning",
       });
 
-      session.start({ prompt: planningPrompt });
+      session.start({ prompt: planningPrompt }).catch((err) => debugLog(`relay: interactive planning start failed: ${err}`));
 
       // Set session metadata so clients know this is interactive
       appStore.getState().setSessionMeta(session.id, {
@@ -800,7 +801,7 @@ export class RelayClient extends EventEmitter {
         status: "implementing",
       });
 
-      session.start({ prompt: implementPrompt });
+      session.start({ prompt: implementPrompt }).catch((err) => debugLog(`relay: implementation start failed: ${err}`));
 
       // Set session metadata so clients know this is interactive
       appStore.getState().setSessionMeta(session.id, {
@@ -1099,12 +1100,70 @@ export class RelayClient extends EventEmitter {
       this.sendPtyData(tracked, data);
     });
 
-    // Forward status changes
+    // Forward status changes (with detailed fields when available)
     const onStatus = (status: string) => {
-      this.send({ type: "cli_session_status", sessionId, status });
+      const detailed = session.detailedStatus;
+      const msg: import("./relay-protocol.js").CliSessionStatusMsg = {
+        type: "cli_session_status",
+        sessionId,
+        status,
+      };
+      if (detailed && "detail" in detailed) {
+        msg.detailedState = detailed.state;
+        msg.detailedDetail = (detailed as { detail: string }).detail;
+      } else if (detailed) {
+        msg.detailedState = detailed.state;
+      }
+      if (session.currentTool) {
+        msg.currentTool = session.currentTool;
+      }
+      this.send(msg);
     };
     session.on("status", onStatus);
-    tracked.statusUnsub = () => session.removeListener("status", onStatus);
+
+    // Forward metadata changes (throttled — every 10s max)
+    let lastMetadataSend = 0;
+    let metadataTimer: ReturnType<typeof setTimeout> | null = null;
+    const sendMetadata = () => {
+      const data = sessionMetadataStore.get(sessionId);
+      if (!data) return;
+      this.send({
+        type: "cli_session_metadata" as const,
+        sessionId,
+        modelId: data.modelId,
+        modelDisplayName: data.modelDisplayName,
+        totalCostUsd: data.totalCostUsd,
+        totalDurationMs: data.totalDurationMs,
+        totalLinesAdded: data.totalLinesAdded,
+        totalLinesRemoved: data.totalLinesRemoved,
+        usedPercentage: data.contextWindow?.usedPercentage,
+        contextTotalTokens: data.contextWindow?.totalTokens,
+        contextUsedTokens: data.contextWindow?.usedTokens,
+        showCost: settingsStore.getState().config.ui.showCost,
+      });
+      lastMetadataSend = Date.now();
+    };
+    const onMetadata = () => {
+      const now = Date.now();
+      if (now - lastMetadataSend >= 10_000) {
+        sendMetadata();
+      } else if (!metadataTimer) {
+        metadataTimer = setTimeout(() => {
+          metadataTimer = null;
+          sendMetadata();
+        }, 10_000 - (now - lastMetadataSend));
+      }
+    };
+    session.on("metadata", onMetadata);
+
+    tracked.statusUnsub = () => {
+      session.removeListener("status", onStatus);
+      session.removeListener("metadata", onMetadata);
+      if (metadataTimer) {
+        clearTimeout(metadataTimer);
+        metadataTimer = null;
+      }
+    };
 
     this.trackedSessions.set(sessionId, tracked);
   }
@@ -1158,6 +1217,24 @@ export class RelayClient extends EventEmitter {
       interactive: sessionState.interactive,
       command: sessionState.command,
     });
+
+    // Send metadata if available (e.g. on reconnect)
+    const meta = sessionMetadataStore.get(sessionId);
+    if (meta) {
+      this.send({
+        type: "cli_session_metadata",
+        sessionId,
+        modelId: meta.modelId,
+        modelDisplayName: meta.modelDisplayName,
+        totalCostUsd: meta.totalCostUsd,
+        totalDurationMs: meta.totalDurationMs,
+        totalLinesAdded: meta.totalLinesAdded,
+        totalLinesRemoved: meta.totalLinesRemoved,
+        usedPercentage: meta.contextWindow?.usedPercentage,
+        contextTotalTokens: meta.contextWindow?.totalTokens,
+        contextUsedTokens: meta.contextWindow?.usedTokens,
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
