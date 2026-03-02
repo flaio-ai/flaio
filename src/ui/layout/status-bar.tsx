@@ -63,6 +63,12 @@ export function StatusBar({
             <Text dimColor> | </Text>
           </Text>
         )}
+        {[...relay.sessionEncryptionStatus.values()].some((s) => s === "failed") && (
+          <Text>
+            <Text color="red" bold>E2E FAILED</Text>
+            <Text dimColor> | </Text>
+          </Text>
+        )}
         {relay.connectionStatus !== "disconnected" && (
           <Text>
             <Text color={RELAY_STATUS_STYLE[relay.connectionStatus].color}>

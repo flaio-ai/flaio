@@ -11,7 +11,7 @@ export type RelayConnectionStatus =
   | "connected"
   | "error";
 
-export type SessionEncryptionStatus = "none" | "key-exchange" | "active";
+export type SessionEncryptionStatus = "none" | "key-exchange" | "active" | "failed";
 
 export interface RelayState {
   /** Current WebSocket connection status */

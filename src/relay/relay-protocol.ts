@@ -83,6 +83,8 @@ export interface CliWrappedKeyMsg {
   viewerId: string;
   /** Encrypted SCK (wire format: base64(nonce || ciphertext || tag)) */
   wrappedKey: string;
+  /** Base64-encoded HKDF salt used for KEK derivation */
+  salt: string;
 }
 
 export interface CliEncryptedPtyDataMsg {
@@ -459,6 +461,8 @@ export interface RelayWrappedKeyMsg {
   viewerId: string;
   /** Encrypted SCK (wire format: base64(nonce || ciphertext || tag)) */
   wrappedKey: string;
+  /** Base64-encoded HKDF salt used for KEK derivation */
+  salt: string;
 }
 
 export interface RelayEncryptedPtyDataMsg {

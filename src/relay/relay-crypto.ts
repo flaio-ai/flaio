@@ -80,12 +80,20 @@ export async function importPeerPublicKey(base64: string): Promise<CryptoKey> {
 // ECDH + HKDF → Key Encryption Key (KEK)
 // ---------------------------------------------------------------------------
 
+export interface DerivedKekResult {
+  kek: CryptoKey;
+  /** Base64-encoded 32-byte random salt (must be transmitted to the peer) */
+  salt: string;
+}
+
 export async function deriveKeyEncryptionKey(
   privateKey: CryptoKey,
   peerPublicKey: CryptoKey,
   ownPublicKeyBase64: string,
   peerPublicKeyBase64: string,
-): Promise<CryptoKey> {
+  /** If provided, use this salt (receiver side). If absent, generate a random one (sender side). */
+  salt?: string,
+): Promise<DerivedKekResult> {
   // ECDH shared secret
   const sharedBits = await subtle.deriveBits(
     { name: "ECDH", public: peerPublicKey },
@@ -108,12 +116,17 @@ export async function deriveKeyEncryptionKey(
     `code-relay-e2e-v1:${sorted[0]}:${sorted[1]}`,
   );
 
+  // Use provided salt (receiver) or generate a random one (sender)
+  const saltBytes = salt
+    ? Buffer.from(salt, "base64")
+    : globalThis.crypto.getRandomValues(new Uint8Array(32));
+
   // HKDF-SHA256 → AES-256-GCM KEK
-  return subtle.deriveKey(
+  const kek = await subtle.deriveKey(
     {
       name: "HKDF",
       hash: "SHA-256",
-      salt: new Uint8Array(32), // empty salt
+      salt: saltBytes,
       info,
     },
     hkdfKey,
@@ -121,6 +134,8 @@ export async function deriveKeyEncryptionKey(
     false,
     ["encrypt", "decrypt"],
   );
+
+  return { kek, salt: Buffer.from(saltBytes).toString("base64") };
 }
 
 // ---------------------------------------------------------------------------

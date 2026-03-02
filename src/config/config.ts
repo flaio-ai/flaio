@@ -77,6 +77,8 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "settings.json");
 export function loadConfig(): AppConfig {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
+      // Tighten permissions on existing config files (contains auth tokens)
+      try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { /* best effort */ }
       const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
       return AppConfigSchema.parse(raw);
     }
@@ -87,8 +89,12 @@ export function loadConfig(): AppConfig {
 }
 
 export function saveConfig(config: AppConfig): void {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    CONFIG_FILE,
+    JSON.stringify(config, null, 2) + "\n",
+    { encoding: "utf-8", mode: 0o600 },
+  );
 }
 
 export function getConfigPath(): string {

@@ -1,6 +1,6 @@
 import http from "node:http";
 import { once } from "node:events";
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { settingsStore } from "../store/settings-store.js";
 
 /**
@@ -144,14 +144,14 @@ export async function refreshAuthToken(): Promise<string | null> {
 }
 
 function openBrowser(url: string): void {
-  const cmd =
+  const [cmd, args]: [string, string[]] =
     process.platform === "darwin"
-      ? `open "${url}"`
+      ? ["open", [url]]
       : process.platform === "win32"
-        ? `start "" "${url}"`
-        : `xdg-open "${url}"`;
+        ? ["cmd", ["/c", "start", "", url]]
+        : ["xdg-open", [url]];
 
-  exec(cmd, () => {
+  execFile(cmd, args, () => {
     // Best effort — ignore errors
   });
 }
