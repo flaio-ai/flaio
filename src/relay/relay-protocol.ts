@@ -369,6 +369,11 @@ export interface RelayRequestChangesMsg {
   feedback: string;
 }
 
+export interface RelayCloseSessionMsg {
+  type: "relay_close_session";
+  sessionId: string;
+}
+
 export interface RelayRequestGitInfoMsg {
   type: "relay_request_git_info";
   requestId: string;
@@ -393,6 +398,7 @@ export type RelayToCliMsg =
   | RelayStartInteractivePlanningMsg
   | RelayStartImplementationMsg
   | RelayRequestChangesMsg
+  | RelayCloseSessionMsg
   | RelayRequestGitInfoMsg;
 
 // ---------------------------------------------------------------------------

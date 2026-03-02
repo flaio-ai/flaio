@@ -338,6 +338,11 @@ export class RelayClient extends EventEmitter {
       case "relay_request_git_info":
         this.handleRequestGitInfo(msg.requestId, msg.viewerId, msg.cwd);
         break;
+
+      case "relay_close_session":
+        debugLog(`relay: close session request for ${msg.sessionId}`);
+        appStore.getState().closeSession(msg.sessionId);
+        break;
     }
   }
 
