@@ -2,7 +2,7 @@
 
 /**
  * PostToolUse hook for Claude Code.
- * Posts tool results via IPC to agent-manager.
+ * Posts tool results via IPC to flaio.
  *
  * stdin: JSON with tool_name, tool_input, tool_result, session_id, cwd
  */

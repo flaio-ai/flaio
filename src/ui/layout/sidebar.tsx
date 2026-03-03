@@ -29,7 +29,7 @@ export function Sidebar({
     >
       <Box paddingX={1} marginBottom={1}>
         <Text bold color="cyan">
-          Agent Manager
+          Flaio
         </Text>
       </Box>
 

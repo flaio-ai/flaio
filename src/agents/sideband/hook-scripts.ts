@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-const HOOK_DIR = path.join(os.homedir(), ".config", "code-relay", "hooks");
+const HOOK_DIR = path.join(os.homedir(), ".config", "flaio", "hooks");
 
 // ---------------------------------------------------------------------------
 // Hook script content
@@ -14,12 +14,14 @@ const HOOK_DIR = path.join(os.homedir(), ".config", "code-relay", "hooks");
 
 /**
  * Shell script that appends hook JSON from stdin to the sideband events file.
- * No-op when CODE_RELAY_SIDEBAND_DIR is not set (safe for normal CLI usage).
+ * No-op when FLAIO_SIDEBAND_DIR is not set (safe for normal CLI usage).
  */
 const RELAY_HOOK_SH = `#!/bin/sh
-[ -z "$CODE_RELAY_SIDEBAND_DIR" ] && exit 0
-cat >> "$CODE_RELAY_SIDEBAND_DIR/events.jsonl"
-printf '\\n' >> "$CODE_RELAY_SIDEBAND_DIR/events.jsonl"
+# Support both new and legacy env var names
+dir="\${FLAIO_SIDEBAND_DIR:-$CODE_RELAY_SIDEBAND_DIR}"
+[ -z "$dir" ] && exit 0
+cat >> "$dir/events.jsonl"
+printf '\\n' >> "$dir/events.jsonl"
 `;
 
 /**
@@ -27,9 +29,11 @@ printf '\\n' >> "$CODE_RELAY_SIDEBAND_DIR/events.jsonl"
  * writes to metadata.json, then outputs a formatted display string.
  */
 const RELAY_STATUSLINE_SH = `#!/bin/sh
-[ -z "$CODE_RELAY_SIDEBAND_DIR" ] && exit 0
+# Support both new and legacy env var names
+dir="\${FLAIO_SIDEBAND_DIR:-$CODE_RELAY_SIDEBAND_DIR}"
+[ -z "$dir" ] && exit 0
 input=$(cat)
-printf '%s' "$input" > "$CODE_RELAY_SIDEBAND_DIR/metadata.json"
+printf '%s' "$input" > "$dir/metadata.json"
 `;
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), 
 const program = new Command();
 
 program
-  .name("agent-manager")
+  .name("flaio")
   .description("Terminal UI for managing multiple AI CLI agents")
   .version(pkg.version)
   .action(() => {
@@ -71,14 +71,14 @@ program
 
 program
   .command("portal [sessionId]")
-  .description("Connect to a running agent-manager session from another terminal")
+  .description("Connect to a running flaio session from another terminal")
   .option("-l, --list", "List available sessions")
   .action(async (sessionId: string | undefined, opts: { list?: boolean }) => {
     // Explicit --list flag → static table
     if (opts.list) {
       const sessions = await listSessions();
       if (sessions === null) {
-        process.stdout.write("agent-manager is not running.\n");
+        process.stdout.write("flaio is not running.\n");
         process.exit(1);
       }
       if (sessions.length === 0) {
@@ -107,7 +107,7 @@ program
     // No session ID, no --list → interactive picker
     const sessions = await listSessions();
     if (sessions === null) {
-      process.stdout.write("agent-manager is not running.\n");
+      process.stdout.write("flaio is not running.\n");
       process.exit(1);
     }
 
@@ -140,7 +140,7 @@ program
     }
 
     if (isLoggedIn()) {
-      process.stdout.write("Already logged in. Use `agent-manager logout` to sign out first.\n");
+      process.stdout.write("Already logged in. Use `flaio logout` to sign out first.\n");
       process.exit(0);
     }
 
@@ -224,7 +224,7 @@ program
       }
 
       process.stdout.write("\nHooks configured successfully. Existing hooks have been preserved.\n");
-      process.stdout.write("Hook scripts are no-ops when not running under code-relay.\n");
+      process.stdout.write("Hook scripts are no-ops when not running under flaio.\n");
       process.exit(0);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

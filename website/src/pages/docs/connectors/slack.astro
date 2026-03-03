@@ -64,7 +64,7 @@ const headings = [
         <li>Copy the token (<code>xapp-...</code>)</li>
       </ol>
     </Step>
-    <Step number={7} title="Configure in Agent Manager">
+    <Step number={7} title="Configure in Flaio">
       <p>Press <code>Ctrl+S</code> in the manager, enable Slack, and enter:</p>
       <table>
         <thead>
@@ -76,7 +76,7 @@ const headings = [
           <tr><td><strong>App Token</strong> (optional)</td><td><code>xapp-...</code> from step 6</td></tr>
         </tbody>
       </table>
-      <p>Or edit <code>~/.config/agent-manager/settings.json</code> directly:</p>
+      <p>Or edit <code>~/.config/flaio/settings.json</code> directly:</p>
       <CodeBlock lang="json" code={`{
   "connectors": {
     "slack": {

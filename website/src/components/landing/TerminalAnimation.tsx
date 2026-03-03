@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 type Phase = 'install-type' | 'install-output' | 'launch-type' | 'tui' | 'hold';
 
-const INSTALL_CMD = 'npm install -g agent-manager';
-const LAUNCH_CMD = 'agent-manager';
+const INSTALL_CMD = 'npm install -g flaio';
+const LAUNCH_CMD = 'flaio';
 const CHAR_DELAY = 50;
 const JITTER = 30;
 

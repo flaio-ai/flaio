@@ -23,18 +23,18 @@ const headings = [
     </p>
   </Callout>
   <p>
-    The portal communicates over a Unix socket at <code>/tmp/agent-manager/portal.sock</code>.
+    The portal communicates over a Unix socket at <code>/tmp/flaio/portal.sock</code>.
   </p>
 
   <h2 id="usage">Usage</h2>
   <CodeBlock code={`# Interactive picker — browse sessions, create new ones
-agent-manager portal
+flaio portal
 
 # Connect directly to a known session
-agent-manager portal <session-id>
+flaio portal <session-id>
 
 # Static table of running sessions
-agent-manager portal --list`} />
+flaio portal --list`} />
 
   <h2 id="interactive-picker">Interactive Picker</h2>
   <ul>

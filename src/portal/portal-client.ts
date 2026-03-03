@@ -187,7 +187,7 @@ export async function createSession(
  */
 export async function streamSession(sessionId: string): Promise<void> {
   if (!fs.existsSync(PORTAL_SOCKET_PATH)) {
-    process.stdout.write("agent-manager is not running.\n");
+    process.stdout.write("flaio is not running.\n");
     process.exit(1);
   }
 
@@ -344,7 +344,7 @@ export async function streamSession(sessionId: string): Promise<void> {
         cleanup();
         process.stdout.write("Connection error.\n");
       } else {
-        process.stdout.write("Could not connect to agent-manager.\n");
+        process.stdout.write("Could not connect to flaio.\n");
       }
       resolve();
     });

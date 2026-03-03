@@ -19,7 +19,7 @@ const headings = [
 <DocsLayout title="Architecture" headings={headings}>
   <Callout type="info">
     <p>
-      Agent Manager is a full terminal UI app built with Ink 5 (React 18), node-pty, and xterm-headless.
+      Flaio is a full terminal UI app built with Ink 5 (React 18), node-pty, and xterm-headless.
       This page describes the high-level architecture and how the pieces fit together.
     </p>
   </Callout>
@@ -98,7 +98,7 @@ const headings = [
     <li><strong>App</strong> (<code>app.tsx</code>) initializes stores, starts connectors and the portal server, and renders the shell layout.</li>
     <li><strong>Sessions</strong> are managed by <code>AppStore</code> — each session owns a <code>PtyManager</code> (node-pty), <code>XtermBridge</code> (headless terminal emulation), and <code>ScreenBuffer</code> (FPS-limited rendering).</li>
     <li><strong>Keyboard input</strong> is captured by <code>useRawInput</code> and forwarded to the active session's PTY, except when intercepted by <code>useKeybindings</code> for shortcuts.</li>
-    <li><strong>Portal server</strong> (<code>portal-server.ts</code>) listens on a Unix socket (<code>/tmp/agent-manager/portal.sock</code>). Portal clients subscribe to sessions, receive throttled screen frames, and forward keystrokes — providing full remote access without disrupting the main UI.</li>
+    <li><strong>Portal server</strong> (<code>portal-server.ts</code>) listens on a Unix socket (<code>/tmp/flaio/portal.sock</code>). Portal clients subscribe to sessions, receive throttled screen frames, and forward keystrokes — providing full remote access without disrupting the main UI.</li>
     <li><strong>Hooks</strong> are installed as Claude Code lifecycle hooks that send events to the manager's IPC server, which routes them through <code>ConnectorManager</code> to the configured messaging adapters.</li>
     <li><strong>State</strong> flows through Zustand stores with selector-based subscriptions for efficient re-renders.</li>
   </ol>

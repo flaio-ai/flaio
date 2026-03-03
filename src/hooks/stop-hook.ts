@@ -2,7 +2,7 @@
 
 /**
  * Stop hook for Claude Code.
- * Notifies agent-manager via IPC that a session ended.
+ * Notifies flaio via IPC that a session ended.
  *
  * stdin: JSON with cwd, session_id, exit_code
  */

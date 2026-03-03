@@ -24,7 +24,7 @@ export interface SessionMetadata {
 }
 
 /**
- * Singleton metadata store — keyed by code-relay session ID.
+ * Singleton metadata store — keyed by flaio session ID.
  * Emits `"update"` with (sessionId, metadata) on every change.
  */
 class SessionMetadataStore extends EventEmitter {

@@ -2,7 +2,7 @@
 
 /**
  * PermissionRequest hook for Claude Code.
- * Sends permission request via IPC to agent-manager and returns the decision.
+ * Sends permission request via IPC to flaio and returns the decision.
  *
  * stdin: JSON with tool_name, tool_input, session_id, cwd
  * stdout: JSON with hookSpecificOutput decision

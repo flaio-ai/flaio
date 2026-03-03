@@ -2,7 +2,7 @@
 
 /**
  * Notification hook for Claude Code.
- * Forwards assistant response notifications via IPC to agent-manager.
+ * Forwards assistant response notifications via IPC to flaio.
  *
  * stdin: JSON with message, title, session_id, cwd
  */

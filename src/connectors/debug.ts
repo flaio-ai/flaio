@@ -1,9 +1,9 @@
 // Shared debug logging for the connector layer.
-// Enabled with DEBUG=agent-manager* or DEBUG=*
+// Enabled with DEBUG=flaio* or DEBUG=*
 
 export const DEBUG =
   typeof process !== "undefined" &&
-  /agent-manager|\*/i.test(process.env.DEBUG ?? "");
+  /flaio|agent-manager|\*/i.test(process.env.DEBUG ?? "");
 
 export function makeDebugLog(
   prefix: string,

@@ -11,7 +11,7 @@ npx changeset
 ```
 
 This will prompt you to:
-1. Select the package (`agent-manager`)
+1. Select the package (`flaio`)
 2. Choose the semver bump type (patch / minor / major)
 3. Write a summary of the change
 

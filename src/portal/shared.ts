@@ -2,7 +2,7 @@ import path from "node:path";
 import os from "node:os";
 import type { ScreenContent } from "../terminal/screen-buffer.js";
 
-export const PORTAL_SOCKET_DIR = path.join(os.tmpdir(), "agent-manager");
+export const PORTAL_SOCKET_DIR = path.join(os.tmpdir(), "flaio");
 export const PORTAL_SOCKET_PATH = path.join(PORTAL_SOCKET_DIR, "portal.sock");
 
 // ---------------------------------------------------------------------------
