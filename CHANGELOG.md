@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.2
+
+### Patch Changes
+
+- 50b1455: Redesign CLI auth success page with dark themed UI. Fix auth URL trailing slash issue.
+
 ## 1.0.1
 
 ### Patch Changes
