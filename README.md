@@ -1,13 +1,5 @@
 # Flaio
 
-> **This project has been renamed to [Flaio](https://github.com/flaio-ai/flaio) and now lives at [github.com/flaio-ai/flaio](https://github.com/flaio-ai/flaio).**
->
-> Install the new package: `npm install -g flaio-cli`
->
-> This repository is archived and will no longer receive updates.
-
----
-
 A terminal UI application for managing multiple AI CLI agents in tabbed sessions. Run Claude Code and Gemini CLI side by side, get permission requests forwarded to Slack, Discord, or Telegram, and adopt standalone agents already running on your system — all from a single interface.
 
 Built with [Ink](https://github.com/vadimdemedes/ink) (React for CLIs), [node-pty](https://github.com/microsoft/node-pty), and [xterm-headless](https://github.com/xtermjs/xterm.js).
