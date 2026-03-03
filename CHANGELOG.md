@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.1
+
+### Patch Changes
+
+- ac212b2: Update Firebase API key to restricted auth-only key for the new flaio-19b05 project.
+
 ## 1.0.0
 
 ### Major Changes
