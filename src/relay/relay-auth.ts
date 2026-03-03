@@ -101,7 +101,8 @@ export function getAuthToken(): string | null {
 }
 
 // Firebase Web API key (public — same as in the web app)
-const FIREBASE_API_KEY = "AIzaSyC8QMRjys-y0VNAKp_FxdTBGwiANKUVDbI";
+// Restricted API key — only allows Firebase Auth (identitytoolkit + securetoken)
+const FIREBASE_API_KEY = "AIzaSyAwJ4OgFu6y4XJCC4AkLdeTmfLygzPwpPE";
 
 /**
  * Refresh the Firebase ID token using the stored refresh token.
