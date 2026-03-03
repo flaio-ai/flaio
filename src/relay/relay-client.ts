@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   PING_INTERVAL_MS,
   PONG_TIMEOUT_MS,
+  DEFAULT_DRIVER_NAME,
   type CliToRelayMsg,
   type RelayToCliMsg,
   type RelayStartPlanningMsg,
@@ -22,6 +23,7 @@ import {
 import { refreshAuthToken } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
+import { getAllDrivers } from "../agents/agent-registry.js";
 import type { AgentSession } from "../agents/agent-session.js";
 import {
   generateSessionKeyPair,
@@ -359,6 +361,10 @@ export class RelayClient extends EventEmitter {
         debugLog(`relay: close session request for ${msg.sessionId}`);
         appStore.getState().closeSession(msg.sessionId);
         break;
+
+      case "relay_list_drivers":
+        this.handleListDrivers(msg.viewerId);
+        break;
     }
   }
 
@@ -431,6 +437,18 @@ export class RelayClient extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: failed to create session: ${message}`);
     }
+  }
+
+  private async handleListDrivers(viewerId: string): Promise<void> {
+    const allDrivers = getAllDrivers();
+    const drivers = await Promise.all(
+      allDrivers.map(async (d) => ({
+        name: d.name,
+        displayName: d.displayName,
+        installed: await d.checkInstalled(),
+      })),
+    );
+    this.send({ type: "cli_drivers_result", viewerId, drivers });
   }
 
   private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
@@ -652,10 +670,11 @@ export class RelayClient extends EventEmitter {
 
     const planningPrompt = promptParts.join("\n");
 
-    debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${resolvedCwd}`);
+    const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
+    debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${resolvedCwd} driver=${driverName}`);
 
     try {
-      const session = appStore.getState().createSession("claude", resolvedCwd);
+      const session = appStore.getState().createSession(driverName, resolvedCwd);
       if (!session) {
         debugLog("relay: failed to create planning session");
         return;
@@ -685,7 +704,7 @@ export class RelayClient extends EventEmitter {
       }).catch((err) => debugLog(`relay: planning session start failed: ${err}`));
 
       // Set session metadata so clients know this is non-interactive
-      const command = `claude --allowedTools Read,Glob,Grep,"Bash(git *)" -p "<planning prompt>"`;
+      const command = `${driverName} -p "<planning prompt>"`;
       appStore.getState().setSessionMeta(session.id, { interactive: false, command });
       this.registerSession(session.id);
 
@@ -737,10 +756,11 @@ export class RelayClient extends EventEmitter {
       "- Any potential issues or considerations",
     ].join("\n");
 
-    debugLog(`relay: start interactive planning ticket=${msg.ticketId} cwd=${resolvedCwd}`);
+    const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
+    debugLog(`relay: start interactive planning ticket=${msg.ticketId} cwd=${resolvedCwd} driver=${driverName}`);
 
     try {
-      const session = appStore.getState().createSession("claude", resolvedCwd);
+      const session = appStore.getState().createSession(driverName, resolvedCwd);
       if (!session) {
         debugLog("relay: failed to create interactive planning session");
         return;
@@ -760,7 +780,7 @@ export class RelayClient extends EventEmitter {
       // Set session metadata so clients know this is interactive
       appStore.getState().setSessionMeta(session.id, {
         interactive: true,
-        command: `claude "<planning prompt>"`,
+        command: `${driverName} "<planning prompt>"`,
       });
       this.registerSession(session.id);
     } catch (err) {
@@ -783,10 +803,11 @@ export class RelayClient extends EventEmitter {
       "Implement the plan step by step. When done, create a git branch and commit your changes.",
     ].join("\n");
 
-    debugLog(`relay: start implementation ticket=${msg.ticketId} cwd=${resolvedCwd}`);
+    const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
+    debugLog(`relay: start implementation ticket=${msg.ticketId} cwd=${resolvedCwd} driver=${driverName}`);
 
     try {
-      const session = appStore.getState().createSession("claude", resolvedCwd);
+      const session = appStore.getState().createSession(driverName, resolvedCwd);
       if (!session) {
         debugLog("relay: failed to create implementation session");
         return;
@@ -806,7 +827,7 @@ export class RelayClient extends EventEmitter {
       // Set session metadata so clients know this is interactive
       appStore.getState().setSessionMeta(session.id, {
         interactive: true,
-        command: `claude "<implementation prompt>"`,
+        command: `${driverName} "<implementation prompt>"`,
       });
       this.registerSession(session.id);
 

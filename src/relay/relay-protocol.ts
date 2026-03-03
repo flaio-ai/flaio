@@ -194,6 +194,21 @@ export interface CliGitInfoResultMsg {
   error: string | null;
 }
 
+export interface DriverInfo {
+  name: string;
+  displayName: string;
+  installed: boolean;
+}
+
+export interface CliDriversResultMsg {
+  type: "cli_drivers_result";
+  viewerId: string;
+  drivers: DriverInfo[];
+}
+
+/** Default driver name used when none is specified in relay messages */
+export const DEFAULT_DRIVER_NAME = "claude";
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -210,7 +225,8 @@ export type CliToRelayMsg =
   | CliPlanReadyMsg
   | CliImplementationDoneMsg
   | CliTicketStatusMsg
-  | CliGitInfoResultMsg;
+  | CliGitInfoResultMsg
+  | CliDriversResultMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -374,6 +390,11 @@ export interface RelayBrowseFilesMsg {
   path: string;
 }
 
+export interface RelayListDriversMsg {
+  type: "relay_list_drivers";
+  viewerId: string;
+}
+
 // Phase 3: Ticket lifecycle messages (Relay -> CLI)
 
 export interface RelayStartPlanningMsg {
@@ -383,6 +404,7 @@ export interface RelayStartPlanningMsg {
   ticketDescription: string;
   systemInstructions: string[];
   cwd: string;
+  driverName?: string;
   previousPlan?: string;
   feedback?: string;
   iteration?: number;
@@ -395,6 +417,7 @@ export interface RelayStartInteractivePlanningMsg {
   ticketDescription: string;
   systemInstructions: string[];
   cwd: string;
+  driverName?: string;
 }
 
 export interface RelayStartImplementationMsg {
@@ -403,6 +426,7 @@ export interface RelayStartImplementationMsg {
   plan: string;
   systemInstructions: string[];
   cwd: string;
+  driverName?: string;
 }
 
 export interface RelayRequestChangesMsg {
@@ -442,7 +466,8 @@ export type RelayToCliMsg =
   | RelayStartImplementationMsg
   | RelayRequestChangesMsg
   | RelayCloseSessionMsg
-  | RelayRequestGitInfoMsg;
+  | RelayRequestGitInfoMsg
+  | RelayListDriversMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

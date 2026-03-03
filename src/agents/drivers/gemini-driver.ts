@@ -15,11 +15,26 @@ export class GeminiDriver extends BaseDriver {
     }
   }
 
-  buildSpawnArgs(options: { cwd: string; prompt?: string }): SpawnConfig {
+  buildSpawnArgs(options: {
+    cwd: string;
+    prompt?: string;
+    mode?: "interactive" | "print";
+    allowedTools?: string[];
+  }): SpawnConfig {
     const args: string[] = [];
-    if (options.prompt) {
-      args.push("-p", options.prompt);
+
+    if (options.mode === "print") {
+      args.push("--approval-mode", "plan");
     }
+
+    if (options.prompt) {
+      if (options.mode === "print") {
+        args.push("-p", options.prompt);
+      } else {
+        args.push("-i", options.prompt);
+      }
+    }
+
     return { command: this.resolveCommand(), args };
   }
 
@@ -37,7 +52,7 @@ export class GeminiDriver extends BaseDriver {
   }
 
   buildContinueArgs(_options: { cwd: string }): SpawnConfig {
-    return { command: this.resolveCommand(), args: ["--continue"] };
+    return { command: this.resolveCommand(), args: ["--resume", "latest"] };
   }
 
   detectStatus(recentOutput: string, idleMs: number): AgentStatus {

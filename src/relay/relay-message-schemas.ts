@@ -85,6 +85,7 @@ const RelayStartPlanningSchema = z.object({
   ticketDescription: z.string(),
   systemInstructions: z.array(z.string()),
   cwd: z.string().max(4096),
+  driverName: z.string().optional(),
   previousPlan: z.string().optional(),
   feedback: z.string().optional(),
   iteration: z.number().int().optional(),
@@ -97,6 +98,7 @@ const RelayStartInteractivePlanningSchema = z.object({
   ticketDescription: z.string(),
   systemInstructions: z.array(z.string()),
   cwd: z.string().max(4096),
+  driverName: z.string().optional(),
 });
 
 const RelayStartImplementationSchema = z.object({
@@ -105,6 +107,7 @@ const RelayStartImplementationSchema = z.object({
   plan: z.string(),
   systemInstructions: z.array(z.string()),
   cwd: z.string().max(4096),
+  driverName: z.string().optional(),
 });
 
 const RelayRequestChangesSchema = z.object({
@@ -126,6 +129,11 @@ const RelayRequestGitInfoSchema = z.object({
   cwd: z.string().max(4096),
 });
 
+const RelayListDriversSchema = z.object({
+  type: z.literal("relay_list_drivers"),
+  viewerId: z.string(),
+});
+
 export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayAuthOkSchema,
   RelayAuthFailSchema,
@@ -145,4 +153,5 @@ export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayRequestChangesSchema,
   RelayCloseSessionSchema,
   RelayRequestGitInfoSchema,
+  RelayListDriversSchema,
 ]);
