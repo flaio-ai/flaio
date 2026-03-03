@@ -59,9 +59,60 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
 
         // Success page
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(
-          "<h2>Authenticated successfully!</h2><p>You can close this tab and return to the terminal.</p>",
-        );
+        res.end(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flaio — Authenticated</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f0f1a;
+      color: #e6edf3;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 48px;
+      text-align: center;
+      max-width: 400px;
+    }
+    .check {
+      width: 48px;
+      height: 48px;
+      background: rgba(34, 197, 94, 0.15);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 24px;
+    }
+    .check svg { width: 24px; height: 24px; color: #22c55e; }
+    h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+    p { font-size: 14px; color: #8b949e; line-height: 1.5; }
+    .brand { font-size: 12px; color: #484f58; margin-top: 32px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="check">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+    </div>
+    <h1>You're in</h1>
+    <p>You can close this tab and return to your terminal.</p>
+    <p class="brand">Flaio</p>
+  </div>
+</body>
+</html>`);
 
         clearTimeout(timeout);
         server.close();
