@@ -1,6 +1,6 @@
 {
   "name": "agent-manager",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
   "license": "MIT",
   "type": "module",
