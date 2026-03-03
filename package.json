@@ -1,5 +1,5 @@
 {
-  "name": "flaio",
+  "name": "flaio-cli",
   "version": "0.3.1",
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
   "license": "MIT",

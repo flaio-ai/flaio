@@ -20,7 +20,7 @@ function getLocalVersion(): string {
 function fetchLatestVersion(): Promise<string | null> {
   return new Promise((resolve) => {
     const req = https.get(
-      "https://registry.npmjs.org/flaio/latest",
+      "https://registry.npmjs.org/flaio-cli/latest",
       { timeout: 5000 },
       (res) => {
         if (res.statusCode !== 200) {

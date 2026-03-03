@@ -72,7 +72,7 @@ Hooks communicate via Unix socket IPC (`/tmp/flaio/hooks.sock`) with newline-del
 ### Install from npm
 
 ```bash
-npm install -g flaio
+npm install -g flaio-cli
 ```
 
 Then run it:
