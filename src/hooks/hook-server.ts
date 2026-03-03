@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
 
-const SOCKET_DIR = path.join(os.tmpdir(), "agent-manager");
+const SOCKET_DIR = path.join(os.tmpdir(), "flaio");
 const SOCKET_PATH = path.join(SOCKET_DIR, "hooks.sock");
 
 export interface HookMessage {
@@ -19,7 +19,7 @@ export interface HookResponse {
 
 /**
  * Unix socket IPC server that hooks connect to.
- * Runs inside the agent-manager process.
+ * Runs inside the flaio process.
  */
 export class HookServer extends EventEmitter {
   private server: net.Server | null = null;
@@ -126,7 +126,7 @@ export class HookServer extends EventEmitter {
 }
 
 /**
- * Client function used by hooks to send messages to the agent-manager.
+ * Client function used by hooks to send messages to flaio.
  * Returns the response, or null if the server isn't running.
  */
 export async function sendToHookServer(

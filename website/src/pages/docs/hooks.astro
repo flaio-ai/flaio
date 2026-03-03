@@ -17,8 +17,8 @@ const headings = [
   <h2 id="overview">Overview</h2>
   <Callout type="info">
     <p>
-      The hook system bridges Claude Code's lifecycle events to Agent Manager via Unix socket IPC
-      at <code>/tmp/agent-manager/hooks.sock</code>, using newline-delimited JSON.
+      The hook system bridges Claude Code's lifecycle events to Flaio via Unix socket IPC
+      at <code>/tmp/flaio/hooks.sock</code>, using newline-delimited JSON.
     </p>
   </Callout>
 
@@ -56,8 +56,8 @@ interface HookResponse {
 
   <h2 id="hook-server">Hook Server</h2>
   <p>
-    The <code>HookServer</code> class runs inside the agent-manager process. It creates a Unix socket
-    at <code>/tmp/agent-manager/hooks.sock</code> and listens for incoming connections.
+    The <code>HookServer</code> class runs inside the flaio process. It creates a Unix socket
+    at <code>/tmp/flaio/hooks.sock</code> and listens for incoming connections.
   </p>
   <CodeBlock lang="ts" code={`class HookServer extends EventEmitter {
   get socketPath(): string;

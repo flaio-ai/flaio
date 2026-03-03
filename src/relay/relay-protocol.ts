@@ -587,8 +587,8 @@ export type RelayToBrowserMsg =
 // Constants
 // ---------------------------------------------------------------------------
 
-export const RELAY_URL = "wss://api.charliesagents.app";
-export const AUTH_URL = "https://charliesagents.app/auth/cli";
+export const RELAY_URL = "wss://api.flaio.ai";
+export const AUTH_URL = "https://flaio.ai/auth/cli";
 
 /** Heartbeat interval in ms */
 export const PING_INTERVAL_MS = 30_000;

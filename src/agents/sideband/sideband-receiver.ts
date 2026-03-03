@@ -44,6 +44,9 @@ export class SidebandReceiver extends EventEmitter {
   getSpawnEnv(): Record<string, string> {
     if (!this.dir) return {};
     return {
+      FLAIO_SESSION_ID: this.sessionId,
+      FLAIO_SIDEBAND_DIR: this.dir,
+      // Backward compat — remove in next major
       CODE_RELAY_SESSION_ID: this.sessionId,
       CODE_RELAY_SIDEBAND_DIR: this.dir,
     };
@@ -51,7 +54,7 @@ export class SidebandReceiver extends EventEmitter {
 
   /** Create the temp dir and start watching. */
   async start(): Promise<void> {
-    this.dir = await fsp.mkdtemp(path.join(os.tmpdir(), `code-relay-${this.sessionId}-`));
+    this.dir = await fsp.mkdtemp(path.join(os.tmpdir(), `flaio-${this.sessionId}-`));
 
     // Pre-create the files so fs.watch has something to watch
     const eventsPath = path.join(this.dir, "events.jsonl");

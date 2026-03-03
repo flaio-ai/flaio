@@ -72,10 +72,18 @@ export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type RelayConfig = z.infer<typeof RelayConfigSchema>;
 
-const CONFIG_DIR = path.join(os.homedir(), ".config", "agent-manager");
+const CONFIG_DIR = path.join(os.homedir(), ".config", "flaio");
 const CONFIG_FILE = path.join(CONFIG_DIR, "settings.json");
 
+// Legacy path for migration
+const LEGACY_CONFIG_DIR = path.join(os.homedir(), ".config", "agent-manager");
+
 export function loadConfig(): AppConfig {
+  // Migrate legacy config dir if new one doesn't exist yet
+  if (!fs.existsSync(CONFIG_DIR) && fs.existsSync(LEGACY_CONFIG_DIR)) {
+    fs.cpSync(LEGACY_CONFIG_DIR, CONFIG_DIR, { recursive: true });
+  }
+
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       // Tighten permissions on existing config files (contains auth tokens)

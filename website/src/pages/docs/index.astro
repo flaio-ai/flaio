@@ -4,7 +4,7 @@ import CodeBlock from '../../components/docs/CodeBlock.astro';
 import Callout from '../../components/docs/Callout.astro';
 
 const headings = [
-  { depth: 2, slug: 'what-is-agent-manager', text: 'What is Agent Manager?' },
+  { depth: 2, slug: 'what-is-flaio', text: 'What is Flaio?' },
   { depth: 2, slug: 'quick-start', text: 'Quick Start' },
   { depth: 2, slug: 'key-concepts', text: 'Key Concepts' },
   { depth: 2, slug: 'next-steps', text: 'Next Steps' },
@@ -13,14 +13,14 @@ const headings = [
 <DocsLayout title="Getting Started" headings={headings}>
   <Callout type="tip">
     <p>
-      Agent Manager lets you run multiple AI CLI agents in a single tabbed terminal, with messaging integration
+      Flaio lets you run multiple AI CLI agents in a single tabbed terminal, with messaging integration
       for approving actions from your phone. Get up and running in under a minute.
     </p>
   </Callout>
 
-  <h2 id="what-is-agent-manager">What is Agent Manager?</h2>
+  <h2 id="what-is-flaio">What is Flaio?</h2>
   <p>
-    Agent Manager is a terminal UI application for managing multiple AI CLI agents in tabbed sessions.
+    Flaio is a terminal UI application for managing multiple AI CLI agents in tabbed sessions.
     Run Claude Code and Gemini CLI side by side, get permission requests forwarded to Slack, Discord, or Telegram,
     and adopt standalone agents already running on your system — all from a single interface.
   </p>
@@ -31,9 +31,9 @@ const headings = [
   </p>
 
   <h2 id="quick-start">Quick Start</h2>
-  <CodeBlock code="npm install -g agent-manager" />
+  <CodeBlock code="npm install -g flaio-cli" />
   <p>Then run it:</p>
-  <CodeBlock code="agent-manager" />
+  <CodeBlock code="flaio" />
   <p>
     This opens a terminal UI with a tabbed interface. Press <code>Ctrl+T</code> to create a new session,
     select an agent (Claude Code or Gemini CLI), enter a working directory, and start working.

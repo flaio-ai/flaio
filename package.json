@@ -1,5 +1,5 @@
 {
-  "name": "agent-manager",
+  "name": "flaio-cli",
   "version": "0.3.1",
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
   "license": "MIT",
@@ -7,11 +7,11 @@
   "author": "George Livas",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/georgelivas/agent-manager.git"
+    "url": "git+https://github.com/flaio-ai/flaio.git"
   },
-  "homepage": "https://github.com/georgelivas/agent-manager",
+  "homepage": "https://github.com/flaio-ai/flaio",
   "bugs": {
-    "url": "https://github.com/georgelivas/agent-manager/issues"
+    "url": "https://github.com/flaio-ai/flaio/issues"
   },
   "keywords": [
     "cli",
@@ -22,7 +22,8 @@
     "terminal",
     "tui",
     "ink",
-    "node-pty"
+    "node-pty",
+    "flaio"
   ],
   "engines": {
     "node": ">=18.0.0"
@@ -33,7 +34,7 @@
     "LICENSE"
   ],
   "bin": {
-    "agent-manager": "dist/cli.js"
+    "flaio": "dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",

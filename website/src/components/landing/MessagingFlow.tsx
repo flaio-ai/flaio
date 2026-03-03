@@ -4,7 +4,7 @@ const NODES = [
   { id: 'claude', label: 'Claude Code', x: 60, color: '#D97757' },
   { id: 'hook', label: 'Hook', x: 200, color: '#8b949e' },
   { id: 'ipc', label: 'IPC Socket', x: 340, color: '#8b949e' },
-  { id: 'manager', label: 'Agent Manager', x: 480, color: '#06B6D4' },
+  { id: 'manager', label: 'Flaio', x: 480, color: '#06B6D4' },
   { id: 'slack', label: 'Slack', x: 620, color: '#4A154B' },
   { id: 'user', label: 'User', x: 760, color: '#22C55E' },
 ];
@@ -13,7 +13,7 @@ const MOBILE_NODES = [
   { id: 'claude', label: 'Claude Code', y: 40, color: '#D97757' },
   { id: 'hook', label: 'Hook', y: 110, color: '#8b949e' },
   { id: 'ipc', label: 'IPC Socket', y: 180, color: '#8b949e' },
-  { id: 'manager', label: 'Agent Manager', y: 250, color: '#06B6D4' },
+  { id: 'manager', label: 'Flaio', y: 250, color: '#06B6D4' },
   { id: 'slack', label: 'Slack', y: 320, color: '#4A154B' },
   { id: 'user', label: 'User', y: 390, color: '#22C55E' },
 ];

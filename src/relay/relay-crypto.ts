@@ -113,7 +113,7 @@ export async function deriveKeyEncryptionKey(
   // Sort public keys lexicographically so both sides compute the same info
   const sorted = [ownPublicKeyBase64, peerPublicKeyBase64].sort();
   const info = new TextEncoder().encode(
-    `code-relay-e2e-v1:${sorted[0]}:${sorted[1]}`,
+    `flaio-e2e-v1:${sorted[0]}:${sorted[1]}`,
   );
 
   // Use provided salt (receiver) or generate a random one (sender)

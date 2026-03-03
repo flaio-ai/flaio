@@ -170,12 +170,12 @@ export function uninstallHooks(opts?: InstallOptions): void {
 
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
   writeSettings(settings);
-  log("\nAll agent-manager hooks uninstalled.");
+  log("\nAll flaio hooks uninstalled.");
 }
 
 export function hookStatus(): void {
   const settings = readSettings();
-  console.log("Agent Manager hook status:\n");
+  console.log("Flaio hook status:\n");
 
   for (const hook of HOOKS) {
     const installed = settings.hooks?.[hook.event]?.some(

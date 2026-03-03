@@ -1,4 +1,4 @@
-# Agent Manager
+# Flaio
 
 > **This project has been renamed to [Flaio](https://github.com/flaio-ai/flaio) and now lives at [github.com/flaio-ai/flaio](https://github.com/flaio-ai/flaio).**
 >
@@ -42,7 +42,7 @@ All connector dependencies are optional — only install what you need.
 ### Portal — Remote Session Access
 Connect to running sessions from another terminal window without disrupting the main UI:
 
-- **Interactive picker** — Run `agent-manager portal` to browse and select sessions
+- **Interactive picker** — Run `flaio portal` to browse and select sessions
 - **Create sessions remotely** — Start new agent sessions directly from the portal
 - **Full terminal mirroring** — See the exact same output as the main app in real-time
 - **Input forwarding** — Type commands and interact with the agent as if you were in the main app
@@ -56,7 +56,7 @@ An IPC-based hooks system bridges Claude Code's lifecycle events to the manager:
 - **PostToolUse** — Tool results forwarded to messaging platforms
 - **Notification** — Agent responses and status changes relayed to connectors
 
-Hooks communicate via Unix socket IPC (`/tmp/agent-manager/hooks.sock`) with newline-delimited JSON.
+Hooks communicate via Unix socket IPC (`/tmp/flaio/hooks.sock`) with newline-delimited JSON.
 
 ### Terminal Emulation
 - Full ANSI color support (16, 256, and truecolor RGB)
@@ -80,20 +80,20 @@ Hooks communicate via Unix socket IPC (`/tmp/agent-manager/hooks.sock`) with new
 ### Install from npm
 
 ```bash
-npm install -g agent-manager
+npm install -g flaio-cli
 ```
 
 Then run it:
 
 ```bash
-agent-manager
+flaio
 ```
 
 ### Install from Source
 
 ```bash
-git clone https://github.com/georgelivas/agent-manager.git
-cd agent-manager
+git clone https://github.com/flaio-ai/flaio.git
+cd flaio
 npm install
 npm run build
 npm start
@@ -153,13 +153,13 @@ Portals let you access running sessions from a separate terminal — useful for 
 
 ```bash
 # Interactive picker — browse sessions, create new ones
-agent-manager portal
+flaio portal
 
 # Connect directly to a known session
-agent-manager portal <session-id>
+flaio portal <session-id>
 
 # Static table of running sessions
-agent-manager portal --list
+flaio portal --list
 ```
 
 In the interactive picker:
@@ -213,7 +213,7 @@ By default, the manager polls Slack threads every 3 seconds. For faster message 
 2. Generate an **App-Level Token** with `connections:write` scope
 3. Copy the token (`xapp-...`)
 
-**7. Configure in Agent Manager**
+**7. Configure in Flaio**
 
 Press `Ctrl+S` in the manager, enable Slack, and enter:
 
@@ -223,7 +223,7 @@ Press `Ctrl+S` in the manager, enable Slack, and enter:
 | **Channel ID** | From step 5 |
 | **App Token** (optional) | `xapp-...` from step 6 |
 
-Or edit `~/.config/agent-manager/settings.json` directly:
+Or edit `~/.config/flaio/settings.json` directly:
 
 ```json
 {
@@ -403,13 +403,13 @@ src/
 2. **App** (`app.tsx`) initializes stores, starts connectors and the portal server, and renders the shell layout
 3. **Sessions** are managed by `AppStore` — each session owns a `PtyManager` (node-pty), `XtermBridge` (headless terminal emulation), and `ScreenBuffer` (FPS-limited rendering)
 4. **Keyboard input** is captured by `useRawInput` and forwarded to the active session's PTY, except when intercepted by `useKeybindings` for shortcuts
-5. **Portal server** (`portal-server.ts`) listens on a Unix socket (`/tmp/agent-manager/portal.sock`). Portal clients subscribe to sessions, receive throttled screen frames, and forward keystrokes — providing full remote access without disrupting the main UI
+5. **Portal server** (`portal-server.ts`) listens on a Unix socket (`/tmp/flaio/portal.sock`). Portal clients subscribe to sessions, receive throttled screen frames, and forward keystrokes — providing full remote access without disrupting the main UI
 6. **Hooks** are installed as Claude Code lifecycle hooks that send events to the manager's IPC server, which routes them through `ConnectorManager` to the configured messaging adapters
 7. **State** flows through Zustand stores with selector-based subscriptions for efficient re-renders
 
 ## Configuration
 
-Settings are persisted to `~/.config/agent-manager/settings.json` and validated with Zod on load.
+Settings are persisted to `~/.config/flaio/settings.json` and validated with Zod on load.
 
 ```jsonc
 {

@@ -17,7 +17,7 @@ const MAIN_CONTENT = [
   { color: '#8b949e', text: 'Write src/auth.ts' },
 ];
 
-const PORTAL_CMD = 'agent-manager portal';
+const PORTAL_CMD = 'flaio portal';
 
 export default function PortalsDiagram() {
   const [phaseIdx, setPhaseIdx] = useState(0);
@@ -99,7 +99,7 @@ export default function PortalsDiagram() {
           <span className="terminal-dot terminal-dot-yellow" />
           <span className="terminal-dot terminal-dot-green" />
           <span className="ml-3 text-[10px] text-[#8b949e] font-mono">
-            agent-manager
+            flaio
             {connected && <span className="text-[#06B6D4] ml-2">&#8644;</span>}
           </span>
         </div>
