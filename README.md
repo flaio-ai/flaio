@@ -2,7 +2,7 @@
 
 > **This project has been renamed to [Flaio](https://github.com/flaio-ai/flaio) and now lives at [github.com/flaio-ai/flaio](https://github.com/flaio-ai/flaio).**
 >
-> Install the new package: `npm install -g flaio`
+> Install the new package: `npm install -g flaio-cli`
 >
 > This repository is archived and will no longer receive updates.
 
