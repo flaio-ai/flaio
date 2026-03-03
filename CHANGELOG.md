@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.0
+
+### Major Changes
+
+- 58848ac: Rebrand from agent-manager to Flaio. New CLI command: `flaio`. New domain: flaio.ai.
+
 ## 0.3.1
 
 ### Patch Changes
