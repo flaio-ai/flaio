@@ -1,4 +1,4 @@
-import { BaseDriver, type AgentStatus, type SpawnConfig } from "./base-driver.js";
+import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
 import { execSync } from "node:child_process";
 
 export class ClaudeDriver extends BaseDriver {
@@ -15,13 +15,25 @@ export class ClaudeDriver extends BaseDriver {
     }
   }
 
+  listModels(): ModelInfo[] {
+    return [
+      { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+      { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
+      { id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5" },
+    ];
+  }
+
   buildSpawnArgs(options: {
     cwd: string;
     prompt?: string;
     mode?: "interactive" | "print";
     allowedTools?: string[];
+    model?: string;
   }): SpawnConfig {
     const args: string[] = [];
+    if (options.model) {
+      args.push("--model", options.model);
+    }
     if (options.allowedTools?.length) {
       args.push("--allowedTools", options.allowedTools.join(","));
     }

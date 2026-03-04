@@ -1,4 +1,4 @@
-import { BaseDriver, type AgentStatus, type SpawnConfig } from "./base-driver.js";
+import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
 import { execSync } from "node:child_process";
 
 export class GeminiDriver extends BaseDriver {
@@ -15,13 +15,24 @@ export class GeminiDriver extends BaseDriver {
     }
   }
 
+  listModels(): ModelInfo[] {
+    return [
+      { id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash" },
+    ];
+  }
+
   buildSpawnArgs(options: {
     cwd: string;
     prompt?: string;
     mode?: "interactive" | "print";
     allowedTools?: string[];
+    model?: string;
   }): SpawnConfig {
     const args: string[] = [];
+    if (options.model) {
+      args.push("--model", options.model);
+    }
 
     if (options.mode === "print") {
       args.push("--approval-mode", "plan");

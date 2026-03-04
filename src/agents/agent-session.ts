@@ -171,6 +171,7 @@ export class AgentSession extends EventEmitter {
     prompt?: string;
     mode?: "interactive" | "print";
     allowedTools?: string[];
+    model?: string;
   }): Promise<void> {
     this.setStatus("starting");
 
@@ -182,6 +183,7 @@ export class AgentSession extends EventEmitter {
       prompt: options?.prompt,
       mode: options?.mode,
       allowedTools: options?.allowedTools,
+      model: options?.model,
     });
 
     this.pty.spawn({
