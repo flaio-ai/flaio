@@ -164,6 +164,7 @@ export interface CliPlanReadyMsg {
   plan: string;
   iteration: number;
   feedback: string | null;
+  branchName?: string;
 }
 
 export interface CliImplementationDoneMsg {
@@ -180,6 +181,7 @@ export interface CliTicketStatusMsg {
   sessionId: string;
   status: "planning" | "plan_ready" | "implementing" | "done" | "error";
   message?: string;
+  branchName?: string;
 }
 
 export interface CliGitInfoResultMsg {
@@ -415,6 +417,7 @@ export interface RelayStartPlanningMsg {
   previousPlan?: string;
   feedback?: string;
   iteration?: number;
+  useWorktree?: boolean;
 }
 
 export interface RelayStartInteractivePlanningMsg {
@@ -426,6 +429,7 @@ export interface RelayStartInteractivePlanningMsg {
   cwd: string;
   driverName?: string;
   model?: string;
+  useWorktree?: boolean;
 }
 
 export interface RelayStartImplementationMsg {
@@ -436,6 +440,7 @@ export interface RelayStartImplementationMsg {
   cwd: string;
   driverName?: string;
   model?: string;
+  useWorktree?: boolean;
 }
 
 export interface RelayRequestChangesMsg {
