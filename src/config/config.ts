@@ -41,6 +41,12 @@ const RelayConfigSchema = z.object({
   authUrl: z.string().default(DEFAULTS.relay.authUrl),
 });
 
+const WorktreeConfigSchema = z.object({
+  planning: z.boolean().default(false),
+  interactivePlanning: z.boolean().default(false),
+  implementation: z.boolean().default(true),
+});
+
 const UiConfigSchema = z.object({
   sidebarWidth: z.number().default(DEFAULTS.ui.sidebarWidth),
   narrowBreakpoint: z.number().default(DEFAULTS.ui.narrowBreakpoint),
@@ -64,6 +70,7 @@ const AppConfigSchema = z.object({
     })
     .default({}),
   relay: RelayConfigSchema.default({}),
+  worktree: WorktreeConfigSchema.default({}),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
@@ -71,6 +78,7 @@ export type SlackConfig = z.infer<typeof SlackConfigSchema>;
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type RelayConfig = z.infer<typeof RelayConfigSchema>;
+export type WorktreeConfig = z.infer<typeof WorktreeConfigSchema>;
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "flaio");
 const CONFIG_FILE = path.join(CONFIG_DIR, "settings.json");

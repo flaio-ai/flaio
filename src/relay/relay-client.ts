@@ -14,6 +14,7 @@ import {
   type RelayRequestChangesMsg,
 } from "./relay-protocol.js";
 import { ticketTracker } from "./ticket-tracker.js";
+import { createWorktree, autoSaveAllWorktrees } from "./worktree-manager.js";
 import {
   setRelayConnectionStatus,
   setSessionEncryptionStatus,
@@ -170,6 +171,14 @@ export class RelayClient extends EventEmitter {
     if (!this.started) return;
     this.started = false;
     this.shouldReconnect = false;
+
+    // Auto-save all worktrees before shutting down
+    const projectCwds = ticketTracker.getTrackedProjectCwds();
+    for (const cwd of projectCwds) {
+      await autoSaveAllWorktrees(cwd).catch((err) =>
+        debugLog(`relay: worktree auto-save failed for ${cwd}: ${err}`),
+      );
+    }
 
     if (this.storeUnsub) {
       this.storeUnsub();
@@ -626,9 +635,31 @@ export class RelayClient extends EventEmitter {
   // Phase 3: Ticket dev-loop handlers
   // -------------------------------------------------------------------------
 
-  private handleStartPlanning(msg: RelayStartPlanningMsg): void {
+  private async handleStartPlanning(msg: RelayStartPlanningMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
     const iteration = msg.iteration ?? 0;
+
+    // --- Worktree resolution ---
+    let effectiveCwd = resolvedCwd;
+    let worktreePath: string | null = null;
+    let branchName: string | null = null;
+
+    if (msg.useWorktree) {
+      // Reuse existing worktree if one exists for this ticket
+      const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
+      if (existingWt?.worktreePath) {
+        effectiveCwd = existingWt.worktreePath;
+        worktreePath = existingWt.worktreePath;
+        branchName = existingWt.branchName;
+      } else {
+        const wt = await createWorktree(resolvedCwd, msg.ticketId);
+        if (wt) {
+          effectiveCwd = wt.worktreePath;
+          worktreePath = wt.worktreePath;
+          branchName = wt.branchName;
+        }
+      }
+    }
 
     const promptParts = [
       "You are planning the implementation of a ticket.",
@@ -672,22 +703,23 @@ export class RelayClient extends EventEmitter {
     const planningPrompt = promptParts.join("\n");
 
     const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
-    debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${resolvedCwd} driver=${driverName}`);
+    debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
 
     try {
-      const session = appStore.getState().createSession(driverName, resolvedCwd);
+      const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create planning session");
         return;
       }
 
-      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle);
+      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle, resolvedCwd, worktreePath, branchName);
 
       this.send({
         type: "cli_ticket_status",
         ticketId: msg.ticketId,
         sessionId: session.id,
         status: "planning",
+        branchName: branchName ?? undefined,
       });
 
       // Accumulate raw PTY output for plan capture.
@@ -725,6 +757,7 @@ export class RelayClient extends EventEmitter {
           plan: plainText,
           iteration,
           feedback: msg.feedback ?? null,
+          branchName: branchName ?? undefined,
         });
 
         this.send({
@@ -732,6 +765,7 @@ export class RelayClient extends EventEmitter {
           ticketId: msg.ticketId,
           sessionId: session.id,
           status: "plan_ready",
+          branchName: branchName ?? undefined,
         });
       };
       session.once("exit", onExit);
@@ -741,8 +775,29 @@ export class RelayClient extends EventEmitter {
     }
   }
 
-  private handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): void {
+  private async handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
+
+    // --- Worktree resolution ---
+    let effectiveCwd = resolvedCwd;
+    let worktreePath: string | null = null;
+    let branchName: string | null = null;
+
+    if (msg.useWorktree) {
+      const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
+      if (existingWt?.worktreePath) {
+        effectiveCwd = existingWt.worktreePath;
+        worktreePath = existingWt.worktreePath;
+        branchName = existingWt.branchName;
+      } else {
+        const wt = await createWorktree(resolvedCwd, msg.ticketId);
+        if (wt) {
+          effectiveCwd = wt.worktreePath;
+          worktreePath = wt.worktreePath;
+          branchName = wt.branchName;
+        }
+      }
+    }
 
     const planningPrompt = [
       "You are planning the implementation of a ticket.",
@@ -759,22 +814,23 @@ export class RelayClient extends EventEmitter {
     ].join("\n");
 
     const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
-    debugLog(`relay: start interactive planning ticket=${msg.ticketId} cwd=${resolvedCwd} driver=${driverName}`);
+    debugLog(`relay: start interactive planning ticket=${msg.ticketId} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
 
     try {
-      const session = appStore.getState().createSession(driverName, resolvedCwd);
+      const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create interactive planning session");
         return;
       }
 
-      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle);
+      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle, resolvedCwd, worktreePath, branchName);
 
       this.send({
         type: "cli_ticket_status",
         ticketId: msg.ticketId,
         sessionId: session.id,
         status: "planning",
+        branchName: branchName ?? undefined,
       });
 
       session.start({ prompt: planningPrompt, model: msg.model }).catch((err) => debugLog(`relay: interactive planning start failed: ${err}`));
@@ -791,25 +847,58 @@ export class RelayClient extends EventEmitter {
     }
   }
 
-  private handleStartImplementation(msg: RelayStartImplementationMsg): void {
+  private async handleStartImplementation(msg: RelayStartImplementationMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
 
-    const implementPrompt = [
+    // --- Worktree resolution ---
+    let effectiveCwd = resolvedCwd;
+    let worktreePath: string | null = null;
+    let branchName: string | null = null;
+
+    // Reuse worktree from planning phase if one exists
+    const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
+    if (existingWt?.worktreePath) {
+      effectiveCwd = existingWt.worktreePath;
+      worktreePath = existingWt.worktreePath;
+      branchName = existingWt.branchName;
+    } else if (msg.useWorktree) {
+      const wt = await createWorktree(resolvedCwd, msg.ticketId);
+      if (wt) {
+        effectiveCwd = wt.worktreePath;
+        worktreePath = wt.worktreePath;
+        branchName = wt.branchName;
+      }
+    }
+
+    const promptParts = [
       "You are implementing a plan. Follow the plan exactly.",
       "",
       "Plan:",
       msg.plan,
       "",
       ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
-      "",
-      "Implement the plan step by step. When done, create a git branch and commit your changes.",
-    ].join("\n");
+    ];
+
+    if (branchName) {
+      promptParts.push(
+        "",
+        `You are working on a dedicated git worktree branch: ${branchName}`,
+        "All your changes are already isolated on this branch. Commit your changes when done.",
+      );
+    } else {
+      promptParts.push(
+        "",
+        "Implement the plan step by step. When done, create a git branch and commit your changes.",
+      );
+    }
+
+    const implementPrompt = promptParts.join("\n");
 
     const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
-    debugLog(`relay: start implementation ticket=${msg.ticketId} cwd=${resolvedCwd} driver=${driverName}`);
+    debugLog(`relay: start implementation ticket=${msg.ticketId} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
 
     try {
-      const session = appStore.getState().createSession(driverName, resolvedCwd);
+      const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create implementation session");
         return;
@@ -817,11 +906,24 @@ export class RelayClient extends EventEmitter {
 
       ticketTracker.startImplementation(msg.ticketId, session.id);
 
+      // Update worktree info if we created/found one during implementation
+      const wtInfo = ticketTracker.getWorktreeInfo(msg.ticketId);
+      if (wtInfo && (!wtInfo.worktreePath && worktreePath)) {
+        // Patch the tracker entry with worktree info discovered in this step
+        const entry = ticketTracker.getAll().get(msg.ticketId);
+        if (entry) {
+          entry.originalCwd = resolvedCwd;
+          entry.worktreePath = worktreePath;
+          entry.branchName = branchName;
+        }
+      }
+
       this.send({
         type: "cli_ticket_status",
         ticketId: msg.ticketId,
         sessionId: session.id,
         status: "implementing",
+        branchName: branchName ?? undefined,
       });
 
       session.start({ prompt: implementPrompt, model: msg.model }).catch((err) => debugLog(`relay: implementation start failed: ${err}`));
@@ -847,7 +949,7 @@ export class RelayClient extends EventEmitter {
             ticketId: msg.ticketId,
             sessionId: session.id,
             summary: plainText,
-            gitContext: {},
+            gitContext: { branch: branchName ?? undefined },
           });
 
           this.send({
@@ -855,6 +957,7 @@ export class RelayClient extends EventEmitter {
             ticketId: msg.ticketId,
             sessionId: session.id,
             status: "done",
+            branchName: branchName ?? undefined,
           });
         }
       };
