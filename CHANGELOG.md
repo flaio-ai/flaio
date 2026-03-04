@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.6
+
+### Patch Changes
+
+- 615a12b: support for git worktrees
+
 ## 1.0.5
 
 ### Patch Changes
