@@ -34,12 +34,16 @@ export function screenContentToAnsi(
   cursor: { x: number; y: number },
   rows: number,
 ): string {
+  // Clamp to actual terminal height to prevent overflowing the alt screen
+  const termRows = process.stdout.rows || rows;
+  const renderRows = Math.min(rows, termRows);
+
   const parts: string[] = [];
 
   // Move cursor to top-left
   parts.push("\x1b[H");
 
-  for (let y = 0; y < rows; y++) {
+  for (let y = 0; y < renderRows; y++) {
     const line = content[y];
 
     if (line && line.length > 0) {
@@ -78,8 +82,11 @@ export function screenContentToAnsi(
     }
   }
 
-  // Position cursor (1-indexed)
-  parts.push(`\x1b[${cursor.y + 1};${cursor.x + 1}H`);
+  // Position cursor (1-indexed), clamped to visible area
+  const cy = Math.min(cursor.y, renderRows - 1);
+  const termCols = process.stdout.columns || 80;
+  const cx = Math.min(cursor.x, termCols - 1);
+  parts.push(`\x1b[${cy + 1};${cx + 1}H`);
 
   return parts.join("");
 }

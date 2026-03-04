@@ -69,8 +69,6 @@ export function App(): React.ReactElement {
     onAdoptAgent: useCallback(() => setShowAdoptDialog(true), []),
   });
 
-  useRawInput(activeInstance, !showNewSession && !showSettings && !showHelp && !showAdoptDialog);
-
   // Compute actual pane dimensions for the PTY/xterm
   const SIDEBAR_WIDTH = 24;
   const useTopTabs = columns < 100;
@@ -80,15 +78,17 @@ export function App(): React.ReactElement {
   const chromeRows = 1 + 3 + (sidebarVisible && useTopTabs ? 3 : 0);
   const paneRows = rows - chromeRows;
 
+  useRawInput(activeInstance, !showNewSession && !showSettings && !showHelp && !showAdoptDialog, paneWidth, paneRows);
+
   useEffect(() => {
-    if (paneWidth <= 0 || paneRows <= 0) return;
-    for (const session of sessions) {
-      const instance = getSessionInstance(session.id);
-      if (instance) {
-        instance.resize(paneWidth, paneRows);
-      }
+    if (paneWidth <= 0 || paneRows <= 0 || !activeSessionId) return;
+    // Only resize the active session — the one the CLI user is looking at.
+    // Non-active sessions with remote viewers keep the web's dimensions.
+    const instance = getSessionInstance(activeSessionId);
+    if (instance) {
+      instance.resize(paneWidth, paneRows);
     }
-  }, [paneWidth, paneRows, sessions]);
+  }, [paneWidth, paneRows, activeSessionId]);
 
   const handleNewSession = useCallback((driverName: string, cwd: string) => {
     const session = appStore.getState().createSession(driverName, cwd, paneWidth, paneRows);

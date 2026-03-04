@@ -99,24 +99,37 @@ export class ScreenBuffer {
   private dirty = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private listeners: Set<(content: ScreenContent) => void> = new Set();
+  private extractGridFn: (() => CellGrid) | null = null;
+  private lastFlushTime = 0;
+  private interval = 0;
 
   constructor(private targetFps: number = 30) {}
 
   markDirty(): void {
     this.dirty = true;
+    // Flush immediately if enough time has passed since last render.
+    // This eliminates the up-to-33ms latency on the first update after idle.
+    if (this.extractGridFn && Date.now() - this.lastFlushTime >= this.interval) {
+      this.flush();
+    }
+  }
+
+  private flush(): void {
+    if (!this.dirty || !this.extractGridFn) return;
+    this.dirty = false;
+    this.lastFlushTime = Date.now();
+    const grid = this.extractGridFn();
+    this.content = gridToSpans(grid);
+    for (const listener of this.listeners) {
+      listener(this.content);
+    }
   }
 
   start(extractGrid: () => CellGrid): void {
-    const interval = Math.floor(1000 / this.targetFps);
-    this.timer = setInterval(() => {
-      if (!this.dirty) return;
-      this.dirty = false;
-      const grid = extractGrid();
-      this.content = gridToSpans(grid);
-      for (const listener of this.listeners) {
-        listener(this.content);
-      }
-    }, interval);
+    if (this.timer) return;
+    this.extractGridFn = extractGrid;
+    this.interval = Math.floor(1000 / this.targetFps);
+    this.timer = setInterval(() => this.flush(), this.interval);
   }
 
   stop(): void {
@@ -124,6 +137,7 @@ export class ScreenBuffer {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.extractGridFn = null;
   }
 
   onChange(listener: (content: ScreenContent) => void): () => void {

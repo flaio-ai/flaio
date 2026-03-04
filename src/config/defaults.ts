@@ -23,7 +23,7 @@ export const DEFAULTS = {
   relay: {
     enabled: false,
     autoConnect: true,
-    defaultShareMode: "read-only" as const,
+    defaultShareMode: "read-write" as const,
     maxReplayBufferKB: 100,
     e2eEncryption: true,
     relayUrl: "wss://api.flaio.ai",

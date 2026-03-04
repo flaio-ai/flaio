@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import { settingsStore } from "../../store/settings-store.js";
 import { AgentsSettingsContent } from "./agents-settings-content.js";
+import { login, logout, isLoggedIn } from "../../relay/relay-auth.js";
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -157,6 +158,16 @@ export function SettingsPanel({
       return;
     }
 
+    if (section === "relay" && input === "l") {
+      if (isLoggedIn()) {
+        logout();
+        settingsStore.getState().updateRelay({ enabled: false });
+      } else {
+        login();
+      }
+      return;
+    }
+
     if (section === "agents") return;
 
     if (key.downArrow) {
@@ -262,7 +273,7 @@ export function SettingsPanel({
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
+        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : section === "relay" ? "Tab: section | Up/Down: navigate | Enter: edit | l: login/logout | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
       </Box>
     </Box>
   );

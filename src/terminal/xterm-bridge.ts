@@ -90,6 +90,8 @@ function extractColor(packed: number, cmMask: number, cmShift: number): string |
 
 export class XtermBridge {
   private terminal: InstanceType<typeof Terminal>;
+  /** Bound _innerWrite if available — used to flush the write buffer synchronously. */
+  private flushWriteBuffer: (() => void) | null;
 
   constructor(cols: number = 120, rows: number = 40) {
     this.terminal = new Terminal({
@@ -98,10 +100,30 @@ export class XtermBridge {
       allowProposedApi: true,
       scrollback: 10_000,
     });
+
+    // Resolve once at construction — if xterm internals change, we degrade gracefully.
+    const wb = (this.terminal as any)?._core?._writeBuffer;
+    this.flushWriteBuffer = typeof wb?._innerWrite === "function"
+      ? wb._innerWrite.bind(wb)
+      : null;
   }
 
-  write(data: string): void {
+  write(data: string, callback?: () => void): void {
+    this.terminal.write(data, callback);
+  }
+
+  /**
+   * Write data and flush the write buffer synchronously if possible.
+   * Returns true if the buffer was flushed (data is immediately readable),
+   * false if it fell back to async (caller should use `write` with a callback).
+   */
+  writeSync(data: string): boolean {
     this.terminal.write(data);
+    if (this.flushWriteBuffer) {
+      this.flushWriteBuffer();
+      return true;
+    }
+    return false;
   }
 
   resize(cols: number, rows: number): void {

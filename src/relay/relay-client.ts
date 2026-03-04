@@ -732,7 +732,7 @@ export class RelayClient extends EventEmitter {
           status: "plan_ready",
         });
       };
-      session.on("exit", onExit);
+      session.once("exit", onExit);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: handleStartPlanning error: ${message}`);
