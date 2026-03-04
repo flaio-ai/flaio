@@ -4,6 +4,12 @@ import type { AgentSession } from "../../agents/agent-session.js";
 
 const SCROLL_LINES = 3;
 
+// DECSET 1004: terminal focus reporting
+const FOCUS_ENABLE = "\x1b[?1004h";
+const FOCUS_DISABLE = "\x1b[?1004l";
+const FOCUS_IN = "\x1b[I";
+const FOCUS_OUT = "\x1b[O";
+
 // macOS Option key produces Unicode chars instead of ESC prefix (US English layout)
 const MAC_OPT_INTERCEPT = new Set(["¡", "™", "£", "¢", "∞", "§", "¶", "•", "ª", "å"]);
 
@@ -15,6 +21,8 @@ const MAC_OPT_INTERCEPT = new Set(["¡", "™", "£", "¢", "∞", "§", "¶", "
 export function useRawInput(
   activeSession: AgentSession | null,
   enabled: boolean = true,
+  paneCols?: number,
+  paneRows?: number,
 ): void {
   const { stdin, setRawMode } = useStdin();
 
@@ -24,10 +32,32 @@ export function useRawInput(
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
+  const paneDimsRef = useRef({ cols: paneCols ?? 0, rows: paneRows ?? 0 });
+  paneDimsRef.current = { cols: paneCols ?? 0, rows: paneRows ?? 0 };
+
+  const lastResizeRef = useRef(0);
+
   useEffect(() => {
     if (!stdin) return;
 
     setRawMode(true);
+
+    // Enable terminal focus reporting (DECSET 1004).
+    // Supported by iTerm2, kitty, WezTerm, Alacritty, Windows Terminal, etc.
+    process.stdout.write(FOCUS_ENABLE);
+
+    // Debounced resize to CLI pane dimensions — called on any user
+    // interaction (keystrokes, scroll, focus) so the PTY re-syncs after
+    // a remote viewer may have changed it. No-op when dims already match.
+    const syncDims = (session: AgentSession) => {
+      const { cols, rows } = paneDimsRef.current;
+      if (cols <= 0 || rows <= 0) return;
+      const now = Date.now();
+      if (now - lastResizeRef.current > 500) {
+        lastResizeRef.current = now;
+        session.resize(cols, rows);
+      }
+    };
 
     const onData = (data: Buffer | string) => {
       if (!enabledRef.current) return;
@@ -37,14 +67,30 @@ export function useRawInput(
       const charCode = str.charCodeAt(0);
       const session = sessionRef.current;
 
+      // Terminal focus events (DECSET 1004)
+      if (str === FOCUS_IN) {
+        if (session) {
+          // Immediate resize on focus — skip debounce
+          const { cols, rows } = paneDimsRef.current;
+          if (cols > 0 && rows > 0) {
+            lastResizeRef.current = Date.now();
+            session.resize(cols, rows);
+          }
+        }
+        return;
+      }
+      if (str === FOCUS_OUT) return;
+
       // SGR mouse events: ESC[< prefix. Only handle scroll wheel
       // (buttons 64/65), consume all others so they don't reach the PTY.
       // Hold Shift in the terminal emulator to bypass mouse mode for text selection.
       if (str.includes("\x1B[<")) {
         if (session) {
           if (str.includes("\x1B[<64;")) {
+            syncDims(session);
             session.scroll(-SCROLL_LINES);
           } else if (str.includes("\x1B[<65;")) {
+            syncDims(session);
             session.scroll(SCROLL_LINES);
           }
         }
@@ -70,10 +116,12 @@ export function useRawInput(
         if (session) {
           // Scroll: Ctrl+U = 0x15 (up), Ctrl+D = 0x04 (down)
           if (charCode === 0x15) {
+            syncDims(session);
             session.scroll(-SCROLL_LINES);
             return;
           }
           if (charCode === 0x04) {
+            syncDims(session);
             session.scroll(SCROLL_LINES);
             return;
           }
@@ -96,15 +144,19 @@ export function useRawInput(
       if (str.startsWith("\x1B")) {
         // PageUp: ESC[5~ , Shift+Up: ESC[1;2A
         if (str === "\x1B[5~" || str === "\x1B[1;2A") {
+          syncDims(session);
           session.scroll(-SCROLL_LINES);
           return;
         }
         // PageDown: ESC[6~ , Shift+Down: ESC[1;2B
         if (str === "\x1B[6~" || str === "\x1B[1;2B") {
+          syncDims(session);
           session.scroll(SCROLL_LINES);
           return;
         }
       }
+
+      syncDims(session);
 
       // Any keypress scrolls back to bottom (like a real terminal)
       session.scrollToBottom();
@@ -114,6 +166,7 @@ export function useRawInput(
     stdin.on("data", onData);
 
     return () => {
+      process.stdout.write(FOCUS_DISABLE);
       stdin.off("data", onData);
     };
   }, [stdin, setRawMode]);

@@ -69,14 +69,18 @@ export class AgentSession extends EventEmitter {
 
     // Wire PTY output → xterm → screen buffer + OSC parsing
     this.pty.on("data", (data) => {
-      this.xterm.write(data);
+      // Synchronous write — buffer is immediately up-to-date for grid extraction.
+      // If sync flush isn't available (xterm internals changed), the write is still
+      // queued and markDirty fires optimistically; the screen buffer's interval
+      // will pick up the data on the next tick.
+      this.xterm.writeSync(data);
+      this.screenBuffer.markDirty();
       this.recentOutput += data;
       this.lastOutputTime = Date.now();
       // Keep only last 2000 chars for status detection
       if (this.recentOutput.length > 2000) {
         this.recentOutput = this.recentOutput.slice(-1000);
       }
-      this.screenBuffer.markDirty();
       this.emit("raw_data", data);
 
       // Gemini OSC title parsing (priority 2)
@@ -245,6 +249,7 @@ export class AgentSession extends EventEmitter {
   }
 
   resize(cols: number, rows: number): void {
+    if (cols === this.xterm.cols && rows === this.xterm.rows) return;
     this.pty.resize(cols, rows);
     this.xterm.resize(cols, rows);
   }
@@ -267,6 +272,7 @@ export class AgentSession extends EventEmitter {
     this.sideband.stop();
     sessionMetadataStore.remove(this.id);
     this.setStatus("exited");
+    this.removeAllListeners();
   }
 
   getContent(): ScreenContent {

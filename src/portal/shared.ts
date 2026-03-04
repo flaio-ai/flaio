@@ -60,6 +60,12 @@ export interface PortalScrollMsg {
   lines: number;
 }
 
+export interface PortalResizeMsg {
+  type: "portal_resize";
+  cols: number;
+  rows: number;
+}
+
 export type PortalClientMsg =
   | PortalListMsg
   | PortalSubscribeMsg
@@ -67,7 +73,8 @@ export type PortalClientMsg =
   | PortalUnsubscribeMsg
   | PortalListDriversMsg
   | PortalCreateSessionMsg
-  | PortalScrollMsg;
+  | PortalScrollMsg
+  | PortalResizeMsg;
 
 // ---------------------------------------------------------------------------
 // Server → Client messages

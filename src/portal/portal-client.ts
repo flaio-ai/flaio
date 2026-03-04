@@ -203,20 +203,40 @@ export async function streamSession(sessionId: string): Promise<void> {
       process.stdout.write("\x1b[?25l");   // hide hardware cursor (content renders its own)
       process.stdout.write("\x1b[?1000h"); // enable mouse reporting (for scroll capture)
       process.stdout.write("\x1b[?1006h"); // SGR extended mouse mode
+      process.stdout.write("\x1b[?1004h"); // focus reporting
     };
 
     const exitAltScreen = () => {
+      process.stdout.write("\x1b[?1004l"); // disable focus reporting
       process.stdout.write("\x1b[?1006l"); // disable SGR mouse
       process.stdout.write("\x1b[?1000l"); // disable mouse reporting
       process.stdout.write("\x1b[?25h");   // restore hardware cursor
       process.stdout.write("\x1b[?1049l"); // restore main screen
     };
 
+    let lastResizeSent = 0;
+
+    const sendResize = () => {
+      lastResizeSent = Date.now();
+      const cols = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      const msg: PortalClientMsg = { type: "portal_resize", cols, rows };
+      conn.write(JSON.stringify(msg) + "\n");
+    };
+
+    /** Debounced resize — skips if <500ms since last send. */
+    const trySendResize = () => {
+      if (Date.now() - lastResizeSent > 500) sendResize();
+    };
+
+    const onSigwinch = () => sendResize();
+
     const cleanup = () => {
       if (process.stdin.isTTY && process.stdin.isRaw) {
         process.stdin.setRawMode(false);
       }
       process.stdin.removeListener("data", onStdin);
+      process.stdout.removeListener("resize", onSigwinch);
       exitAltScreen();
     };
 
@@ -248,11 +268,20 @@ export async function streamSession(sessionId: string): Promise<void> {
         return;
       }
 
+      // Terminal focus events (DECSET 1004)
+      if (data === "\x1b[I") {
+        sendResize();
+        return;
+      }
+      if (data === "\x1b[O") return;
+
       // SGR mouse events — intercept scroll wheel, consume all others
       if (data.includes("\x1b[<")) {
         if (data.includes("\x1b[<64;")) {
+          trySendResize();
           sendScroll(-SCROLL_LINES);
         } else if (data.includes("\x1b[<65;")) {
+          trySendResize();
           sendScroll(SCROLL_LINES);
         }
         // Drop all other mouse events (clicks, drags — coordinates are local)
@@ -263,11 +292,13 @@ export async function streamSession(sessionId: string): Promise<void> {
       if (chunk.length === 1 && byte !== undefined) {
         // Ctrl+U = scroll up
         if (byte === 0x15) {
+          trySendResize();
           sendScroll(-SCROLL_LINES);
           return;
         }
         // Ctrl+D = scroll down
         if (byte === 0x04) {
+          trySendResize();
           sendScroll(SCROLL_LINES);
           return;
         }
@@ -276,16 +307,19 @@ export async function streamSession(sessionId: string): Promise<void> {
       // Multi-byte escape sequences — PageUp/Down, Shift+Up/Down
       if (data.startsWith("\x1b")) {
         if (data === "\x1b[5~" || data === "\x1b[1;2A") {
+          trySendResize();
           sendScroll(-SCROLL_LINES);
           return;
         }
         if (data === "\x1b[6~" || data === "\x1b[1;2B") {
+          trySendResize();
           sendScroll(SCROLL_LINES);
           return;
         }
       }
 
       // Forward everything else to the session
+      trySendResize();
       const msg: PortalClientMsg = { type: "portal_input", data };
       conn.write(JSON.stringify(msg) + "\n");
     };
@@ -313,6 +347,12 @@ export async function streamSession(sessionId: string): Promise<void> {
         sessionId,
       };
       conn.write(JSON.stringify(msg) + "\n");
+
+      // Resize the PTY to match this terminal's dimensions
+      sendResize();
+
+      // Re-sync on terminal window resize
+      process.stdout.on("resize", onSigwinch);
     });
 
     conn.on("data", (chunk) => {

@@ -164,6 +164,9 @@ export class PortalServer {
       case "portal_scroll":
         this.handleScroll(client, msg.lines);
         break;
+      case "portal_resize":
+        this.handleResize(client, msg.cols, msg.rows);
+        break;
     }
   }
 
@@ -236,6 +239,14 @@ export class PortalServer {
     const session = getSessionInstance(client.subscribedSessionId);
     if (session) {
       session.scroll(lines);
+    }
+  }
+
+  private handleResize(client: PortalClient, cols: number, rows: number): void {
+    if (!client.subscribedSessionId) return;
+    const session = getSessionInstance(client.subscribedSessionId);
+    if (session) {
+      session.resize(cols, rows);
     }
   }
 
