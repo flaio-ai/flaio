@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.5
+
+### Patch Changes
+
+- Fix cross-user session leakage by resetting Redux state on disconnect and adding UID verification
+
 ## 1.0.3
 
 ### Patch Changes
