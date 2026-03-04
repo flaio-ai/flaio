@@ -446,6 +446,7 @@ export class RelayClient extends EventEmitter {
         name: d.name,
         displayName: d.displayName,
         installed: await d.checkInstalled(),
+        models: d.listModels(),
       })),
     );
     this.send({ type: "cli_drivers_result", viewerId, drivers });
@@ -701,6 +702,7 @@ export class RelayClient extends EventEmitter {
         prompt: planningPrompt,
         mode: "print",
         allowedTools: ["Read", "Glob", "Grep", "Bash(git *)"],
+        model: msg.model,
       }).catch((err) => debugLog(`relay: planning session start failed: ${err}`));
 
       // Set session metadata so clients know this is non-interactive
@@ -775,7 +777,7 @@ export class RelayClient extends EventEmitter {
         status: "planning",
       });
 
-      session.start({ prompt: planningPrompt }).catch((err) => debugLog(`relay: interactive planning start failed: ${err}`));
+      session.start({ prompt: planningPrompt, model: msg.model }).catch((err) => debugLog(`relay: interactive planning start failed: ${err}`));
 
       // Set session metadata so clients know this is interactive
       appStore.getState().setSessionMeta(session.id, {
@@ -822,7 +824,7 @@ export class RelayClient extends EventEmitter {
         status: "implementing",
       });
 
-      session.start({ prompt: implementPrompt }).catch((err) => debugLog(`relay: implementation start failed: ${err}`));
+      session.start({ prompt: implementPrompt, model: msg.model }).catch((err) => debugLog(`relay: implementation start failed: ${err}`));
 
       // Set session metadata so clients know this is interactive
       appStore.getState().setSessionMeta(session.id, {

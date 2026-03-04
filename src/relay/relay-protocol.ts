@@ -194,10 +194,16 @@ export interface CliGitInfoResultMsg {
   error: string | null;
 }
 
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+}
+
 export interface DriverInfo {
   name: string;
   displayName: string;
   installed: boolean;
+  models: ModelInfo[];
 }
 
 export interface CliDriversResultMsg {
@@ -405,6 +411,7 @@ export interface RelayStartPlanningMsg {
   systemInstructions: string[];
   cwd: string;
   driverName?: string;
+  model?: string;
   previousPlan?: string;
   feedback?: string;
   iteration?: number;
@@ -418,6 +425,7 @@ export interface RelayStartInteractivePlanningMsg {
   systemInstructions: string[];
   cwd: string;
   driverName?: string;
+  model?: string;
 }
 
 export interface RelayStartImplementationMsg {
@@ -427,6 +435,7 @@ export interface RelayStartImplementationMsg {
   systemInstructions: string[];
   cwd: string;
   driverName?: string;
+  model?: string;
 }
 
 export interface RelayRequestChangesMsg {

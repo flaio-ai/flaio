@@ -2,6 +2,11 @@ import { execSync } from "node:child_process";
 
 export type AgentStatus = "idle" | "starting" | "running" | "waiting_input" | "waiting_permission" | "exited";
 
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+}
+
 export interface SpawnConfig {
   command: string;
   args: string[];
@@ -25,12 +30,16 @@ export abstract class BaseDriver {
   /** Check if this agent CLI is installed and available */
   abstract checkInstalled(): Promise<boolean>;
 
+  /** Return the list of models supported by this driver */
+  abstract listModels(): ModelInfo[];
+
   /** Build spawn arguments for a new session */
   abstract buildSpawnArgs(options: {
     cwd: string;
     prompt?: string;
     mode?: "interactive" | "print";
     allowedTools?: string[];
+    model?: string;
   }): SpawnConfig;
 
   /** Build spawn arguments to resume an existing session */

@@ -86,6 +86,7 @@ const RelayStartPlanningSchema = z.object({
   systemInstructions: z.array(z.string()),
   cwd: z.string().max(4096),
   driverName: z.string().optional(),
+  model: z.string().optional(),
   previousPlan: z.string().optional(),
   feedback: z.string().optional(),
   iteration: z.number().int().optional(),
@@ -99,6 +100,7 @@ const RelayStartInteractivePlanningSchema = z.object({
   systemInstructions: z.array(z.string()),
   cwd: z.string().max(4096),
   driverName: z.string().optional(),
+  model: z.string().optional(),
 });
 
 const RelayStartImplementationSchema = z.object({
@@ -108,6 +110,7 @@ const RelayStartImplementationSchema = z.object({
   systemInstructions: z.array(z.string()),
   cwd: z.string().max(4096),
   driverName: z.string().optional(),
+  model: z.string().optional(),
 });
 
 const RelayRequestChangesSchema = z.object({
