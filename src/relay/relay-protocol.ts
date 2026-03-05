@@ -462,6 +462,27 @@ export interface RelayRequestGitInfoMsg {
   cwd: string;
 }
 
+export interface RelayRepoDetectedMsg {
+  type: "relay_repo_detected";
+  sessionId: string;
+  orgId: string;
+  orgName: string;
+  repoId: string;
+  repoName: string;
+  repoFullName: string;
+  settings: {
+    agent?: string | null;
+    model?: string | null;
+    worktree?: boolean;
+    systemInstructions?: Array<{ label: string; content: string }>;
+  };
+  enforced: {
+    agent?: boolean;
+    model?: boolean;
+    worktree?: boolean;
+  };
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -481,7 +502,8 @@ export type RelayToCliMsg =
   | RelayRequestChangesMsg
   | RelayCloseSessionMsg
   | RelayRequestGitInfoMsg
-  | RelayListDriversMsg;
+  | RelayListDriversMsg
+  | RelayRepoDetectedMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

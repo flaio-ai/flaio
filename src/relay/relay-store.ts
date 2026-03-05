@@ -13,6 +13,25 @@ export type RelayConnectionStatus =
 
 export type SessionEncryptionStatus = "none" | "key-exchange" | "active" | "failed";
 
+export interface OrgRepoSettings {
+  orgId: string;
+  orgName: string;
+  repoId: string;
+  repoName: string;
+  repoFullName: string;
+  settings: {
+    agent?: string | null;
+    model?: string | null;
+    worktree?: boolean;
+    systemInstructions?: Array<{ label: string; content: string }>;
+  };
+  enforced: {
+    agent?: boolean;
+    model?: boolean;
+    worktree?: boolean;
+  };
+}
+
 export interface RelayState {
   /** Current WebSocket connection status */
   connectionStatus: RelayConnectionStatus;
@@ -26,6 +45,8 @@ export interface RelayState {
   isLoggedIn: boolean;
   /** Per-session E2E encryption status */
   sessionEncryptionStatus: Map<string, SessionEncryptionStatus>;
+  /** Per-session detected org/repo settings from relay */
+  sessionOrgSettings: Map<string, OrgRepoSettings>;
 }
 
 export const relayStore = createStore<RelayState>(() => ({
@@ -35,6 +56,7 @@ export const relayStore = createStore<RelayState>(() => ({
   sessionViewerCounts: new Map(),
   isLoggedIn: false,
   sessionEncryptionStatus: new Map(),
+  sessionOrgSettings: new Map(),
 }));
 
 export function setRelayConnectionStatus(
@@ -93,4 +115,25 @@ export function setSessionEncryptionStatus(
 
 export function setRelayLoggedIn(loggedIn: boolean): void {
   relayStore.setState({ isLoggedIn: loggedIn });
+}
+
+export function setSessionOrgSettings(
+  sessionId: string,
+  settings: OrgRepoSettings,
+): void {
+  const map = new Map(relayStore.getState().sessionOrgSettings);
+  map.set(sessionId, settings);
+  relayStore.setState({ sessionOrgSettings: map });
+}
+
+export function getSessionOrgSettings(
+  sessionId: string,
+): OrgRepoSettings | undefined {
+  return relayStore.getState().sessionOrgSettings.get(sessionId);
+}
+
+export function clearSessionOrgSettings(sessionId: string): void {
+  const map = new Map(relayStore.getState().sessionOrgSettings);
+  map.delete(sessionId);
+  relayStore.setState({ sessionOrgSettings: map });
 }

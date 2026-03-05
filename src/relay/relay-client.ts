@@ -20,6 +20,7 @@ import {
   setSessionEncryptionStatus,
   updateViewerCount,
   clearViewerCounts,
+  setSessionOrgSettings,
 } from "./relay-store.js";
 import { refreshAuthToken } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
@@ -374,6 +375,10 @@ export class RelayClient extends EventEmitter {
       case "relay_list_drivers":
         this.handleListDrivers(msg.viewerId);
         break;
+
+      case "relay_repo_detected":
+        this.handleRepoDetected(msg);
+        break;
     }
   }
 
@@ -446,6 +451,31 @@ export class RelayClient extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: failed to create session: ${message}`);
     }
+  }
+
+  private handleRepoDetected(msg: RelayToCliMsg & { type: "relay_repo_detected" }): void {
+    debugLog(
+      `relay: repo detected session=${msg.sessionId} org=${msg.orgName} repo=${msg.repoFullName}`,
+    );
+
+    setSessionOrgSettings(msg.sessionId, {
+      orgId: msg.orgId,
+      orgName: msg.orgName,
+      repoId: msg.repoId,
+      repoName: msg.repoName,
+      repoFullName: msg.repoFullName,
+      settings: msg.settings,
+      enforced: msg.enforced,
+    });
+
+    this.emit("repo_detected", {
+      sessionId: msg.sessionId,
+      orgId: msg.orgId,
+      orgName: msg.orgName,
+      repoFullName: msg.repoFullName,
+      settings: msg.settings,
+      enforced: msg.enforced,
+    });
   }
 
   private async handleListDrivers(viewerId: string): Promise<void> {
