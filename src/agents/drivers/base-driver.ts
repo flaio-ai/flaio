@@ -18,6 +18,15 @@ export abstract class BaseDriver {
   abstract readonly displayName: string;
   abstract readonly command: string;
 
+  /**
+   * Optional regex to match this agent's CLI process in `ps aux` output.
+   * Override this to avoid matching unrelated processes (e.g. desktop apps)
+   * that share the same command name.
+   */
+  processMatchPattern(): RegExp {
+    return new RegExp(`\\b${this.command}\\b`);
+  }
+
   /** Resolve the full path of the command binary */
   resolveCommand(): string {
     try {
