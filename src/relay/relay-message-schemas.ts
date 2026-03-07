@@ -164,6 +164,15 @@ const RelayRepoDetectedSchema = z.object({
   }),
 });
 
+const RelayUserSettingsSchema = z.object({
+  type: z.literal("relay_user_settings"),
+  worktreeDefaults: z.object({
+    planning: z.boolean(),
+    interactivePlanning: z.boolean(),
+    implementation: z.boolean(),
+  }),
+});
+
 export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayAuthOkSchema,
   RelayAuthFailSchema,
@@ -185,4 +194,5 @@ export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayRequestGitInfoSchema,
   RelayListDriversSchema,
   RelayRepoDetectedSchema,
+  RelayUserSettingsSchema,
 ]);

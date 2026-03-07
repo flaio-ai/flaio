@@ -21,6 +21,7 @@ import {
   updateViewerCount,
   clearViewerCounts,
   setSessionOrgSettings,
+  setWorktreeDefaults,
 } from "./relay-store.js";
 import { refreshAuthToken } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
@@ -376,6 +377,10 @@ export class RelayClient extends EventEmitter {
         this.handleListDrivers(msg.viewerId);
         break;
 
+      case "relay_user_settings":
+        this.handleUserSettings(msg);
+        break;
+
       case "relay_repo_detected":
         this.handleRepoDetected(msg);
         break;
@@ -475,6 +480,16 @@ export class RelayClient extends EventEmitter {
       repoFullName: msg.repoFullName,
       settings: msg.settings,
       enforced: msg.enforced,
+    });
+  }
+
+  private handleUserSettings(msg: RelayToCliMsg & { type: "relay_user_settings" }): void {
+    debugLog("relay: received user settings");
+    setWorktreeDefaults(msg.worktreeDefaults);
+
+    // Sync to local config file
+    settingsStore.getState().update({
+      worktree: msg.worktreeDefaults,
     });
   }
 
@@ -1455,6 +1470,13 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
   // Send helper
   // -------------------------------------------------------------------------
+
+  public sendUserSettings(worktreeDefaults: Partial<{ planning: boolean; interactivePlanning: boolean; implementation: boolean }>): void {
+    this.send({
+      type: "cli_set_user_settings",
+      worktreeDefaults,
+    });
+  }
 
   private send(msg: CliToRelayMsg): void {
     if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return;

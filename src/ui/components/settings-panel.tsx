@@ -4,12 +4,13 @@ import { TextInput } from "@inkjs/ui";
 import { settingsStore } from "../../store/settings-store.js";
 import { AgentsSettingsContent } from "./agents-settings-content.js";
 import { login, logout, isLoggedIn } from "../../relay/relay-auth.js";
+import { relayClient } from "../../store/connector-store.js";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type Section = "connectors" | "ui" | "agents" | "relay";
+type Section = "connectors" | "ui" | "agents" | "relay" | "worktree";
 
 interface FieldDef {
   label: string;
@@ -70,6 +71,40 @@ function getRelayFields(): FieldDef[] {
     { label: "Auto-Connect", type: "boolean", getValue: () => cfg().relay.autoConnect, setValue: (v) => store().updateRelay({ autoConnect: v }) },
     { label: "Default Share Mode", type: "string", getValue: () => cfg().relay.defaultShareMode, setValue: (v) => { if (v === "read-only" || v === "read-write") store().updateRelay({ defaultShareMode: v }); } },
     { label: "Replay Buffer (KB)", type: "number", getValue: () => cfg().relay.maxReplayBufferKB, setValue: (v) => store().updateRelay({ maxReplayBufferKB: v }) },
+  ];
+}
+
+function getWorktreeFields(): FieldDef[] {
+  const store = () => settingsStore.getState();
+  const cfg = () => store().config;
+  return [
+    {
+      label: "Planning",
+      type: "boolean",
+      getValue: () => cfg().worktree.planning,
+      setValue: (v) => {
+        store().update({ worktree: { ...cfg().worktree, planning: v as boolean } });
+        relayClient.sendUserSettings({ planning: v as boolean });
+      },
+    },
+    {
+      label: "Interactive Planning",
+      type: "boolean",
+      getValue: () => cfg().worktree.interactivePlanning,
+      setValue: (v) => {
+        store().update({ worktree: { ...cfg().worktree, interactivePlanning: v as boolean } });
+        relayClient.sendUserSettings({ interactivePlanning: v as boolean });
+      },
+    },
+    {
+      label: "Implementation",
+      type: "boolean",
+      getValue: () => cfg().worktree.implementation,
+      setValue: (v) => {
+        store().update({ worktree: { ...cfg().worktree, implementation: v as boolean } });
+        relayClient.sendUserSettings({ implementation: v as boolean });
+      },
+    },
   ];
 }
 
@@ -136,7 +171,7 @@ export function SettingsPanel({
   const [editingField, setEditingField] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : section === "relay" ? getRelayFields() : getUiFields();
+  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : section === "relay" ? getRelayFields() : section === "worktree" ? getWorktreeFields() : getUiFields();
 
   useInput((input, key) => {
     if (editingField !== null) {
@@ -153,7 +188,7 @@ export function SettingsPanel({
     }
 
     if (key.tab) {
-      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : s === "agents" ? "relay" : "connectors");
+      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : s === "agents" ? "relay" : s === "relay" ? "worktree" : "connectors");
       setFocusedIndex(0);
       return;
     }
@@ -252,6 +287,14 @@ export function SettingsPanel({
         >
           Remote
         </Text>
+        <Text> | </Text>
+        <Text
+          bold={section === "worktree"}
+          underline={section === "worktree"}
+          color={section === "worktree" ? "cyan" : undefined}
+        >
+          Worktree
+        </Text>
       </Box>
 
       <Box flexDirection="column">
@@ -273,7 +316,7 @@ export function SettingsPanel({
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : section === "relay" ? "Tab: section | Up/Down: navigate | Enter: edit | l: login/logout | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
+        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : section === "relay" ? "Tab: section | Up/Down: navigate | Enter: edit | l: login/logout | Esc: close" : section === "worktree" ? "Tab: section | Up/Down: navigate | Enter: edit | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
       </Box>
     </Box>
   );

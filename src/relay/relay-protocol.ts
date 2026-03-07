@@ -217,6 +217,11 @@ export interface CliDriversResultMsg {
 /** Default driver name used when none is specified in relay messages */
 export const DEFAULT_DRIVER_NAME = "claude";
 
+export interface CliSetUserSettingsMsg {
+  type: "cli_set_user_settings";
+  worktreeDefaults?: Partial<{ planning: boolean; interactivePlanning: boolean; implementation: boolean }>;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -234,7 +239,8 @@ export type CliToRelayMsg =
   | CliImplementationDoneMsg
   | CliTicketStatusMsg
   | CliGitInfoResultMsg
-  | CliDriversResultMsg;
+  | CliDriversResultMsg
+  | CliSetUserSettingsMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -483,6 +489,11 @@ export interface RelayRepoDetectedMsg {
   };
 }
 
+export interface RelayUserSettingsMsg {
+  type: "relay_user_settings";
+  worktreeDefaults: { planning: boolean; interactivePlanning: boolean; implementation: boolean };
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -503,7 +514,8 @@ export type RelayToCliMsg =
   | RelayCloseSessionMsg
   | RelayRequestGitInfoMsg
   | RelayListDriversMsg
-  | RelayRepoDetectedMsg;
+  | RelayRepoDetectedMsg
+  | RelayUserSettingsMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

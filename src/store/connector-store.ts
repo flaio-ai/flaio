@@ -11,6 +11,7 @@ import { appStore, getSessionInstance, setPermissionPending, clearPermissionPend
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
 
+import { trackCliEvent } from "../analytics/index.js";
 import { makeDebugLog } from "../connectors/debug.js";
 
 const debugLog = makeDebugLog("connector");
@@ -48,7 +49,7 @@ function publishConnectorStatuses(): void {
 const connectorManager = new ConnectorManager();
 const hookServer = new HookServer();
 const portalServer = new PortalServer();
-const relayClient = new RelayClient();
+export const relayClient = new RelayClient();
 
 let started = false;
 let unsubSettings: (() => void) | null = null;
@@ -602,6 +603,7 @@ async function syncRelayFromConfig(): Promise<void> {
   // Start if auto-connect is on
   if (relay.autoConnect) {
     await relayClient.start();
+    trackCliEvent("cli_session_connected");
   }
 }
 

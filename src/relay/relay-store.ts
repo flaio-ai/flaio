@@ -32,6 +32,12 @@ export interface OrgRepoSettings {
   };
 }
 
+export interface WorktreeDefaults {
+  planning: boolean;
+  interactivePlanning: boolean;
+  implementation: boolean;
+}
+
 export interface RelayState {
   /** Current WebSocket connection status */
   connectionStatus: RelayConnectionStatus;
@@ -47,6 +53,7 @@ export interface RelayState {
   sessionEncryptionStatus: Map<string, SessionEncryptionStatus>;
   /** Per-session detected org/repo settings from relay */
   sessionOrgSettings: Map<string, OrgRepoSettings>;
+  worktreeDefaults: WorktreeDefaults | null;
 }
 
 export const relayStore = createStore<RelayState>(() => ({
@@ -57,6 +64,7 @@ export const relayStore = createStore<RelayState>(() => ({
   isLoggedIn: false,
   sessionEncryptionStatus: new Map(),
   sessionOrgSettings: new Map(),
+  worktreeDefaults: null,
 }));
 
 export function setRelayConnectionStatus(
@@ -136,4 +144,8 @@ export function clearSessionOrgSettings(sessionId: string): void {
   const map = new Map(relayStore.getState().sessionOrgSettings);
   map.delete(sessionId);
   relayStore.setState({ sessionOrgSettings: map });
+}
+
+export function setWorktreeDefaults(defaults: WorktreeDefaults): void {
+  relayStore.setState({ worktreeDefaults: defaults });
 }
