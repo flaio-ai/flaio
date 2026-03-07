@@ -146,6 +146,28 @@ export function clearSessionOrgSettings(sessionId: string): void {
   relayStore.setState({ sessionOrgSettings: map });
 }
 
+export function clearSessionState(sessionId: string): void {
+  const state = relayStore.getState();
+
+  const counts = new Map(state.sessionViewerCounts);
+  counts.delete(sessionId);
+  let total = 0;
+  for (const c of counts.values()) total += c;
+
+  const encryption = new Map(state.sessionEncryptionStatus);
+  encryption.delete(sessionId);
+
+  const orgSettings = new Map(state.sessionOrgSettings);
+  orgSettings.delete(sessionId);
+
+  relayStore.setState({
+    sessionViewerCounts: counts,
+    totalViewerCount: total,
+    sessionEncryptionStatus: encryption,
+    sessionOrgSettings: orgSettings,
+  });
+}
+
 export function setWorktreeDefaults(defaults: WorktreeDefaults): void {
   relayStore.setState({ worktreeDefaults: defaults });
 }

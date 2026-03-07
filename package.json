@@ -45,7 +45,9 @@
     "prepublishOnly": "npm run build",
     "install-hooks": "tsx src/hooks/install.ts install",
     "uninstall-hooks": "tsx src/hooks/install.ts uninstall",
-    "changeset": "changeset"
+    "changeset": "changeset",
+    "dev:debug-gc": "node --expose-gc --trace-gc dist/cli.js",
+    "dev:debug-heap": "node --max-old-space-size=512 --heapsnapshot-near-heap-limit=3 dist/cli.js"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",

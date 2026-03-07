@@ -5,7 +5,7 @@ import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
 import { PortalServer } from "../portal/portal-server.js";
 import { RelayClient } from "../relay/relay-client.js";
-import { setRelayLoggedIn } from "../relay/relay-store.js";
+import { setRelayLoggedIn, clearSessionState } from "../relay/relay-store.js";
 import { installHooks } from "../hooks/install.js";
 import { appStore, getSessionInstance, setPermissionPending, clearPermissionPending } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
@@ -503,6 +503,13 @@ function wireSessionNotifications(): void {
         prevStatuses.delete(id);
         lastPostedResponse.delete(id);
         lastPostTime.delete(id);
+        clearSessionState(id);
+
+        // Clean up Slack adapter per-session state
+        const slack = connectorManager.get("slack");
+        if (slack && "cleanupSession" in slack) {
+          (slack as any).cleanupSession(id);
+        }
       }
     }
   });

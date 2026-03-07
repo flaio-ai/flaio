@@ -42,6 +42,11 @@ export class SlackAdapter implements IConnector {
   private threadLastSeen: Map<string, string> = new Map(); // threadRootTs → last processed msg ts
   private threadPollTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Rate limit backoff state
+  private pollBackoffMs = 0;
+  private consecutiveErrors = 0;
+  private static readonly MAX_BACKOFF_MS = 60_000;
+
   constructor(private config: SlackConfig) {}
 
   get status(): ConnectorStatus {
@@ -367,6 +372,16 @@ export class SlackAdapter implements IConnector {
     this.promptHandler = handler;
   }
 
+  cleanupSession(sessionId: string): void {
+    const threadTs = this.sessionThreads.get(sessionId);
+    if (threadTs) {
+      this.threadToSession.delete(threadTs);
+      this.threadLastSeen.delete(threadTs);
+    }
+    this.sessionThreads.delete(sessionId);
+    this.typingMessages.delete(sessionId);
+  }
+
   // ---------------------------------------------------------------------------
   // Thread management
   // ---------------------------------------------------------------------------
@@ -476,6 +491,12 @@ export class SlackAdapter implements IConnector {
   private async pollSessionThreads(): Promise<void> {
     if (!this.webClient || !this.promptHandler) return;
 
+    // If backing off, skip this poll cycle
+    if (this.pollBackoffMs > 0) {
+      this.pollBackoffMs = Math.max(0, this.pollBackoffMs - (this.config.pollInterval ?? 3000));
+      return;
+    }
+
     for (const [sessionId, threadTs] of this.sessionThreads) {
       if (!threadTs) continue;
       const lastSeen = this.threadLastSeen.get(threadTs) ?? threadTs;
@@ -484,8 +505,11 @@ export class SlackAdapter implements IConnector {
         const result = await this.webClient.conversations.replies({
           channel: this.config.channelId,
           ts: threadTs,
+          oldest: lastSeen,
           limit: 20,
         });
+
+        this.consecutiveErrors = 0;
 
         if (!result.messages) continue;
 
@@ -512,8 +536,27 @@ export class SlackAdapter implements IConnector {
         if (maxTs > lastSeen) {
           this.threadLastSeen.set(threadTs, maxTs);
         }
-      } catch {
-        // Poll error — continue to next thread
+      } catch (err: any) {
+        this.consecutiveErrors++;
+
+        const retryAfter = err?.data?.response_metadata?.retry_after
+          ?? err?.retryAfter
+          ?? (err?.status === 429 ? 30 : 0);
+
+        if (retryAfter > 0) {
+          this.pollBackoffMs = retryAfter * 1000;
+          debugLog(`Rate limited by Slack, backing off ${retryAfter}s`);
+          return;
+        }
+
+        if (this.consecutiveErrors >= 3) {
+          this.pollBackoffMs = Math.min(
+            1000 * Math.pow(2, this.consecutiveErrors - 3),
+            SlackAdapter.MAX_BACKOFF_MS,
+          );
+          debugLog(`${this.consecutiveErrors} consecutive poll errors, backing off ${this.pollBackoffMs}ms`);
+          return;
+        }
       }
     }
   }
@@ -529,14 +572,18 @@ export class SlackAdapter implements IConnector {
     const timeout = this.config.timeout ?? 300000;
     const interval = this.config.pollInterval ?? 2000;
     const deadline = Date.now() + timeout;
+    let currentInterval = interval;
 
     while (Date.now() < deadline) {
       try {
         const result = await this.webClient.conversations.replies({
           channel: this.config.channelId,
           ts: threadRootTs,
+          oldest: afterTs,
           limit: 50,
         });
+
+        currentInterval = interval;
 
         if (result.messages) {
           for (const msg of result.messages) {
@@ -549,11 +596,19 @@ export class SlackAdapter implements IConnector {
             if (DENY_WORDS.includes(msgText)) return { allowed: false, message: "Denied by user" };
           }
         }
-      } catch {
-        // Poll error — continue
+      } catch (err: any) {
+        const retryAfter = err?.data?.response_metadata?.retry_after
+          ?? err?.retryAfter
+          ?? (err?.status === 429 ? 30 : 0);
+
+        if (retryAfter > 0) {
+          currentInterval = retryAfter * 1000;
+        } else {
+          currentInterval = Math.min(currentInterval * 2, 30_000);
+        }
       }
 
-      await new Promise((r) => setTimeout(r, interval));
+      await new Promise((r) => setTimeout(r, currentInterval));
     }
 
     return { allowed: false, message: "Timed out" };

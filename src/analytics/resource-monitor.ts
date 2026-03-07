@@ -3,12 +3,12 @@ import { captureException } from "./sentry.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const REPORT_INTERVAL_MS = 5 * 60_000;
-const HEAP_ALERT_THRESHOLD_BYTES = 100 * 1024 * 1024; // 100 MB above baseline
+const HEAP_ALERT_THRESHOLDS_MB = [100, 500, 1000, 2000];
 
 let sampleTimer: ReturnType<typeof setInterval> | null = null;
 let reportTimer: ReturnType<typeof setInterval> | null = null;
 let baselineHeap: number | null = null;
-let heapAlerted = false;
+let alertedThresholds = new Set<number>();
 
 // Accumulator for samples between reports
 let samples: { heapUsed: number; rss: number; userCpu: number; systemCpu: number }[] = [];
@@ -18,7 +18,7 @@ export function startResourceMonitor(): void {
   if (sampleTimer) return;
 
   baselineHeap = process.memoryUsage().heapUsed;
-  heapAlerted = false;
+  alertedThresholds = new Set();
   samples = [];
   lastCpuUsage = process.cpuUsage();
 
@@ -34,20 +34,22 @@ export function startResourceMonitor(): void {
       systemCpu: cpu.system,
     });
 
-    // Check for memory leak
-    if (
-      baselineHeap !== null &&
-      !heapAlerted &&
-      mem.heapUsed - baselineHeap > HEAP_ALERT_THRESHOLD_BYTES
-    ) {
-      heapAlerted = true;
+    // Progressive memory leak alerts
+    if (baselineHeap !== null) {
       const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
-      const baselineMB = Math.round(baselineHeap / 1024 / 1024);
-      captureException(
-        new Error(
-          `Potential memory leak: heap grew from ${baselineMB}MB to ${heapMB}MB`,
-        ),
-      );
+      for (const threshold of HEAP_ALERT_THRESHOLDS_MB) {
+        if (
+          !alertedThresholds.has(threshold) &&
+          mem.heapUsed - baselineHeap > threshold * 1024 * 1024
+        ) {
+          alertedThresholds.add(threshold);
+          captureException(
+            new Error(
+              `Memory alert: heap grew ${threshold}MB above baseline (now ${heapMB}MB)`,
+            ),
+          );
+        }
+      }
     }
   }, SAMPLE_INTERVAL_MS);
   sampleTimer.unref();
@@ -86,5 +88,5 @@ export function stopResourceMonitor(): void {
   }
   samples = [];
   baselineHeap = null;
-  heapAlerted = false;
+  alertedThresholds = new Set();
 }

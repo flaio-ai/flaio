@@ -35,6 +35,10 @@ export class RateLimiter {
     return false;
   }
 
+  removeKey(key: string): void {
+    this.buckets.delete(key);
+  }
+
   clear(): void {
     this.buckets.clear();
   }
