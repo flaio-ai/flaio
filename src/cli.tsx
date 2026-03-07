@@ -11,6 +11,7 @@ import { listSessions, streamSession } from "./portal/portal-client.js";
 import { PortalPicker } from "./portal/portal-picker.js";
 import { login, logout, isLoggedIn } from "./relay/relay-auth.js";
 import { settingsStore } from "./store/settings-store.js";
+import { initAnalytics, shutdownAnalytics, trackCliEvent } from "./analytics/index.js";
 import {
   installHookScripts,
   getClaudeHooksConfig,
@@ -26,11 +27,15 @@ const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), 
 
 const program = new Command();
 
+// Initialize analytics early (before command parsing)
+initAnalytics();
+
 program
   .name("flaio")
   .description("Terminal UI for managing multiple AI CLI agents")
   .version(pkg.version)
   .action(() => {
+    trackCliEvent("cli_session_started");
     // Enter alternate screen buffer (like vim/less) so we own the full screen
     process.stdout.write("\x1B[?1049h");
     // Hide the hardware cursor — agents render their own cursor in ANSI output
@@ -55,8 +60,9 @@ program
     });
 
     // Clean up on exit
-    instance.waitUntilExit().then(() => {
+    instance.waitUntilExit().then(async () => {
       cleanup();
+      await shutdownAnalytics();
       process.exit(0);
     });
 
@@ -74,6 +80,7 @@ program
   .description("Connect to a running flaio session from another terminal")
   .option("-l, --list", "List available sessions")
   .action(async (sessionId: string | undefined, opts: { list?: boolean }) => {
+    trackCliEvent("cli_command_executed", { command: "portal" });
     // Explicit --list flag → static table
     if (opts.list) {
       const sessions = await listSessions();
@@ -134,6 +141,7 @@ program
   .command("login")
   .description("Authenticate with the remote relay service")
   .action(async () => {
+    trackCliEvent("cli_command_executed", { command: "login" });
     // Ensure settings are loaded
     if (!settingsStore.getState().loaded) {
       settingsStore.getState().load();
@@ -160,6 +168,7 @@ program
   .command("logout")
   .description("Sign out from the remote relay service")
   .action(() => {
+    trackCliEvent("cli_command_executed", { command: "logout" });
     // Ensure settings are loaded
     if (!settingsStore.getState().loaded) {
       settingsStore.getState().load();
@@ -183,6 +192,7 @@ program
   .option("--gemini-only", "Only configure Gemini CLI hooks")
   .option("--check", "Check if hooks are already configured")
   .action(async (opts: { claudeOnly?: boolean; geminiOnly?: boolean; check?: boolean }) => {
+    trackCliEvent("cli_command_executed", { command: "setup-hooks" });
     if (opts.check) {
       const [claudeOk, geminiOk] = await Promise.all([
         areClaudeHooksConfigured(),

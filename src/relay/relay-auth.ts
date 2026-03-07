@@ -2,6 +2,12 @@ import http from "node:http";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
 import { settingsStore } from "../store/settings-store.js";
+import {
+  identifyCliUser,
+  clearCliUser,
+  trackCliEvent,
+} from "../analytics/index.js";
+import { setSentryUser, clearSentryUser } from "../analytics/sentry.js";
 
 /**
  * Run the browser-based OAuth login flow:
@@ -114,6 +120,14 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
 </body>
 </html>`);
 
+        // Identify user in analytics
+        const uid = extractUidFromToken(token);
+        if (uid) {
+          identifyCliUser(uid);
+          setSentryUser(uid);
+        }
+        trackCliEvent("cli_auth_completed");
+
         clearTimeout(timeout);
         server.close();
         resolve({ success: true });
@@ -129,6 +143,8 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
  * Clear stored auth tokens.
  */
 export function logout(): void {
+  clearCliUser();
+  clearSentryUser();
   settingsStore.getState().updateRelay({
     authToken: undefined,
     refreshToken: undefined,
@@ -190,6 +206,17 @@ export async function refreshAuthToken(): Promise<string | null> {
     });
 
     return data.id_token;
+  } catch {
+    return null;
+  }
+}
+
+function extractUidFromToken(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    return (payload.user_id as string) ?? (payload.sub as string) ?? null;
   } catch {
     return null;
   }

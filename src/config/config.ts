@@ -54,6 +54,11 @@ const UiConfigSchema = z.object({
   showCost: z.boolean().default(false),
 });
 
+const TelemetryConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  crashReports: z.boolean().default(true),
+});
+
 const AppConfigSchema = z.object({
   ui: UiConfigSchema.default({}),
   connectors: z
@@ -71,6 +76,7 @@ const AppConfigSchema = z.object({
     .default({}),
   relay: RelayConfigSchema.default({}),
   worktree: WorktreeConfigSchema.default({}),
+  telemetry: TelemetryConfigSchema.default({}),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
