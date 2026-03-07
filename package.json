@@ -1,6 +1,6 @@
 {
   "name": "flaio-cli",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
   "license": "MIT",
   "type": "module",

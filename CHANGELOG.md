@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.9
+
+### Patch Changes
+
+- b237a79: Fix planning session not starting by making sessionId optional in Zod validation schemas
+
 ## 1.0.8
 
 ### Patch Changes
