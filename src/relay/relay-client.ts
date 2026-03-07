@@ -758,7 +758,8 @@ export class RelayClient extends EventEmitter {
     debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
 
     try {
-      const session = appStore.getState().createSession(driverName, effectiveCwd);
+      // Non-interactive: reduced scrollback to save memory
+      const session = appStore.getState().createSession(driverName, effectiveCwd, undefined, undefined, 500);
       if (!session) {
         debugLog("relay: failed to create planning session");
         return;
@@ -777,9 +778,16 @@ export class RelayClient extends EventEmitter {
       // Accumulate raw PTY output for plan capture.
       // We can't rely on xterm buffer because the app-store's exit listener
       // calls kill() → xterm.dispose() before we can read it.
+      // Cap at 2MB to prevent unbounded memory growth in long planning sessions.
+      const RAW_OUTPUT_MAX = 2 * 1024 * 1024;
       let rawOutput = "";
       const rawUnsub = session.onRawData((data) => {
-        rawOutput += data;
+        if (rawOutput.length < RAW_OUTPUT_MAX) {
+          rawOutput += data;
+          if (rawOutput.length > RAW_OUTPUT_MAX) {
+            rawOutput = rawOutput.slice(-RAW_OUTPUT_MAX);
+          }
+        }
       });
 
       session.start({

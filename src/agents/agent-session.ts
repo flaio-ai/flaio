@@ -52,7 +52,7 @@ export class AgentSession extends EventEmitter {
 
   constructor(
     private driver: BaseDriver,
-    options: { cwd: string; cols?: number; rows?: number },
+    options: { cwd: string; cols?: number; rows?: number; scrollback?: number },
   ) {
     super();
     this.id = `session-${nextId++}`;
@@ -63,7 +63,7 @@ export class AgentSession extends EventEmitter {
     const rows = options.rows ?? 40;
 
     this.pty = new PtyManager();
-    this.xterm = new XtermBridge(cols, rows);
+    this.xterm = new XtermBridge(cols, rows, options.scrollback);
     this.screenBuffer = new ScreenBuffer(30);
     this.sideband = new SidebandReceiver(this.id);
 

@@ -138,6 +138,8 @@ export class ScreenBuffer {
       this.timer = null;
     }
     this.extractGridFn = null;
+    this.listeners.clear();
+    this.content = [];
   }
 
   onChange(listener: (content: ScreenContent) => void): () => void {

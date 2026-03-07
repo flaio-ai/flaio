@@ -40,7 +40,7 @@ export interface AppState {
   detectedAgents: DetectedAgent[];
 
   // Actions
-  createSession: (driverName: string, cwd: string, cols?: number, rows?: number) => AgentSession | null;
+  createSession: (driverName: string, cwd: string, cols?: number, rows?: number, scrollback?: number) => AgentSession | null;
   closeSession: (sessionId: string) => void;
   switchSession: (sessionId: string) => void;
   nextSession: () => void;
@@ -80,11 +80,11 @@ export const appStore = createStore<AppState>((set, get) => ({
   sidebarVisible: true,
   detectedAgents: [],
 
-  createSession: (driverName: string, cwd: string, cols?: number, rows?: number): AgentSession | null => {
+  createSession: (driverName: string, cwd: string, cols?: number, rows?: number, scrollback?: number): AgentSession | null => {
     const driver = getDriver(driverName);
     if (!driver) return null;
 
-    const session = new AgentSession(driver, { cwd, cols, rows });
+    const session = new AgentSession(driver, { cwd, cols, rows, scrollback });
     sessionInstances.set(session.id, session);
 
     session.on("status", (status) => {
@@ -188,6 +188,9 @@ export const appStore = createStore<AppState>((set, get) => ({
     if (detailed.state !== "waiting_permission" && permissionPending.has(sessionId)) {
       permissionPending.delete(sessionId);
     }
+    // Skip no-op updates
+    const current = get().sessions.find((s) => s.id === sessionId);
+    if (current?.detailedStatus?.state === detailed.state && current?.currentTool === toolName) return;
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
         s.id === sessionId ? { ...s, detailedStatus: detailed, currentTool: toolName } : s,
@@ -212,6 +215,9 @@ export const appStore = createStore<AppState>((set, get) => ({
       if (status === "running") return;
       permissionPending.delete(sessionId);
     }
+    // Skip no-op updates to avoid unnecessary state churn + subscriber callbacks
+    const current = get().sessions.find((s) => s.id === sessionId);
+    if (current?.status === status) return;
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
         s.id === sessionId ? { ...s, status } : s,

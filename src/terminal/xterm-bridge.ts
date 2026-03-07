@@ -93,12 +93,12 @@ export class XtermBridge {
   /** Bound _innerWrite if available — used to flush the write buffer synchronously. */
   private flushWriteBuffer: (() => void) | null;
 
-  constructor(cols: number = 120, rows: number = 40) {
+  constructor(cols: number = 120, rows: number = 40, scrollback: number = 10_000) {
     this.terminal = new Terminal({
       cols,
       rows,
       allowProposedApi: true,
-      scrollback: 10_000,
+      scrollback,
     });
 
     // Resolve once at construction — if xterm internals change, we degrade gracefully.
