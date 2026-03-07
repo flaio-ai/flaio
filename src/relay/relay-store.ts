@@ -140,6 +140,14 @@ export function getSessionOrgSettings(
   return relayStore.getState().sessionOrgSettings.get(sessionId);
 }
 
+export function getAnyOrgSettings(): OrgRepoSettings | undefined {
+  const map = relayStore.getState().sessionOrgSettings;
+  for (const settings of map.values()) {
+    return settings;
+  }
+  return undefined;
+}
+
 export function clearSessionOrgSettings(sessionId: string): void {
   const map = new Map(relayStore.getState().sessionOrgSettings);
   map.delete(sessionId);
