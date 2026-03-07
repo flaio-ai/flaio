@@ -59,7 +59,7 @@ export class AgentDetector extends EventEmitter {
         for (const driver of drivers) {
           // Match the command in the ps output
           // e.g., "user 12345 ... claude -p ..."
-          const regex = new RegExp(`\\b${driver.command}\\b`);
+          const regex = driver.processMatchPattern();
           if (!regex.test(line)) continue;
 
           const parts = line.trim().split(/\s+/);
