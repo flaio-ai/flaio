@@ -322,6 +322,8 @@ export class RelayClient extends EventEmitter {
         debugLog(`relay: viewer ${msg.viewerId} left session ${msg.sessionId}`);
         updateViewerCount(msg.sessionId, -1);
         this.cleanupViewerCrypto(msg.sessionId, msg.viewerId);
+        this.browseLimiter.removeKey(msg.viewerId);
+        this.inputLimiter.removeKey(msg.viewerId);
         break;
 
       case "relay_create_session":
