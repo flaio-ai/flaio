@@ -709,7 +709,7 @@ export class RelayClient extends EventEmitter {
       }
     }
 
-    const orgSettings = getSessionOrgSettings(msg.sessionId);
+    const orgSettings = msg.sessionId ? getSessionOrgSettings(msg.sessionId) : undefined;
     const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
     const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
 
@@ -851,7 +851,7 @@ export class RelayClient extends EventEmitter {
       }
     }
 
-    const orgSettings = getSessionOrgSettings(msg.sessionId);
+    const orgSettings = msg.sessionId ? getSessionOrgSettings(msg.sessionId) : undefined;
     const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
     const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
 
@@ -926,7 +926,7 @@ export class RelayClient extends EventEmitter {
       }
     }
 
-    const orgSettings = getSessionOrgSettings(msg.sessionId);
+    const orgSettings = msg.sessionId ? getSessionOrgSettings(msg.sessionId) : undefined;
     const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
     const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
 

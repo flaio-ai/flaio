@@ -413,7 +413,7 @@ export interface RelayListDriversMsg {
 
 export interface RelayStartPlanningMsg {
   type: "relay_start_planning";
-  sessionId: string;
+  sessionId?: string;
   ticketId: string;
   ticketTitle: string;
   ticketDescription: string;
@@ -429,7 +429,7 @@ export interface RelayStartPlanningMsg {
 
 export interface RelayStartInteractivePlanningMsg {
   type: "relay_start_interactive_planning";
-  sessionId: string;
+  sessionId?: string;
   ticketId: string;
   ticketTitle: string;
   ticketDescription: string;
@@ -442,7 +442,7 @@ export interface RelayStartInteractivePlanningMsg {
 
 export interface RelayStartImplementationMsg {
   type: "relay_start_implementation";
-  sessionId: string;
+  sessionId?: string;
   ticketId: string;
   plan: string;
   systemInstructions: string[];

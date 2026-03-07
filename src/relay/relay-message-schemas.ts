@@ -80,7 +80,7 @@ const RelayBrowseFilesSchema = z.object({
 
 const RelayStartPlanningSchema = z.object({
   type: z.literal("relay_start_planning"),
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   ticketId: z.string(),
   ticketTitle: z.string(),
   ticketDescription: z.string(),
@@ -96,7 +96,7 @@ const RelayStartPlanningSchema = z.object({
 
 const RelayStartInteractivePlanningSchema = z.object({
   type: z.literal("relay_start_interactive_planning"),
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   ticketId: z.string(),
   ticketTitle: z.string(),
   ticketDescription: z.string(),
@@ -109,7 +109,7 @@ const RelayStartInteractivePlanningSchema = z.object({
 
 const RelayStartImplementationSchema = z.object({
   type: z.literal("relay_start_implementation"),
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   ticketId: z.string(),
   plan: z.string(),
   systemInstructions: z.array(z.string()),
