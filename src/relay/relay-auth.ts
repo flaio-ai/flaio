@@ -211,12 +211,23 @@ export async function refreshAuthToken(): Promise<string | null> {
   }
 }
 
-function extractUidFromToken(token: string): string | null {
+export function extractUidFromToken(token: string): string | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
     const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
     return (payload.user_id as string) ?? (payload.sub as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function extractEmailFromToken(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    return (payload.email as string) ?? null;
   } catch {
     return null;
   }
