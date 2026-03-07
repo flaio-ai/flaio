@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.7
+
+### Patch Changes
+
+- a9c9963: Patch version bump
+
 ## 1.0.6
 
 ### Patch Changes
