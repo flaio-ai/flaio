@@ -21,6 +21,7 @@ import {
   updateViewerCount,
   clearViewerCounts,
   setSessionOrgSettings,
+  getSessionOrgSettings,
   setWorktreeDefaults,
 } from "./relay-store.js";
 import { refreshAuthToken } from "./relay-auth.js";
@@ -706,13 +707,17 @@ export class RelayClient extends EventEmitter {
       }
     }
 
+    const orgSettings = getSessionOrgSettings(msg.sessionId);
+    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
+    const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
+
     const promptParts = [
       "You are planning the implementation of a ticket.",
       "",
       `Title: ${msg.ticketTitle}`,
       `Description: ${msg.ticketDescription}`,
       "",
-      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      ...allInstructions.map((i) => `System Instruction:\n${i}`),
       "",
     ];
 
@@ -844,13 +849,17 @@ export class RelayClient extends EventEmitter {
       }
     }
 
+    const orgSettings = getSessionOrgSettings(msg.sessionId);
+    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
+    const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
+
     const planningPrompt = [
       "You are planning the implementation of a ticket.",
       "",
       `Title: ${msg.ticketTitle}`,
       `Description: ${msg.ticketDescription}`,
       "",
-      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      ...allInstructions.map((i) => `System Instruction:\n${i}`),
       "",
       "Please analyze the requirements and create a detailed implementation plan. Include:",
       "- Files to create/modify",
@@ -915,13 +924,17 @@ export class RelayClient extends EventEmitter {
       }
     }
 
+    const orgSettings = getSessionOrgSettings(msg.sessionId);
+    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
+    const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
+
     const promptParts = [
       "You are implementing a plan. Follow the plan exactly.",
       "",
       "Plan:",
       msg.plan,
       "",
-      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      ...allInstructions.map((i) => `System Instruction:\n${i}`),
     ];
 
     if (branchName) {
