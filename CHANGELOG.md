@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.8
+
+### Patch Changes
+
+- Add missing sessionId to planning and implementation message types
+
 ## 1.0.7
 
 ### Patch Changes
