@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.10
+
+### Patch Changes
+
+- 8e62eab: Reduce memory usage: skip no-op Zustand state updates, cap planning session buffers at 2MB, release ScreenBuffer resources on cleanup, and reduce xterm scrollback for non-interactive sessions
+
 ## 1.0.9
 
 ### Patch Changes
