@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.11
+
+### Patch Changes
+
+- Patch version bump
+
 ## 1.0.10
 
 ### Patch Changes
