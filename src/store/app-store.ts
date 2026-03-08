@@ -31,6 +31,8 @@ export interface SessionState {
   totalLinesAdded?: number;
   /** Lines removed this session */
   totalLinesRemoved?: number;
+  /** Process exit code (0 = clean, non-zero = error/crash) */
+  exitCode?: number;
 }
 
 export interface AppState {
@@ -106,7 +108,13 @@ export const appStore = createStore<AppState>((set, get) => ({
       });
     });
 
-    session.on("exit", () => {
+    session.on("exit", (code?: number) => {
+      // Store the exit code before closing
+      set((prev) => ({
+        sessions: prev.sessions.map((s) =>
+          s.id === session.id ? { ...s, exitCode: code } : s,
+        ),
+      }));
       get().closeSession(session.id);
     });
 
@@ -272,9 +280,17 @@ export const appStore = createStore<AppState>((set, get) => ({
       });
     });
 
-    // Don't auto-close adopted sessions — keep tab so user can see errors
-    session.on("exit", () => {
+    // Auto-close adopted sessions after a brief delay so user can see final output
+    session.on("exit", (code?: number) => {
+      set((prev) => ({
+        sessions: prev.sessions.map((s) =>
+          s.id === session.id ? { ...s, exitCode: code } : s,
+        ),
+      }));
       get().updateSessionStatus(session.id, "exited");
+      setTimeout(() => {
+        get().closeSession(session.id);
+      }, 3000);
     });
 
     const state: SessionState = {

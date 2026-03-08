@@ -101,26 +101,26 @@ export class SidebandReceiver extends EventEmitter {
   private watchEvents(filePath: string): void {
     this.eventsWatcher = fs.watch(filePath, () => {
       if (this.stopped) return;
-      this.readNewEvents(filePath);
+      void this.readNewEvents(filePath);
     });
   }
 
-  private readNewEvents(filePath: string): void {
-    let fd: number | null = null;
+  private async readNewEvents(filePath: string): Promise<void> {
+    let fh: fsp.FileHandle | null = null;
     try {
-      fd = fs.openSync(filePath, "r");
-      const stat = fs.fstatSync(fd);
+      fh = await fsp.open(filePath, "r");
+      const stat = await fh.stat();
       const bytesToRead = stat.size - this.eventsOffset;
       if (bytesToRead <= 0) {
-        fs.closeSync(fd);
+        await fh.close();
         return;
       }
 
       const buf = Buffer.alloc(bytesToRead);
-      fs.readSync(fd, buf, 0, bytesToRead, this.eventsOffset);
+      await fh.read(buf, 0, bytesToRead, this.eventsOffset);
       this.eventsOffset = stat.size;
-      fs.closeSync(fd);
-      fd = null;
+      await fh.close();
+      fh = null;
 
       const text = buf.toString("utf-8");
       const lines = text.split("\n").filter(Boolean);
@@ -134,8 +134,8 @@ export class SidebandReceiver extends EventEmitter {
         }
       }
     } catch {
-      if (fd !== null) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
+      if (fh !== null) {
+        try { await fh.close(); } catch { /* ignore */ }
       }
     }
   }
@@ -149,14 +149,14 @@ export class SidebandReceiver extends EventEmitter {
       if (this.stopped) return;
       if (this.metadataDebounceTimer) clearTimeout(this.metadataDebounceTimer);
       this.metadataDebounceTimer = setTimeout(() => {
-        this.readMetadata(filePath);
+        void this.readMetadata(filePath);
       }, 200);
     });
   }
 
-  private readMetadata(filePath: string): void {
+  private async readMetadata(filePath: string): Promise<void> {
     try {
-      const text = fs.readFileSync(filePath, "utf-8").trim();
+      const text = (await fsp.readFile(filePath, "utf-8")).trim();
       if (!text) return;
       const raw = JSON.parse(text);
       const metadata = normalizeMetadata(raw);

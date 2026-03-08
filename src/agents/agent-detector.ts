@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { getAllDrivers } from "./agent-registry.js";
 
@@ -10,10 +10,40 @@ export interface DetectedAgent {
   cwd: string | null;
 }
 
+/** Run execFile and return stdout, or null on failure */
+function execAsync(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: "utf-8", timeout: timeoutMs }, (err, stdout) => {
+      if (err) {
+        resolve(null);
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+/** Pre-compiled regex cache keyed by driver command name */
+const regexCache = new Map<string, RegExp>();
+
+function getCommandRegex(command: string): RegExp {
+  let re = regexCache.get(command);
+  if (!re) {
+    re = new RegExp(`\\b${command}\\b`);
+    regexCache.set(command, re);
+  }
+  return re;
+}
+
 export class AgentDetector extends EventEmitter {
   private timer: ReturnType<typeof setInterval> | null = null;
   private _detected: DetectedAgent[] = [];
   private ignoredPids: Set<number> = new Set();
+  private scanning = false;
 
   get detected(): DetectedAgent[] {
     return this._detected;
@@ -25,8 +55,8 @@ export class AgentDetector extends EventEmitter {
   }
 
   start(intervalMs: number = 5000): void {
-    this.scan();
-    this.timer = setInterval(() => this.scan(), intervalMs);
+    void this.scan();
+    this.timer = setInterval(() => void this.scan(), intervalMs);
   }
 
   stop(): void {
@@ -36,19 +66,16 @@ export class AgentDetector extends EventEmitter {
     }
   }
 
-  private scan(): void {
+  private async scan(): Promise<void> {
+    // Prevent overlapping scans
+    if (this.scanning) return;
+    this.scanning = true;
+
     try {
       const drivers = getAllDrivers();
-      const commandNames = drivers.map((d) => d.command);
 
-      // Use ps to find processes matching known agent commands
-      let psOutput: string;
-      try {
-        psOutput = execSync("ps aux", {
-          encoding: "utf-8",
-          timeout: 5000,
-        });
-      } catch {
+      const psOutput = await execAsync("ps", ["aux"], 5000);
+      if (!psOutput) {
         return;
       }
 
@@ -57,9 +84,7 @@ export class AgentDetector extends EventEmitter {
 
       for (const line of lines) {
         for (const driver of drivers) {
-          // Match the command in the ps output
-          // e.g., "user 12345 ... claude -p ..."
-          const regex = new RegExp(`\\b${driver.command}\\b`);
+          const regex = getCommandRegex(driver.command);
           if (!regex.test(line)) continue;
 
           const parts = line.trim().split(/\s+/);
@@ -68,7 +93,7 @@ export class AgentDetector extends EventEmitter {
           if (this.ignoredPids.has(pid)) continue;
 
           // Try to get cwd via lsof
-          const cwd = this.getCwd(pid);
+          const cwd = await this.getCwd(pid);
 
           detected.push({
             pid,
@@ -102,28 +127,24 @@ export class AgentDetector extends EventEmitter {
       }
     } catch {
       // Non-critical — just skip this scan
+    } finally {
+      this.scanning = false;
     }
   }
 
-  private getCwd(pid: number): string | null {
-    try {
-      // lsof -Fn outputs "fcwd" on one line, then "n/path" on the next
-      const output = execSync(`lsof -p ${pid} -Fn 2>/dev/null`, {
-        encoding: "utf-8",
-        timeout: 3000,
-      });
-      const lines = output.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i] === "fcwd") {
-          const next = lines[i + 1];
-          if (next?.startsWith("n")) {
-            return next.slice(1);
-          }
+  private async getCwd(pid: number): Promise<string | null> {
+    const output = await execAsync("lsof", ["-p", String(pid), "-Fn"], 3000);
+    if (!output) return null;
+
+    const lines = output.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i] === "fcwd") {
+        const next = lines[i + 1];
+        if (next?.startsWith("n")) {
+          return next.slice(1);
         }
       }
-      return null;
-    } catch {
-      return null;
     }
+    return null;
   }
 }

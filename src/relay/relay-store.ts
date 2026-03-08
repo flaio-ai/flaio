@@ -43,6 +43,8 @@ export interface RelayState {
   connectionStatus: RelayConnectionStatus;
   /** Error message if connectionStatus is "error" */
   errorMessage: string | null;
+  /** Current reconnection attempt (0 when connected) */
+  reconnectAttempt: number;
   /** Number of browser viewers currently connected across all sessions */
   totalViewerCount: number;
   /** Per-session viewer counts */
@@ -59,6 +61,7 @@ export interface RelayState {
 export const relayStore = createStore<RelayState>(() => ({
   connectionStatus: "disconnected",
   errorMessage: null,
+  reconnectAttempt: 0,
   totalViewerCount: 0,
   sessionViewerCounts: new Map(),
   isLoggedIn: false,
@@ -70,10 +73,12 @@ export const relayStore = createStore<RelayState>(() => ({
 export function setRelayConnectionStatus(
   status: RelayConnectionStatus,
   errorMessage?: string,
+  reconnectAttempt?: number,
 ): void {
   relayStore.setState({
     connectionStatus: status,
     errorMessage: errorMessage ?? null,
+    ...(reconnectAttempt != null ? { reconnectAttempt } : {}),
   });
 }
 

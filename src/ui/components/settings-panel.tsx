@@ -1,4 +1,4 @@
-import React, { useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Box, Text, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import { settingsStore } from "../../store/settings-store.js";
@@ -161,6 +161,46 @@ function FieldRow({
   );
 }
 
+function useTimedMessage(durationMs = 3000): [string | null, "success" | "error" | null, (msg: string, kind: "success" | "error") => void] {
+  const [message, setMessage] = useState<string | null>(null);
+  const [kind, setKind] = useState<"success" | "error" | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const show = useCallback((msg: string, k: "success" | "error") => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setMessage(msg);
+    setKind(k);
+    timerRef.current = setTimeout(() => {
+      setMessage(null);
+      setKind(null);
+    }, durationMs);
+  }, [durationMs]);
+
+  useEffect(() => {
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, []);
+
+  return [message, kind, show];
+}
+
+function validateField(field: FieldDef, value: string): string | null {
+  if (field.type === "number") {
+    if (isNaN(Number(value)) || value.trim() === "") return "Invalid number";
+    return null;
+  }
+  const label = field.label.toLowerCase();
+  if (label.includes("bot token") && label.includes("slack")) {
+    if (value && !value.startsWith("xoxb-")) return "Slack bot token should start with \"xoxb-\"";
+  }
+  if (label.includes("app token") && label.includes("slack")) {
+    if (value && !value.startsWith("xapp-")) return "Slack app token should start with \"xapp-\"";
+  }
+  if (label.includes("relay") && label.includes("url")) {
+    if (value && !value.startsWith("ws://") && !value.startsWith("wss://")) return "URL must start with ws:// or wss://";
+  }
+  return null;
+}
+
 export function SettingsPanel({
   onClose,
 }: SettingsPanelProps): React.ReactElement {
@@ -170,6 +210,7 @@ export function SettingsPanel({
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [editingField, setEditingField] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [feedbackMsg, feedbackKind, showFeedback] = useTimedMessage(3000);
 
   const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : section === "relay" ? getRelayFields() : section === "worktree" ? getWorktreeFields() : getUiFields();
 
@@ -197,8 +238,10 @@ export function SettingsPanel({
       if (isLoggedIn()) {
         logout();
         settingsStore.getState().updateRelay({ enabled: false });
+        showFeedback("Logged out successfully", "success");
       } else {
         login();
+        showFeedback("Opening browser for login...", "success");
       }
       return;
     }
@@ -231,12 +274,19 @@ export function SettingsPanel({
   const handleEditSubmit = (value: string) => {
     const field = fields[editingField!];
     if (field) {
+      const error = validateField(field, value);
+      if (error) {
+        showFeedback(error, "error");
+        setEditingField(null);
+        setEditValue("");
+        return;
+      }
       if (field.type === "number") {
-        const num = Number(value);
-        if (!isNaN(num)) field.setValue(num);
+        field.setValue(Number(value));
       } else {
         field.setValue(value);
       }
+      showFeedback(`${field.label} saved`, "success");
     }
     setEditingField(null);
     setEditValue("");
@@ -315,7 +365,13 @@ export function SettingsPanel({
         )}
       </Box>
 
-      <Box marginTop={1}>
+      {feedbackMsg && (
+        <Box marginTop={1}>
+          <Text color={feedbackKind === "error" ? "red" : "green"}>{feedbackMsg}</Text>
+        </Box>
+      )}
+
+      <Box marginTop={feedbackMsg ? 0 : 1}>
         <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : section === "relay" ? "Tab: section | Up/Down: navigate | Enter: edit | l: login/logout | Esc: close" : section === "worktree" ? "Tab: section | Up/Down: navigate | Enter: edit | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
       </Box>
     </Box>

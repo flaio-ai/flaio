@@ -46,6 +46,7 @@ export function Sidebar({
             isActive={session.id === activeSessionId}
             index={index}
             width={width - 2}
+            exitCode={session.exitCode}
           />
         ))
       )}

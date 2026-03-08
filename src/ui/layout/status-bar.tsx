@@ -175,6 +175,12 @@ export function StatusBar({
             <Text color={RELAY_STATUS_STYLE[relay.connectionStatus].color}>
               Relay
             </Text>
+            {relay.connectionStatus === "connecting" && relay.reconnectAttempt > 0 && (
+              <Text color="yellow"> retry {relay.reconnectAttempt}</Text>
+            )}
+            {relay.connectionStatus === "error" && relay.errorMessage && (
+              <Text color="red" dimColor> {relay.errorMessage.length > 25 ? relay.errorMessage.slice(0, 25) + "…" : relay.errorMessage}</Text>
+            )}
             {relay.totalViewerCount > 0 && (
               <Text color="cyan"> ({relay.totalViewerCount})</Text>
             )}
@@ -188,6 +194,9 @@ export function StatusBar({
             <Text key={c.name}>
               <Text color={style.color}>{style.symbol}</Text>
               <Text color={style.color}>{icon}{c.displayName}</Text>
+              {c.status === "error" && c.error && (
+                <Text color="red" dimColor> {c.error.length > 30 ? c.error.slice(0, 30) + "…" : c.error}</Text>
+              )}
               <Text dimColor> | </Text>
             </Text>
           );

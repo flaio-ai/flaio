@@ -303,7 +303,7 @@ export class RelayClient extends EventEmitter {
     switch (msg.type) {
       case "relay_auth_ok":
         debugLog("relay: authenticated");
-        setRelayConnectionStatus("connected");
+        setRelayConnectionStatus("connected", undefined, 0);
         this.reconnectAttempt = 0;
         // Register all current sessions
         this.registerAllSessions();
@@ -1487,6 +1487,7 @@ export class RelayClient extends EventEmitter {
     this.reconnectAttempt++;
 
     debugLog(`relay: reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`);
+    setRelayConnectionStatus("connecting", undefined, this.reconnectAttempt);
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

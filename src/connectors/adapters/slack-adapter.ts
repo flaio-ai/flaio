@@ -33,6 +33,7 @@ export class SlackAdapter implements IConnector {
   // Per-session threading
   private sessionThreads: Map<string, string> = new Map(); // sessionId → thread root ts
   private threadToSession: Map<string, string> = new Map(); // thread root ts → sessionId
+  private pendingThreads: Map<string, Promise<string | null>> = new Map(); // mutex for ensureSessionThread
   private botUserId: string | null = null;
 
   // Typing placeholders — maps sessionId → placeholder message ts
@@ -114,6 +115,7 @@ export class SlackAdapter implements IConnector {
     this.webClient = null;
     this.socketClient = null;
     this.sessionThreads.clear();
+    this.pendingThreads.clear();
     this.threadToSession.clear();
     this.threadLastSeen.clear();
     this.typingMessages.clear();
@@ -380,6 +382,7 @@ export class SlackAdapter implements IConnector {
       this.threadLastSeen.delete(threadTs);
     }
     this.sessionThreads.delete(sessionId);
+    this.pendingThreads.delete(sessionId);
     this.typingMessages.delete(sessionId);
   }
 
@@ -391,6 +394,20 @@ export class SlackAdapter implements IConnector {
     const existing = this.sessionThreads.get(sessionId);
     if (existing) return existing;
 
+    // Mutex: if another call is already creating this thread, wait for it
+    const pending = this.pendingThreads.get(sessionId);
+    if (pending) return pending;
+
+    const promise = this._createSessionThread(sessionId, cwd);
+    this.pendingThreads.set(sessionId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.pendingThreads.delete(sessionId);
+    }
+  }
+
+  private async _createSessionThread(sessionId: string, cwd?: string): Promise<string | null> {
     const project = cwd?.split("/").filter(Boolean).pop() ?? "unknown";
 
     const text = [
