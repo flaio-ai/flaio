@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.12
+
+### Patch Changes
+
+- Fix Slack duplicate/ghost messages, performance bottlenecks, and UX improvements
+
 ## 1.0.11
 
 ### Patch Changes
