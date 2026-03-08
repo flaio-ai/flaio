@@ -368,8 +368,9 @@ export class SlackAdapter implements IConnector {
     }
   }
 
-  onPrompt(handler: (prompt: string, sessionId?: string) => void): void {
+  onPrompt(handler: (prompt: string, sessionId?: string) => void): () => void {
     this.promptHandler = handler;
+    return () => { this.promptHandler = null; };
   }
 
   cleanupSession(sessionId: string): void {
@@ -475,6 +476,9 @@ export class SlackAdapter implements IConnector {
   // ---------------------------------------------------------------------------
 
   private startThreadPolling(): void {
+    if (this.threadPollTimer) {
+      clearInterval(this.threadPollTimer);
+    }
     const interval = this.config.pollInterval ?? 3000;
     this.threadPollTimer = setInterval(() => {
       this.pollSessionThreads().catch(() => {});

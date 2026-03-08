@@ -27,6 +27,7 @@ export class SidebandReceiver extends EventEmitter {
   private metadataWatcher: fs.FSWatcher | null = null;
   private eventsOffset = 0;
   private stopped = false;
+  private metadataDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly sessionId: string) {
     super();
@@ -73,6 +74,10 @@ export class SidebandReceiver extends EventEmitter {
     if (this.eventsWatcher) {
       this.eventsWatcher.close();
       this.eventsWatcher = null;
+    }
+    if (this.metadataDebounceTimer) {
+      clearTimeout(this.metadataDebounceTimer);
+      this.metadataDebounceTimer = null;
     }
     if (this.metadataWatcher) {
       this.metadataWatcher.close();
@@ -140,13 +145,10 @@ export class SidebandReceiver extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private watchMetadata(filePath: string): void {
-    // Debounce: status line may update rapidly
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
     this.metadataWatcher = fs.watch(filePath, () => {
       if (this.stopped) return;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
+      if (this.metadataDebounceTimer) clearTimeout(this.metadataDebounceTimer);
+      this.metadataDebounceTimer = setTimeout(() => {
         this.readMetadata(filePath);
       }, 200);
     });

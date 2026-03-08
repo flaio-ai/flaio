@@ -69,6 +69,8 @@ interface TrackedSession {
   viewerKeys: Map<string, ViewerCryptoState>;
   /** Monotonic sequence counter for encrypted PTY data ordering */
   encryptSeq: number;
+  /** Throttle timer for metadata sends */
+  metadataTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +227,15 @@ export class RelayClient extends EventEmitter {
     setRelayConnectionStatus("connecting");
 
     try {
+      // Clean up previous WebSocket if it exists (e.g. on reconnect)
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        if (this.ws.readyState === this.ws.OPEN || this.ws.readyState === this.ws.CONNECTING) {
+          this.ws.close();
+        }
+        this.ws = null;
+      }
+
       // Dynamic import — ws is a dependency we expect to be available
       const { default: WebSocket } = await import("ws");
 
@@ -1228,6 +1239,8 @@ export class RelayClient extends EventEmitter {
           this.registerSession(id);
           // Then track async for E2E crypto and PTY data streaming
           this.trackSession(id).then(() => {
+            // Guard: session may have been removed while trackSession was pending
+            if (!this.trackedSessions.has(id)) return;
             // Re-register with public key once E2E keys are generated
             const tracked = this.trackedSessions.get(id);
             if (tracked?.keyPair) {
@@ -1286,6 +1299,7 @@ export class RelayClient extends EventEmitter {
       sck,
       viewerKeys: new Map(),
       encryptSeq: 0,
+      metadataTimer: null,
     };
 
     // Stream raw PTY data to relay
@@ -1317,7 +1331,6 @@ export class RelayClient extends EventEmitter {
 
     // Forward metadata changes (throttled — every 10s max)
     let lastMetadataSend = 0;
-    let metadataTimer: ReturnType<typeof setTimeout> | null = null;
     const sendMetadata = () => {
       const data = sessionMetadataStore.get(sessionId);
       if (!data) return;
@@ -1341,9 +1354,9 @@ export class RelayClient extends EventEmitter {
       const now = Date.now();
       if (now - lastMetadataSend >= 10_000) {
         sendMetadata();
-      } else if (!metadataTimer) {
-        metadataTimer = setTimeout(() => {
-          metadataTimer = null;
+      } else if (!tracked.metadataTimer) {
+        tracked.metadataTimer = setTimeout(() => {
+          tracked.metadataTimer = null;
           sendMetadata();
         }, 10_000 - (now - lastMetadataSend));
       }
@@ -1353,9 +1366,9 @@ export class RelayClient extends EventEmitter {
     tracked.statusUnsub = () => {
       session.removeListener("status", onStatus);
       session.removeListener("metadata", onMetadata);
-      if (metadataTimer) {
-        clearTimeout(metadataTimer);
-        metadataTimer = null;
+      if (tracked.metadataTimer) {
+        clearTimeout(tracked.metadataTimer);
+        tracked.metadataTimer = null;
       }
     };
 

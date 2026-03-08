@@ -13,15 +13,19 @@ const debugLog = makeDebugLog("connector-mgr");
 
 export class ConnectorManager extends EventEmitter {
   private connectors: Map<string, IConnector> = new Map();
+  private unsubs: Map<string, () => void> = new Map();
 
   register(connector: IConnector): void {
     this.connectors.set(connector.name, connector);
-    connector.onPrompt((prompt, sessionId) => {
+    const unsub = connector.onPrompt((prompt, sessionId) => {
       this.emit("prompt", prompt, sessionId, connector.name);
     });
+    this.unsubs.set(connector.name, unsub);
   }
 
   unregister(name: string): void {
+    this.unsubs.get(name)?.();
+    this.unsubs.delete(name);
     this.connectors.delete(name);
   }
 

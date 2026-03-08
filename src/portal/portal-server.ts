@@ -327,6 +327,10 @@ export class PortalServer {
 
     client.throttleTimer = setTimeout(() => {
       client.throttleTimer = null;
+      if (client.socket.destroyed) {
+        client.pendingFrame = null;
+        return;
+      }
       if (client.pendingFrame) {
         this.send(client, client.pendingFrame);
         client.pendingFrame = null;
