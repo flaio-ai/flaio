@@ -177,8 +177,9 @@ export class TelegramAdapter implements IConnector {
     }
   }
 
-  onPrompt(handler: (prompt: string, sessionId?: string) => void): void {
+  onPrompt(handler: (prompt: string, sessionId?: string) => void): () => void {
     this.promptHandler = handler;
+    return () => { this.promptHandler = null; };
   }
 
   private waitForCallbackReply(requestId: string): Promise<PermissionReply> {

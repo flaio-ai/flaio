@@ -269,8 +269,10 @@ export class AgentSession extends EventEmitter {
   kill(): void {
     this.stopStatusChecking();
     this.screenBuffer.stop();
+    this.pty.removeAllListeners();
     this.pty.kill();
     this.xterm.dispose();
+    this.sideband.removeAllListeners();
     this.sideband.stop();
     sessionMetadataStore.remove(this.id);
     this.setStatus("exited");

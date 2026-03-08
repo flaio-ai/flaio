@@ -143,8 +143,9 @@ export class DiscordAdapter implements IConnector {
     }
   }
 
-  onPrompt(handler: (prompt: string, sessionId?: string) => void): void {
+  onPrompt(handler: (prompt: string, sessionId?: string) => void): () => void {
     this.promptHandler = handler;
+    return () => { this.promptHandler = null; };
   }
 
   private async waitForThreadReply(thread: any): Promise<PermissionReply> {

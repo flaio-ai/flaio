@@ -23,11 +23,17 @@ export async function listSessions(): Promise<PortalSessionInfo[] | null> {
   return new Promise((resolve) => {
     const conn = net.createConnection(PORTAL_SOCKET_PATH);
     let buffer = "";
+    let cleaned = false;
 
-    const timeout = setTimeout(() => {
+    const finish = (value: PortalSessionInfo[] | null) => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(timeout);
       conn.destroy();
-      resolve(null);
-    }, 5000);
+      resolve(value);
+    };
+
+    const timeout = setTimeout(() => finish(null), 5000);
 
     conn.on("connect", () => {
       const msg: PortalClientMsg = { type: "portal_list" };
@@ -44,9 +50,7 @@ export async function listSessions(): Promise<PortalSessionInfo[] | null> {
         try {
           const msg: PortalServerMsg = JSON.parse(line);
           if (msg.type === "portal_sessions") {
-            clearTimeout(timeout);
-            conn.destroy();
-            resolve(msg.sessions);
+            finish(msg.sessions);
             return;
           }
         } catch {
@@ -55,10 +59,7 @@ export async function listSessions(): Promise<PortalSessionInfo[] | null> {
       }
     });
 
-    conn.on("error", () => {
-      clearTimeout(timeout);
-      resolve(null);
-    });
+    conn.on("error", () => finish(null));
   });
 }
 
@@ -72,11 +73,17 @@ export async function listDrivers(): Promise<PortalDriverInfo[] | null> {
   return new Promise((resolve) => {
     const conn = net.createConnection(PORTAL_SOCKET_PATH);
     let buffer = "";
+    let cleaned = false;
 
-    const timeout = setTimeout(() => {
+    const finish = (value: PortalDriverInfo[] | null) => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(timeout);
       conn.destroy();
-      resolve(null);
-    }, 5000);
+      resolve(value);
+    };
+
+    const timeout = setTimeout(() => finish(null), 5000);
 
     conn.on("connect", () => {
       const msg: PortalClientMsg = { type: "portal_list_drivers" };
@@ -93,9 +100,7 @@ export async function listDrivers(): Promise<PortalDriverInfo[] | null> {
         try {
           const msg: PortalServerMsg = JSON.parse(line);
           if (msg.type === "portal_drivers") {
-            clearTimeout(timeout);
-            conn.destroy();
-            resolve(msg.drivers);
+            finish(msg.drivers);
             return;
           }
         } catch {
@@ -104,10 +109,7 @@ export async function listDrivers(): Promise<PortalDriverInfo[] | null> {
       }
     });
 
-    conn.on("error", () => {
-      clearTimeout(timeout);
-      resolve(null);
-    });
+    conn.on("error", () => finish(null));
   });
 }
 
@@ -124,11 +126,17 @@ export async function createSession(
   return new Promise((resolve) => {
     const conn = net.createConnection(PORTAL_SOCKET_PATH);
     let buffer = "";
+    let cleaned = false;
 
-    const timeout = setTimeout(() => {
+    const finish = (value: string | null) => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(timeout);
       conn.destroy();
-      resolve(null);
-    }, 5000);
+      resolve(value);
+    };
+
+    const timeout = setTimeout(() => finish(null), 5000);
 
     conn.on("connect", () => {
       const msg: PortalClientMsg = {
@@ -149,15 +157,11 @@ export async function createSession(
         try {
           const msg: PortalServerMsg = JSON.parse(line);
           if (msg.type === "portal_session_created") {
-            clearTimeout(timeout);
-            conn.destroy();
-            resolve(msg.sessionId);
+            finish(msg.sessionId);
             return;
           }
           if (msg.type === "portal_error") {
-            clearTimeout(timeout);
-            conn.destroy();
-            resolve(null);
+            finish(null);
             return;
           }
         } catch {
@@ -166,10 +170,7 @@ export async function createSession(
       }
     });
 
-    conn.on("error", () => {
-      clearTimeout(timeout);
-      resolve(null);
-    });
+    conn.on("error", () => finish(null));
   });
 }
 

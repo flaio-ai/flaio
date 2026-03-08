@@ -47,5 +47,5 @@ export interface IConnector {
   postNotification(notification: SessionNotification): Promise<void>;
 
   /** Register a handler for incoming prompts from the messaging platform */
-  onPrompt(handler: (prompt: string, sessionId?: string) => void): void;
+  onPrompt(handler: (prompt: string, sessionId?: string) => void): () => void;
 }
