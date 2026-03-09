@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.15
+
+### Patch Changes
+
+- Reduce memory pressure and fix resource leaks across CLI
+
 ## 1.0.14
 
 ### Patch Changes
