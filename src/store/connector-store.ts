@@ -42,7 +42,7 @@ const RE_PRESS = /^\s*(Press|Esc\s)/i;
 const RE_TIP = /^\s*tip:/i;
 const RE_RUN_UPDATE = /^\s*Run\s.*to update/i;
 const RE_SPINNER = /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s/;
-const RE_ANSI = /\x1B\[[0-9;]*[a-zA-Z]/g;
+import { stripAnsi } from "../strip-ansi.js";
 
 // ---------------------------------------------------------------------------
 // Connector status store — reactive state for the UI
@@ -450,7 +450,7 @@ function extractFromLines(allLines: string[]): string | null {
     // Progress bars / spinners
     if (RE_SPINNER.test(l)) return false;
     // ANSI escape-only lines (after stripping — but these appear as empty)
-    if (l.replace(RE_ANSI, "").trim() === "") return false;
+    if (stripAnsi(l).trim() === "") return false;
     return true;
   });
 

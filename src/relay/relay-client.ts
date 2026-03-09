@@ -1,3 +1,4 @@
+import { stripAnsi } from "../strip-ansi.js";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -817,7 +818,7 @@ export class RelayClient extends EventEmitter {
       const onExit = () => {
         rawUnsub();
         // Strip ANSI escape sequences from raw PTY output
-        const plainText = rawOutput.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+        const plainText = stripAnsi(rawOutput).trim();
 
         ticketTracker.updateStatus(msg.ticketId, "plan_ready");
 
