@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.13
+
+### Patch Changes
+
+- Expand CLI analytics with Sentry tracing, profiling, and PostHog instrumentation
+
 ## 1.0.12
 
 ### Patch Changes
