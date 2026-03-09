@@ -1,5 +1,11 @@
 # flaio
 
+## 1.0.14
+
+### Patch Changes
+
+- Fix memory leaks and performance bottlenecks in CLI
+
 ## 1.0.13
 
 ### Patch Changes
