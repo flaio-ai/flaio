@@ -81,9 +81,63 @@ interface TrackedSession {
 // Replay buffer — ring buffer of recent PTY output per session
 // ---------------------------------------------------------------------------
 
+class SessionRingBuffer {
+  private chunks: (string | null)[];
+  private head = 0;
+  private tail = 0;
+  private count = 0;
+  private size = 0;
+  private capacity: number;
+  private maxBytes: number;
+
+  constructor(maxBytes: number, initialCapacity = 256) {
+    this.maxBytes = maxBytes;
+    this.capacity = initialCapacity;
+    this.chunks = new Array(initialCapacity).fill(null);
+  }
+
+  push(data: string): void {
+    while (this.size + data.length > this.maxBytes && this.count > 0) {
+      const removed = this.chunks[this.head]!;
+      this.chunks[this.head] = null;
+      this.head = (this.head + 1) % this.capacity;
+      this.count--;
+      this.size -= removed.length;
+    }
+
+    if (this.count === this.capacity) {
+      this.grow();
+    }
+
+    this.chunks[this.tail] = data;
+    this.tail = (this.tail + 1) % this.capacity;
+    this.count++;
+    this.size += data.length;
+  }
+
+  toArray(): string[] {
+    const result: string[] = [];
+    for (let i = 0; i < this.count; i++) {
+      result.push(this.chunks[(this.head + i) % this.capacity]!);
+    }
+    return result;
+  }
+
+  private grow(): void {
+    const newCapacity = this.capacity * 2;
+    const newChunks: (string | null)[] = new Array(newCapacity).fill(null);
+    for (let i = 0; i < this.count; i++) {
+      newChunks[i] = this.chunks[(this.head + i) % this.capacity];
+    }
+    this.chunks = newChunks;
+    this.head = 0;
+    this.tail = this.count;
+    this.capacity = newCapacity;
+  }
+}
+
 class ReplayBuffer {
-  private buffers = new Map<string, string[]>();
-  private sizes = new Map<string, number>();
+  private buffers = new Map<string, SessionRingBuffer>();
   private maxBytes: number;
 
   constructor(maxKB: number) {
@@ -91,38 +145,24 @@ class ReplayBuffer {
   }
 
   push(sessionId: string, data: string): void {
-    let chunks = this.buffers.get(sessionId);
-    let size = this.sizes.get(sessionId) ?? 0;
-
-    if (!chunks) {
-      chunks = [];
-      this.buffers.set(sessionId, chunks);
+    let ring = this.buffers.get(sessionId);
+    if (!ring) {
+      ring = new SessionRingBuffer(this.maxBytes);
+      this.buffers.set(sessionId, ring);
     }
-
-    chunks.push(data);
-    size += data.length;
-
-    // Evict oldest chunks when over budget
-    while (size > this.maxBytes && chunks.length > 1) {
-      const removed = chunks.shift()!;
-      size -= removed.length;
-    }
-
-    this.sizes.set(sessionId, size);
+    ring.push(data);
   }
 
   get(sessionId: string): string[] {
-    return this.buffers.get(sessionId) ?? [];
+    return this.buffers.get(sessionId)?.toArray() ?? [];
   }
 
   remove(sessionId: string): void {
     this.buffers.delete(sessionId);
-    this.sizes.delete(sessionId);
   }
 
   clear(): void {
     this.buffers.clear();
-    this.sizes.clear();
   }
 }
 
@@ -155,6 +195,9 @@ export class RelayClient extends EventEmitter {
   private inputLimiter = new RateLimiter(30, 30); // 30 inputs/sec per key
   private browseLimiter = new RateLimiter(10, 10); // 10 browse requests/sec
   private createSessionLimiter = new RateLimiter(1, 0.2); // 1 per 5 seconds
+
+  // Cached driver list (avoids re-checking installed status on every poll)
+  private cachedDriversResult: Array<{ name: string; displayName: string; installed: boolean; models: any[] }> | null = null;
 
   constructor() {
     super();
@@ -207,6 +250,7 @@ export class RelayClient extends EventEmitter {
     }
     this.trackedSessions.clear();
     this.replayBuffer.clear();
+    this.cachedDriversResult = null;
     clearViewerCounts();
     this.inputLimiter.clear();
     this.browseLimiter.clear();
@@ -532,17 +576,21 @@ export class RelayClient extends EventEmitter {
     });
   }
 
+  // TODO: Web app polls this every 5s (code-relay-server epics.ts refreshSessionsPollingEpic).
+  // Consider increasing interval to 30-60s or switching to push-based updates.
   private async handleListDrivers(viewerId: string): Promise<void> {
-    const allDrivers = getAllDrivers();
-    const drivers = await Promise.all(
-      allDrivers.map(async (d) => ({
-        name: d.name,
-        displayName: d.displayName,
-        installed: await d.checkInstalled(),
-        models: d.listModels(),
-      })),
-    );
-    this.send({ type: "cli_drivers_result", viewerId, drivers });
+    if (!this.cachedDriversResult) {
+      const allDrivers = getAllDrivers();
+      this.cachedDriversResult = await Promise.all(
+        allDrivers.map(async (d) => ({
+          name: d.name,
+          displayName: d.displayName,
+          installed: await d.checkInstalled(),
+          models: d.listModels(),
+        })),
+      );
+    }
+    this.send({ type: "cli_drivers_result", viewerId, drivers: this.cachedDriversResult });
   }
 
   private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
@@ -794,8 +842,8 @@ export class RelayClient extends EventEmitter {
     debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
 
     try {
-      // Non-interactive: reduced scrollback to save memory
-      const session = appStore.getState().createSession(driverName, effectiveCwd, undefined, undefined, 500);
+      // Non-interactive: minimal scrollback to save memory (raw output is captured separately)
+      const session = appStore.getState().createSession(driverName, effectiveCwd, undefined, undefined, 1);
       if (!session) {
         debugLog("relay: failed to create planning session");
         return;
@@ -838,8 +886,20 @@ export class RelayClient extends EventEmitter {
       appStore.getState().setSessionMeta(session.id, { interactive: false, command });
       this.registerSession(session.id);
 
+      // Safety timeout: force-close planning sessions that run too long
+      const PLANNING_TIMEOUT_MS = 10 * 60 * 1000;
+      const safetyTimer = setTimeout(() => {
+        rawUnsub();
+        rawOutput = "";
+        if (getSessionInstance(session.id)) {
+          debugLog(`relay: planning session ${session.id} timed out after 10min, force closing`);
+          appStore.getState().closeSession(session.id);
+        }
+      }, PLANNING_TIMEOUT_MS);
+
       // In print mode, claude -p exits when done — listen for exit
       const onExit = () => {
+        clearTimeout(safetyTimer);
         rawUnsub();
         // Strip ANSI escape sequences from raw PTY output
         const plainText = stripAnsi(rawOutput).trim();
@@ -1040,9 +1100,14 @@ export class RelayClient extends EventEmitter {
       this.registerSession(session.id);
 
       // Monitor session status for implementation completion
+      const cleanup = () => {
+        session.removeListener("status", onStatus);
+        session.removeListener("exit", onExitFallback);
+      };
+
       const onStatus = (status: string) => {
         if (status === "waiting_input" || status === "exited") {
-          session.removeListener("status", onStatus);
+          cleanup();
 
           const plainText = session.getPlainText(500).join("\n");
 
@@ -1065,7 +1130,31 @@ export class RelayClient extends EventEmitter {
           });
         }
       };
+
+      const onExitFallback = () => {
+        cleanup();
+
+        ticketTracker.updateStatus(msg.ticketId, "done");
+
+        this.send({
+          type: "cli_implementation_done",
+          ticketId: msg.ticketId,
+          sessionId: session.id,
+          summary: "(session exited)",
+          gitContext: { branch: branchName ?? undefined },
+        });
+
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: session.id,
+          status: "done",
+          branchName: branchName ?? undefined,
+        });
+      };
+
       session.on("status", onStatus);
+      session.once("exit", onExitFallback);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: handleStartImplementation error: ${message}`);

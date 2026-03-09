@@ -97,6 +97,7 @@ export function gridToSpans(grid: CellGrid): ScreenContent {
 export class ScreenBuffer {
   private content: ScreenContent = [];
   private dirty = false;
+  private paused = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private listeners: Set<(content: ScreenContent) => void> = new Set();
   private extractGridFn: (() => CellGrid) | null = null;
@@ -127,6 +128,7 @@ export class ScreenBuffer {
 
   start(extractGrid: () => CellGrid): void {
     if (this.timer) return;
+    this.paused = false;
     this.extractGridFn = extractGrid;
     this.interval = Math.floor(1000 / this.targetFps);
     this.timer = setInterval(() => this.flush(), this.interval);
@@ -137,9 +139,28 @@ export class ScreenBuffer {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.paused = false;
     this.extractGridFn = null;
     this.listeners.clear();
     this.content = [];
+  }
+
+  pause(): void {
+    this.paused = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  resume(): void {
+    this.paused = false;
+    if (this.extractGridFn && !this.timer) {
+      this.timer = setInterval(() => this.flush(), this.interval);
+    }
+    if (this.dirty) {
+      this.flush();
+    }
   }
 
   onChange(listener: (content: ScreenContent) => void): () => void {

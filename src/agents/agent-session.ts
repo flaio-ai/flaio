@@ -317,6 +317,14 @@ export class AgentSession extends EventEmitter {
     return this.screenBuffer.getContent();
   }
 
+  pauseScreenBuffer(): void {
+    this.screenBuffer.pause();
+  }
+
+  resumeScreenBuffer(): void {
+    this.screenBuffer.resume();
+  }
+
   getPlainText(maxLines?: number): string[] {
     return this.xterm.extractPlainText(maxLines);
   }

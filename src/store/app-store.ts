@@ -126,6 +126,12 @@ export const appStore = createStore<AppState>((set, get) => ({
       status: "idle",
     };
 
+    const prevActiveId = get().activeSessionId;
+    if (prevActiveId) {
+      const prevInstance = sessionInstances.get(prevActiveId);
+      prevInstance?.pauseScreenBuffer();
+    }
+
     set((prev) => ({
       sessions: [...prev.sessions, state],
       activeSessionId: session.id,
@@ -137,8 +143,11 @@ export const appStore = createStore<AppState>((set, get) => ({
   closeSession: (sessionId: string) => {
     const instance = sessionInstances.get(sessionId);
     if (instance) {
-      instance.kill();
-      sessionInstances.delete(sessionId);
+      try {
+        instance.kill();
+      } finally {
+        sessionInstances.delete(sessionId);
+      }
     }
     permissionPending.delete(sessionId);
 
@@ -150,9 +159,23 @@ export const appStore = createStore<AppState>((set, get) => ({
       }
       return { sessions, activeSessionId };
     });
+
+    // Resume screen buffer for the new active session after closing
+    const newActiveId = get().activeSessionId;
+    if (newActiveId) {
+      const newActiveInstance = sessionInstances.get(newActiveId);
+      newActiveInstance?.resumeScreenBuffer();
+    }
   },
 
   switchSession: (sessionId: string) => {
+    const prevActiveId = get().activeSessionId;
+    if (prevActiveId && prevActiveId !== sessionId) {
+      const prevInstance = sessionInstances.get(prevActiveId);
+      prevInstance?.pauseScreenBuffer();
+    }
+    const nextInstance = sessionInstances.get(sessionId);
+    nextInstance?.resumeScreenBuffer();
     set({ activeSessionId: sessionId });
   },
 
@@ -300,6 +323,12 @@ export const appStore = createStore<AppState>((set, get) => ({
       cwd,
       status: "starting",
     };
+
+    const prevActiveId = get().activeSessionId;
+    if (prevActiveId) {
+      const prevInstance = sessionInstances.get(prevActiveId);
+      prevInstance?.pauseScreenBuffer();
+    }
 
     set((prev) => ({
       sessions: [...prev.sessions, state],
