@@ -1,5 +1,7 @@
 import { PostHog } from "posthog-node";
 import os from "node:os";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { settingsStore } from "../store/settings-store.js";
 
@@ -7,6 +9,20 @@ const POSTHOG_KEY = "phc_MM65qMuiRmhUo4kV9KrwWzHxbgiUWQ4bIGSga4Sg21f";
 
 let posthog: PostHog | null = null;
 let currentDistinctId: string | null = null;
+let cliVersion: string | null = null;
+
+function getCliVersion(): string {
+  if (!cliVersion) {
+    try {
+      const pkgPath = new URL("../../package.json", import.meta.url);
+      const pkg = JSON.parse(readFileSync(fileURLToPath(pkgPath), "utf-8"));
+      cliVersion = pkg.version ?? "unknown";
+    } catch {
+      cliVersion = "unknown";
+    }
+  }
+  return cliVersion!;
+}
 
 function isTelemetryEnabled(): boolean {
   if (process.env.FLAIO_TELEMETRY === "off") return false;
@@ -41,6 +57,7 @@ export function identifyCliUser(uid: string): void {
     distinctId: uid,
     properties: {
       platform: "cli",
+      cliVersion: getCliVersion(),
       os: os.platform(),
       arch: os.arch(),
       nodeVersion: process.version,
@@ -63,6 +80,7 @@ export function trackCliEvent(
     event,
     properties: {
       platform: "cli",
+      cliVersion: getCliVersion(),
       ...properties,
     },
   });

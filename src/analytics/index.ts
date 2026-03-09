@@ -5,7 +5,14 @@ export {
   trackCliEvent,
   flushAndShutdown,
 } from "./posthog.js";
-export { initSentry, setSentryUser, clearSentryUser } from "./sentry.js";
+export {
+  initSentry,
+  setSentryUser,
+  clearSentryUser,
+  startSpan,
+  startSpanAsync,
+  startTransaction,
+} from "./sentry.js";
 export { startResourceMonitor, stopResourceMonitor } from "./resource-monitor.js";
 
 import { initPostHog, flushAndShutdown, identifyCliUser } from "./posthog.js";

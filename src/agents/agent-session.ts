@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type * as Sentry from "@sentry/node";
 import { PtyManager } from "../terminal/pty-manager.js";
 import { XtermBridge } from "../terminal/xterm-bridge.js";
 import { ScreenBuffer, type ScreenContent } from "../terminal/screen-buffer.js";
@@ -14,6 +15,7 @@ import {
   type HookEvent,
 } from "./sideband/status-resolver.js";
 import { sessionMetadataStore, type SessionMetadata } from "./session-metadata.js";
+import { trackCliEvent, startSpanAsync, startTransaction } from "../analytics/index.js";
 
 /** Map a basic AgentStatus to a DetailedStatus for PTY polling fallback. */
 function statusToDetailed(status: AgentStatus): DetailedStatus {
@@ -49,6 +51,10 @@ export class AgentSession extends EventEmitter {
   private sidebandActive = false;
   /** Timestamp of the last hook event received. */
   private lastHookTime = 0;
+
+  // Analytics
+  private sessionSpan: Sentry.Span | null = null;
+  private sessionStartTime: number | null = null;
 
   constructor(
     private driver: BaseDriver,
@@ -97,6 +103,15 @@ export class AgentSession extends EventEmitter {
 
     this.pty.on("exit", (code) => {
       this.stopStatusChecking();
+
+      // End session span and track exit
+      this.sessionSpan?.end();
+      trackCliEvent("cli_session_exited", {
+        driver: this.driverName,
+        exitCode: code,
+        durationMs: this.sessionStartTime ? Date.now() - this.sessionStartTime : undefined,
+      });
+
       this.setStatus("exited");
       this._detailedStatus = { state: "exited" };
       this._currentTool = undefined;
@@ -111,6 +126,7 @@ export class AgentSession extends EventEmitter {
 
     // Wire sideband hook events (priority 1)
     this.sideband.on("hook", (event: HookEvent) => {
+      const prevStatus = this._status;
       this.sidebandActive = true;
       this.lastHookTime = Date.now();
       const resolver = this.driverName === "gemini"
@@ -118,6 +134,16 @@ export class AgentSession extends EventEmitter {
         : resolveFromClaudeHook;
       const resolved = resolver(event);
       this.applyResolvedStatus(resolved);
+
+      if (resolved.agentStatus !== prevStatus) {
+        trackCliEvent("cli_status_transition", {
+          driver: this.driverName,
+          from: prevStatus,
+          to: resolved.agentStatus,
+          source: "sideband_hook",
+          toolName: resolved.toolName,
+        });
+      }
     });
 
     // Wire sideband metadata events
@@ -173,10 +199,12 @@ export class AgentSession extends EventEmitter {
     allowedTools?: string[];
     model?: string;
   }): Promise<void> {
+    this.sessionSpan = startTransaction("agent-session", "session.lifecycle");
+    this.sessionStartTime = Date.now();
     this.setStatus("starting");
 
     // Start sideband before spawning so the temp dir is ready
-    await this.sideband.start();
+    await startSpanAsync("sideband.start", "session.setup", () => this.sideband.start());
 
     const config = this.driver.buildSpawnArgs({
       cwd: this.cwd,
@@ -198,6 +226,12 @@ export class AgentSession extends EventEmitter {
     this.screenBuffer.start(() => this.xterm.extractGrid());
     this.startStatusChecking();
     this.setStatus("running");
+
+    trackCliEvent("cli_session_spawned", {
+      driver: this.driverName,
+      mode: options?.mode ?? "interactive",
+      model: options?.model,
+    });
   }
 
   async resume(sessionId: string, prompt?: string): Promise<void> {
@@ -303,7 +337,19 @@ export class AgentSession extends EventEmitter {
       // When hooks are active and recent (within 10s), trust them over PTY polling
       if (this.sidebandActive && (Date.now() - this.lastHookTime) < 10_000) return;
       const idleMs = this.lastOutputTime > 0 ? Date.now() - this.lastOutputTime : 0;
+      const prevStatus = this._status;
       const detected = this.driver.detectStatus(this.recentOutput, idleMs);
+
+      if (detected !== prevStatus) {
+        trackCliEvent("cli_status_transition", {
+          driver: this.driverName,
+          from: prevStatus,
+          to: detected,
+          idleMs,
+          source: "pty_poll",
+        });
+      }
+
       // Update both status AND detailedStatus to keep them in sync
       const detailed = statusToDetailed(detected);
       this.applyResolvedStatus({ agentStatus: detected, detailed });

@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { trackCliEvent } from "./posthog.js";
 import { captureException } from "./sentry.js";
 
@@ -9,6 +10,7 @@ let sampleTimer: ReturnType<typeof setInterval> | null = null;
 let reportTimer: ReturnType<typeof setInterval> | null = null;
 let baselineHeap: number | null = null;
 let alertedThresholds = new Set<number>();
+let eventLoopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
 
 // Accumulator for samples between reports
 let samples: { heapUsed: number; rss: number; userCpu: number; systemCpu: number }[] = [];
@@ -21,6 +23,10 @@ export function startResourceMonitor(): void {
   alertedThresholds = new Set();
   samples = [];
   lastCpuUsage = process.cpuUsage();
+
+  // Monitor event loop delay (resolution: 20ms)
+  eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
+  eventLoopHistogram.enable();
 
   sampleTimer = setInterval(() => {
     const mem = process.memoryUsage();
@@ -70,8 +76,14 @@ export function startResourceMonitor(): void {
       totalUserCpuMs: Math.round(totalUserCpu / 1000),
       totalSystemCpuMs: Math.round(totalSystemCpu / 1000),
       sampleCount: samples.length,
+      // Event loop lag metrics (in ms)
+      eventLoopP50Ms: eventLoopHistogram ? Math.round(eventLoopHistogram.percentile(50) / 1e6) : null,
+      eventLoopP95Ms: eventLoopHistogram ? Math.round(eventLoopHistogram.percentile(95) / 1e6) : null,
+      eventLoopP99Ms: eventLoopHistogram ? Math.round(eventLoopHistogram.percentile(99) / 1e6) : null,
+      eventLoopMaxMs: eventLoopHistogram ? Math.round(eventLoopHistogram.max / 1e6) : null,
     });
 
+    eventLoopHistogram?.reset();
     samples = [];
   }, REPORT_INTERVAL_MS);
   reportTimer.unref();
@@ -85,6 +97,10 @@ export function stopResourceMonitor(): void {
   if (reportTimer) {
     clearInterval(reportTimer);
     reportTimer = null;
+  }
+  if (eventLoopHistogram) {
+    eventLoopHistogram.disable();
+    eventLoopHistogram = null;
   }
   samples = [];
   baselineHeap = null;
