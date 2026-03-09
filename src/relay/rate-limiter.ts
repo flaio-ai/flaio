@@ -3,6 +3,9 @@
  */
 export class RateLimiter {
   private buckets = new Map<string, { tokens: number; lastRefill: number }>();
+  private lastEviction = 0;
+  private static readonly EVICT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+  private static readonly STALE_MS = 60 * 60 * 1000; // 1 hour
 
   constructor(
     private maxTokens: number,
@@ -15,6 +18,13 @@ export class RateLimiter {
    */
   allow(key: string): boolean {
     const now = Date.now();
+
+    // Periodic stale bucket cleanup
+    if (now - this.lastEviction > RateLimiter.EVICT_INTERVAL_MS) {
+      this.lastEviction = now;
+      this.evictStale(now);
+    }
+
     let bucket = this.buckets.get(key);
 
     if (!bucket) {
@@ -41,5 +51,13 @@ export class RateLimiter {
 
   clear(): void {
     this.buckets.clear();
+  }
+
+  private evictStale(now: number): void {
+    for (const [key, bucket] of this.buckets) {
+      if (now - bucket.lastRefill > RateLimiter.STALE_MS) {
+        this.buckets.delete(key);
+      }
+    }
   }
 }

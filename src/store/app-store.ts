@@ -215,16 +215,23 @@ export const appStore = createStore<AppState>((set, get) => ({
 
   updateSessionDetailed: (sessionId: string, detailed: DetailedStatus, toolName?: string) => {
     // When sideband reports a state other than waiting_permission,
-    // clear the permission guard so updateSessionStatus isn't blocked
-    if (detailed.state !== "waiting_permission" && permissionPending.has(sessionId)) {
+    // clear the permission guard and also sync the status field.
+    // This is necessary because the connector-store sets status directly
+    // in the store without updating AgentSession._status, so the
+    // change-detection in setStatus() may have suppressed the event.
+    const guardCleared = detailed.state !== "waiting_permission" && permissionPending.has(sessionId);
+    if (guardCleared) {
       permissionPending.delete(sessionId);
     }
-    // Skip no-op updates
     const current = get().sessions.find((s) => s.id === sessionId);
-    if (current?.detailedStatus?.state === detailed.state && current?.currentTool === toolName) return;
+    // Skip no-op updates (unless we need to sync status after clearing guard)
+    const statusNeedsSync = guardCleared && current?.status !== detailed.state;
+    if (!statusNeedsSync && current?.detailedStatus?.state === detailed.state && current?.currentTool === toolName) return;
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
-        s.id === sessionId ? { ...s, detailedStatus: detailed, currentTool: toolName } : s,
+        s.id === sessionId
+          ? { ...s, detailedStatus: detailed, currentTool: toolName, ...(statusNeedsSync ? { status: detailed.state as AgentStatus } : {}) }
+          : s,
       ),
     }));
   },

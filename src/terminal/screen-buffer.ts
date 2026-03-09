@@ -104,7 +104,7 @@ export class ScreenBuffer {
   private lastFlushTime = 0;
   private interval = 0;
 
-  constructor(private targetFps: number = 30) {}
+  constructor(private targetFps: number = 15) {}
 
   markDirty(): void {
     this.dirty = true;

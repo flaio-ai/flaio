@@ -127,8 +127,11 @@ export class SidebandReceiver extends EventEmitter {
 
       for (const line of lines) {
         try {
-          const parsed = JSON.parse(line) as HookEvent;
-          this.emit("hook", parsed);
+          const raw = JSON.parse(line) as Record<string, unknown>;
+          const parsed = normalizeHookEvent(raw);
+          if (parsed.hook) {
+            this.emit("hook", parsed);
+          }
         } catch {
           // Skip malformed lines
         }
@@ -170,6 +173,23 @@ export class SidebandReceiver extends EventEmitter {
 // ---------------------------------------------------------------------------
 // Normalize snake_case keys from status line JSON → camelCase SessionMetadata
 // ---------------------------------------------------------------------------
+
+/**
+ * Normalize a raw JSON object from events.jsonl into a HookEvent.
+ * Claude Code's stdin JSON uses snake_case (tool_name, session_id),
+ * while our HookEvent interface uses camelCase (toolName, sessionId).
+ */
+function normalizeHookEvent(raw: Record<string, unknown>): HookEvent {
+  return {
+    hook: raw.hook as string,
+    sessionId: (raw.sessionId ?? raw.session_id) as string | undefined,
+    toolName: (raw.toolName ?? raw.tool_name) as string | undefined,
+    error: raw.error as string | undefined,
+    notificationType: (raw.notificationType ?? raw.notification_type) as string | undefined,
+    model: raw.model as string | undefined,
+    raw,
+  };
+}
 
 function normalizeMetadata(raw: Record<string, unknown>): SessionMetadata {
   const model = raw.model as Record<string, unknown> | undefined;

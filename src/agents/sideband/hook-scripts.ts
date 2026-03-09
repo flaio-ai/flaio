@@ -14,14 +14,19 @@ const HOOK_DIR = path.join(os.homedir(), ".config", "flaio", "hooks");
 
 /**
  * Shell script that appends hook JSON from stdin to the sideband events file.
+ * Accepts the hook event name as $1 and injects it into the JSON.
  * No-op when FLAIO_SIDEBAND_DIR is not set (safe for normal CLI usage).
  */
 const RELAY_HOOK_SH = `#!/bin/sh
 # Support both new and legacy env var names
-dir="\${FLAIO_SIDEBAND_DIR:-$CODE_RELAY_SIDEBAND_DIR}"
+dir="\${FLAIO_SIDEBAND_DIR:-\$CODE_RELAY_SIDEBAND_DIR}"
 [ -z "$dir" ] && exit 0
-cat >> "$dir/events.jsonl"
-printf '\\n' >> "$dir/events.jsonl"
+hook="\$1"
+[ -z "$hook" ] && exit 0
+input=$(cat)
+[ -z "$input" ] && exit 0
+# Inject the hook event name at the start of the JSON object
+printf '%s\\n' "$input" | sed "s/^{/{\\"hook\\":\\"$hook\\",/" >> "$dir/events.jsonl"
 `;
 
 /**
@@ -90,7 +95,7 @@ export function getClaudeHooksConfig(hookPath: string): Record<string, unknown> 
       hooks: [
         {
           type: "command",
-          command: hookPath,
+          command: `${hookPath} ${event}`,
         },
       ],
     };

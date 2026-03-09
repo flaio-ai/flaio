@@ -16,6 +16,7 @@ export interface TrackedTicket {
 export class TicketTracker {
   private ticketMap = new Map<string, TrackedTicket>();
   private sessionToTicket = new Map<string, string>();
+  private cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   startPlanning(
     ticketId: string,
@@ -80,12 +81,46 @@ export class TicketTracker {
     const entry = this.ticketMap.get(ticketId);
     if (entry) {
       entry.status = status;
+
+      // Auto-cleanup completed tickets after 5 minutes
+      if (status === "done") {
+        this.scheduleCleanup(ticketId);
+      } else {
+        // If status changed away from done, cancel pending cleanup
+        const existing = this.cleanupTimers.get(ticketId);
+        if (existing) {
+          clearTimeout(existing);
+          this.cleanupTimers.delete(ticketId);
+        }
+      }
     }
+  }
+
+  private scheduleCleanup(ticketId: string): void {
+    const existing = this.cleanupTimers.get(ticketId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.cleanupTimers.delete(ticketId);
+      const entry = this.ticketMap.get(ticketId);
+      if (entry?.status === "done") {
+        void this.remove(ticketId);
+      }
+    }, 5 * 60 * 1000);
+    timer.unref();
+    this.cleanupTimers.set(ticketId, timer);
   }
 
   async remove(ticketId: string): Promise<void> {
     const entry = this.ticketMap.get(ticketId);
     if (!entry) return;
+
+    // Clear any pending cleanup timer
+    const timer = this.cleanupTimers.get(ticketId);
+    if (timer) {
+      clearTimeout(timer);
+      this.cleanupTimers.delete(ticketId);
+    }
 
     // Clean up worktree if one exists
     if (entry.worktreePath && entry.originalCwd) {
@@ -109,6 +144,14 @@ export class TicketTracker {
       }
     }
     return [...cwds];
+  }
+
+  /** Clear all pending cleanup timers (for shutdown) */
+  clearTimers(): void {
+    for (const timer of this.cleanupTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cleanupTimers.clear();
   }
 }
 

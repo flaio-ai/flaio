@@ -75,13 +75,14 @@ export class GeminiDriver extends BaseDriver {
       return "waiting_input";
     }
 
-    // Spinner characters indicate activity
-    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(raw)) {
+    // Only check for spinner in the last ~80 chars (current line area)
+    const tail = raw.slice(-80);
+    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(tail)) {
       return "running";
     }
 
-    // No output for 3+ seconds likely means waiting for input
-    if (idleMs > 3000) {
+    // No output for 5+ seconds likely means waiting for input
+    if (idleMs > 5000) {
       return "waiting_input";
     }
 

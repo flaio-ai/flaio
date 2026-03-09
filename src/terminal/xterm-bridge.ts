@@ -92,8 +92,12 @@ export class XtermBridge {
   private terminal: InstanceType<typeof Terminal>;
   /** Bound _innerWrite if available — used to flush the write buffer synchronously. */
   private flushWriteBuffer: (() => void) | null;
+  /** Pre-allocated grid buffer — reused across extractGrid calls to avoid GC pressure. */
+  private gridBuffer: CellGrid = [];
+  private gridCols = 0;
+  private gridRows = 0;
 
-  constructor(cols: number = 120, rows: number = 40, scrollback: number = 10_000) {
+  constructor(cols: number = 120, rows: number = 40, scrollback: number = 5_000) {
     this.terminal = new Terminal({
       cols,
       rows,
@@ -106,6 +110,21 @@ export class XtermBridge {
     this.flushWriteBuffer = typeof wb?._innerWrite === "function"
       ? wb._innerWrite.bind(wb)
       : null;
+
+    this.allocateGrid(cols, rows);
+  }
+
+  private allocateGrid(cols: number, rows: number): void {
+    this.gridBuffer = [];
+    for (let y = 0; y < rows; y++) {
+      const row: Cell[] = [];
+      for (let x = 0; x < cols; x++) {
+        row.push({ char: " ", fg: undefined, bg: undefined, bold: false, italic: false, underline: false, dim: false, inverse: false, strikethrough: false });
+      }
+      this.gridBuffer.push(row);
+    }
+    this.gridCols = cols;
+    this.gridRows = rows;
   }
 
   write(data: string, callback?: () => void): void {
@@ -127,26 +146,53 @@ export class XtermBridge {
   }
 
   resize(cols: number, rows: number): void {
+    if (cols === this.terminal.cols && rows === this.terminal.rows) return;
     this.terminal.resize(cols, rows);
+    this.allocateGrid(cols, rows);
   }
 
   extractGrid(): CellGrid {
+    // Reallocate grid if dimensions drifted (e.g. resize called externally)
+    if (this.gridCols !== this.terminal.cols || this.gridRows !== this.terminal.rows) {
+      this.allocateGrid(this.terminal.cols, this.terminal.rows);
+    }
+
     const buffer = this.terminal.buffer.active;
-    const grid: CellGrid = [];
 
     for (let y = 0; y < this.terminal.rows; y++) {
       const line = buffer.getLine(y + buffer.viewportY);
-      const row: Cell[] = [];
+      const row = this.gridBuffer[y]!;
 
       if (!line) {
-        grid.push([{ char: "", fg: undefined, bg: undefined, bold: false, italic: false, underline: false, dim: false, inverse: false, strikethrough: false }]);
+        for (let x = 0; x < this.terminal.cols; x++) {
+          const target = row[x]!;
+          target.char = " ";
+          target.fg = undefined;
+          target.bg = undefined;
+          target.bold = false;
+          target.italic = false;
+          target.underline = false;
+          target.dim = false;
+          target.inverse = false;
+          target.strikethrough = false;
+        }
         continue;
       }
 
       for (let x = 0; x < this.terminal.cols; x++) {
         const cell = line.getCell(x);
+        const target = row[x]!;
+
         if (!cell) {
-          row.push({ char: " ", fg: undefined, bg: undefined, bold: false, italic: false, underline: false, dim: false, inverse: false, strikethrough: false });
+          target.char = " ";
+          target.fg = undefined;
+          target.bg = undefined;
+          target.bold = false;
+          target.italic = false;
+          target.underline = false;
+          target.dim = false;
+          target.inverse = false;
+          target.strikethrough = false;
           continue;
         }
 
@@ -155,37 +201,19 @@ export class XtermBridge {
         const ext = (cell as any).extended;
         const extVal: number = ext?._ext ?? 0;
 
-        const fg = extractColor(fgPacked, FG_CM_MASK, FG_CM_SHIFT);
-        const bg = extractColor(bgPacked, BG_CM_MASK, BG_CM_SHIFT);
-
-        const bold = (fgPacked & FG_BOLD) !== 0;
-        const inverse = (fgPacked & FG_INVERSE) !== 0;
-        const strikethrough = (fgPacked & FG_STRIKETHROUGH) !== 0;
-
-        const italic = (bgPacked & BG_ITALIC) !== 0;
-        const dim = (bgPacked & BG_DIM) !== 0;
-
-        // Underline: check if ext has a non-zero underline style (bits 26-29)
-        const underlineStyle = (extVal >> 26) & 0x7;
-        const underline = underlineStyle > 0;
-
-        row.push({
-          char: cell.getChars() || " ",
-          fg,
-          bg,
-          bold,
-          italic,
-          underline,
-          dim,
-          inverse,
-          strikethrough,
-        });
+        target.char = cell.getChars() || " ";
+        target.fg = extractColor(fgPacked, FG_CM_MASK, FG_CM_SHIFT);
+        target.bg = extractColor(bgPacked, BG_CM_MASK, BG_CM_SHIFT);
+        target.bold = (fgPacked & FG_BOLD) !== 0;
+        target.inverse = (fgPacked & FG_INVERSE) !== 0;
+        target.strikethrough = (fgPacked & FG_STRIKETHROUGH) !== 0;
+        target.italic = (bgPacked & BG_ITALIC) !== 0;
+        target.dim = (bgPacked & BG_DIM) !== 0;
+        target.underline = ((extVal >> 26) & 0x7) > 0;
       }
-
-      grid.push(row);
     }
 
-    return grid;
+    return this.gridBuffer;
   }
 
   get cursorX(): number {

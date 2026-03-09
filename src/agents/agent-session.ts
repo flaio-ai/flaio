@@ -51,6 +51,8 @@ export class AgentSession extends EventEmitter {
   private sidebandActive = false;
   /** Timestamp of the last hook event received. */
   private lastHookTime = 0;
+  /** Timestamp of the last status change — used for hysteresis in PTY polling. */
+  private lastStatusChangeTime = 0;
 
   // Analytics
   private sessionSpan: Sentry.Span | null = null;
@@ -180,6 +182,7 @@ export class AgentSession extends EventEmitter {
   private setStatus(status: AgentStatus): void {
     if (this._status === status) return;
     this._status = status;
+    this.lastStatusChangeTime = Date.now();
     this.emit("status", status);
   }
 
@@ -347,6 +350,14 @@ export class AgentSession extends EventEmitter {
       const idleMs = this.lastOutputTime > 0 ? Date.now() - this.lastOutputTime : 0;
       const prevStatus = this._status;
       const detected = this.driver.detectStatus(this.recentOutput, idleMs);
+
+      // Hysteresis: require 2s stability before transitioning from waiting_input
+      // back to running via PTY poll. This prevents the orange→green→orange flicker
+      // caused by brief output bursts (cursor blink, status redraws) resetting the
+      // idle timer while the agent is actually idle.
+      if (prevStatus === "waiting_input" && detected === "running") {
+        if (Date.now() - this.lastStatusChangeTime < 2000) return;
+      }
 
       if (detected !== prevStatus) {
         trackCliEvent("cli_status_transition", {

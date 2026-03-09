@@ -1,3 +1,5 @@
+import path from "node:path";
+import os from "node:os";
 import { createStore } from "zustand/vanilla";
 import { ConnectorManager } from "../connectors/connector-manager.js";
 import { SlackAdapter, type SlackConfig } from "../connectors/adapters/slack-adapter.js";
@@ -7,6 +9,12 @@ import { PortalServer } from "../portal/portal-server.js";
 import { RelayClient } from "../relay/relay-client.js";
 import { setRelayLoggedIn, clearSessionState } from "../relay/relay-store.js";
 import { installHooks } from "../hooks/install.js";
+import {
+  installHookScripts,
+  getClaudeHooksConfig,
+  getClaudeStatusLineConfig,
+  mergeSettingsFile,
+} from "../agents/sideband/hook-scripts.js";
 import { appStore, getSessionInstance, setPermissionPending, clearPermissionPending } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
@@ -124,8 +132,19 @@ export async function startConnectors(): Promise<void> {
     settingsStore.getState().load();
   }
 
-  // Install/upgrade hooks in ~/.claude/settings.json (replaces legacy hooks)
+  // Install/upgrade IPC hooks (PermissionRequest, PostToolUse, Notification)
   installHooks({ silent: true });
+
+  // Install sideband hooks for all Claude Code events (status detection)
+  try {
+    const { hookPath, statusLinePath } = await installHookScripts();
+    const claudeSettingsPath = path.join(os.homedir(), ".claude", "settings.json");
+    const hooksCfg = getClaudeHooksConfig(hookPath);
+    const statusLineCfg = getClaudeStatusLineConfig(statusLinePath);
+    await mergeSettingsFile(claudeSettingsPath, { ...hooksCfg, ...statusLineCfg });
+  } catch {
+    // Best effort — sideband hooks are optional, PTY polling is the fallback
+  }
 
   await hookServer.start();
   await portalServer.start();
@@ -294,7 +313,9 @@ function wireHookBridge(): void {
             });
         } finally {
           clearPermissionPending(sessionId);
-          appStore.getState().updateSessionStatus(sessionId, "running");
+          // Don't force status to "running" — let sideband hooks or PTY polling
+          // determine the correct status. The guard is cleared, so the next
+          // status update will go through naturally.
         }
       })();
     },

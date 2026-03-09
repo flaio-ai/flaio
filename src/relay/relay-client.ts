@@ -89,9 +89,11 @@ class SessionRingBuffer {
   private size = 0;
   private capacity: number;
   private maxBytes: number;
+  private initialCapacity: number;
 
   constructor(maxBytes: number, initialCapacity = 256) {
     this.maxBytes = maxBytes;
+    this.initialCapacity = initialCapacity;
     this.capacity = initialCapacity;
     this.chunks = new Array(initialCapacity).fill(null);
   }
@@ -104,6 +106,9 @@ class SessionRingBuffer {
       this.count--;
       this.size -= removed.length;
     }
+
+    // Shrink if capacity is oversized after evictions
+    this.maybeShrink();
 
     if (this.count === this.capacity) {
       this.grow();
@@ -133,6 +138,20 @@ class SessionRingBuffer {
     this.head = 0;
     this.tail = this.count;
     this.capacity = newCapacity;
+  }
+
+  private maybeShrink(): void {
+    if (this.capacity > this.initialCapacity && this.count < this.capacity / 4) {
+      const newCapacity = Math.max(this.initialCapacity, Math.floor(this.capacity / 2));
+      const newChunks: (string | null)[] = new Array(newCapacity).fill(null);
+      for (let i = 0; i < this.count; i++) {
+        newChunks[i] = this.chunks[(this.head + i) % this.capacity];
+      }
+      this.chunks = newChunks;
+      this.head = 0;
+      this.tail = this.count;
+      this.capacity = newCapacity;
+    }
   }
 }
 
@@ -903,6 +922,7 @@ export class RelayClient extends EventEmitter {
         rawUnsub();
         // Strip ANSI escape sequences from raw PTY output
         const plainText = stripAnsi(rawOutput).trim();
+        rawOutput = ""; // Release for GC — can be up to 2MB
 
         ticketTracker.updateStatus(msg.ticketId, "plan_ready");
 
@@ -1359,15 +1379,29 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private async watchSessions(): Promise<void> {
-    let prevIds = new Set(appStore.getState().sessions.map((s) => s.id));
+    let prevIdList = appStore.getState().sessions.map((s) => s.id);
 
     // Track existing sessions
     for (const s of appStore.getState().sessions) {
       await this.trackSession(s.id);
     }
 
-    this.storeUnsub = appStore.subscribe((state) => {
-      const currentIds = new Set(state.sessions.map((s) => s.id));
+    this.storeUnsub = appStore.subscribe((state, prevState) => {
+      // Skip if session list reference unchanged (status/metadata-only updates)
+      if (state.sessions === prevState.sessions) return;
+
+      const currentIdList = state.sessions.map((s) => s.id);
+
+      // Fast path: same length and same IDs in order → no add/remove
+      if (
+        currentIdList.length === prevIdList.length &&
+        currentIdList.every((id, i) => id === prevIdList[i])
+      ) {
+        return;
+      }
+
+      const prevIds = new Set(prevIdList);
+      const currentIds = new Set(currentIdList);
 
       // New sessions
       for (const id of currentIds) {
@@ -1401,7 +1435,7 @@ export class RelayClient extends EventEmitter {
         }
       }
 
-      prevIds = currentIds;
+      prevIdList = currentIdList;
     });
   }
 
