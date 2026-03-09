@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { stripAnsi } from "../../strip-ansi.js";
 
 export type AgentStatus = "idle" | "starting" | "running" | "waiting_input" | "waiting_permission" | "exited";
 
@@ -57,7 +58,6 @@ export abstract class BaseDriver {
 
   /** Strip ANSI escape sequences from text for pattern matching */
   protected stripAnsi(text: string): string {
-    // eslint-disable-next-line no-control-regex
-    return text.replace(/\x1B(?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\[[0-9;]*m)/g, "");
+    return stripAnsi(text);
   }
 }

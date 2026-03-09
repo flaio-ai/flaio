@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+process.title = "flaio";
+
 import React from "react";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -34,6 +36,10 @@ import { listTickets, getTicket, updateTicket } from "./api/ticket-client.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
 
+// Expose version and PID to child processes and diagnostics
+process.env.FLAIO_VERSION = pkg.version;
+process.env.FLAIO_PID = String(process.pid);
+
 const program = new Command();
 
 // Initialize analytics early (before command parsing)
@@ -45,6 +51,8 @@ program
   .version(pkg.version, "-v, --version")
   .action(() => {
     trackCliEvent("cli_session_started");
+    // Set terminal window/tab title
+    process.stdout.write(`\x1b]0;flaio v${pkg.version}\x07`);
     // Enter alternate screen buffer (like vim/less) so we own the full screen
     process.stdout.write("\x1B[?1049h");
     // Hide the hardware cursor — agents render their own cursor in ANSI output
@@ -80,6 +88,8 @@ program
     });
 
     process.on("SIGTERM", () => {
+      cleanup();
+      process.stderr.write("[flaio] Received SIGTERM, shutting down...\n");
       instance.unmount();
     });
   });
