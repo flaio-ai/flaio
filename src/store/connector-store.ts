@@ -485,6 +485,7 @@ function wireSessionNotifications(): void {
 
       if (prev !== s.status) {
         prevStatuses.set(s.id, s.status);
+        const transitionTime = Date.now();
 
         // Detect meaningful transitions
         if (prev === "starting" && s.status === "running") {
@@ -494,6 +495,14 @@ function wireSessionNotifications(): void {
               type: "started",
               message: `Session started (${s.displayName})`,
               cwd: s.cwd,
+            })
+            .then(() => {
+              trackCliEvent("cli_notification_sent", {
+                connector: "all",
+                transition: `${prev} → ${s.status}`,
+                sessionId: s.id,
+                durationMs: Date.now() - transitionTime,
+              });
             })
             .catch((err) => {
               debugLog(`started notification failed for ${s.id}:`, String(err));
@@ -539,6 +548,14 @@ function wireSessionNotifications(): void {
                     type: "response",
                     message: response,
                     cwd,
+                  })
+                  .then(() => {
+                    trackCliEvent("cli_notification_sent", {
+                      connector: "all",
+                      transition: `${prev} → ${isExited ? "exited" : "waiting_input"}`,
+                      sessionId,
+                      durationMs: Date.now() - transitionTime,
+                    });
                   })
                   .catch((err) => {
                     debugLog(`response post failed for ${sessionId}:`, String(err));

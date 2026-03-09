@@ -46,6 +46,9 @@ import { makeDebugLog } from "../connectors/debug.js";
 import { RelayToCliMsgSchema } from "./relay-message-schemas.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { sessionMetadataStore } from "../agents/session-metadata.js";
+import { trackCliEvent, startTransaction } from "../analytics/index.js";
+import * as Sentry from "@sentry/node";
+import type { Span } from "@sentry/node";
 
 const debugLog = makeDebugLog("relay");
 
@@ -144,6 +147,10 @@ export class RelayClient extends EventEmitter {
 
   private started = false;
 
+  // Analytics
+  private lastPingTime = 0;
+  private connectSpan: Span | null = null;
+
   // Rate limiters
   private inputLimiter = new RateLimiter(30, 30); // 30 inputs/sec per key
   private browseLimiter = new RateLimiter(10, 10); // 10 browse requests/sec
@@ -226,6 +233,7 @@ export class RelayClient extends EventEmitter {
     }
 
     setRelayConnectionStatus("connecting");
+    this.connectSpan = startTransaction("relay.connect", "websocket.connect");
 
     try {
       // Clean up previous WebSocket if it exists (e.g. on reconnect)
@@ -245,9 +253,14 @@ export class RelayClient extends EventEmitter {
 
       this.ws.on("open", () => {
         debugLog("relay: connected to relay server");
+        this.connectSpan?.end();
+        this.connectSpan = null;
         setRelayConnectionStatus("authenticating");
         this.send({ type: "cli_auth", token: token! });
         this.startHeartbeat();
+        trackCliEvent("cli_relay_connected", {
+          attempt: this.reconnectAttempt,
+        });
       });
 
       this.ws.on("message", (raw) => {
@@ -283,6 +296,11 @@ export class RelayClient extends EventEmitter {
 
       this.ws.on("error", (err) => {
         debugLog(`relay: WebSocket error: ${err.message}`);
+        if (this.connectSpan) {
+          this.connectSpan.setStatus({ code: 2, message: err.message });
+          this.connectSpan.end();
+          this.connectSpan = null;
+        }
         setRelayConnectionStatus("error", err.message);
       });
     } catch (err) {
@@ -351,6 +369,12 @@ export class RelayClient extends EventEmitter {
         break;
 
       case "relay_ping":
+        if (this.lastPingTime > 0) {
+          const latencyMs = Date.now() - this.lastPingTime;
+          trackCliEvent("cli_relay_latency", { latencyMs });
+          Sentry.setMeasurement("relay.ping_latency", latencyMs, "millisecond");
+        }
+        this.lastPingTime = Date.now();
         this.send({ type: "cli_pong" });
         this.resetPongTimer();
         break;
@@ -1165,6 +1189,8 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private async sendPtyData(tracked: TrackedSession, rawData: string): Promise<void> {
+    const encryptStart = performance.now();
+
     if (tracked.sck) {
       // E2E enabled — encrypt with SCK
       try {
@@ -1177,6 +1203,17 @@ export class RelayClient extends EventEmitter {
           data: encrypted,
           seq,
         });
+
+        // Sample 1 in 100 to avoid event flood
+        if (Math.random() < 0.01) {
+          const encryptMs = performance.now() - encryptStart;
+          trackCliEvent("cli_pty_data_sent", {
+            sessionId: tracked.sessionId,
+            dataLenBytes: rawData.length,
+            encrypted: true,
+            encryptMs: Math.round(encryptMs * 100) / 100,
+          });
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         debugLog(`relay: encrypt PTY data failed: ${message}`);
@@ -1194,6 +1231,16 @@ export class RelayClient extends EventEmitter {
         sessionId: tracked.sessionId,
         data: base64,
       });
+
+      // Sample 1 in 100 to avoid event flood
+      if (Math.random() < 0.01) {
+        trackCliEvent("cli_pty_data_sent", {
+          sessionId: tracked.sessionId,
+          dataLenBytes: rawData.length,
+          encrypted: false,
+          encryptMs: 0,
+        });
+      }
     }
   }
 
@@ -1489,6 +1536,10 @@ export class RelayClient extends EventEmitter {
 
     debugLog(`relay: reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`);
     setRelayConnectionStatus("connecting", undefined, this.reconnectAttempt);
+    trackCliEvent("cli_relay_reconnect", {
+      attempt: this.reconnectAttempt,
+      delayMs: delay,
+    });
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

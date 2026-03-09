@@ -14,10 +14,23 @@ function isCrashReportsEnabled(): boolean {
 export function initSentry(): void {
   if (!isCrashReportsEnabled()) return;
 
+  // Profiling integration — native bindings, optional
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const integrations: any[] = [];
+  try {
+    // @ts-ignore — dynamic require for optional native dependency
+    const { nodeProfilingIntegration } = require("@sentry/profiling-node");
+    integrations.push(nodeProfilingIntegration());
+  } catch {
+    // Profiling unavailable — Sentry still works without it
+  }
+
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: process.env.NODE_ENV ?? "production",
-    tracesSampleRate: 0,
+    tracesSampleRate: 1.0,
+    profilesSampleRate: 1.0,
+    integrations,
   });
 
   process.on("uncaughtException", (err) => {
@@ -48,4 +61,29 @@ export function clearSentryUser(): void {
 export function captureException(err: unknown): void {
   if (!isCrashReportsEnabled()) return;
   Sentry.captureException(err);
+}
+
+// ---------------------------------------------------------------------------
+// Span instrumentation helpers
+// ---------------------------------------------------------------------------
+
+export function startSpan<T>(
+  name: string,
+  op: string,
+  fn: (span: Sentry.Span) => T,
+): T {
+  return Sentry.startSpan({ name, op }, fn);
+}
+
+export async function startSpanAsync<T>(
+  name: string,
+  op: string,
+  fn: (span: Sentry.Span) => Promise<T>,
+): Promise<T> {
+  return Sentry.startSpan({ name, op }, fn);
+}
+
+/** Fire-and-forget span for long-running operations (sessions, connections). */
+export function startTransaction(name: string, op: string): Sentry.Span {
+  return Sentry.startInactiveSpan({ name, op, forceTransaction: true });
 }

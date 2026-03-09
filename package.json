@@ -52,6 +52,7 @@
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
     "@sentry/node": "^10.42.0",
+    "@sentry/profiling-node": "^10.42.0",
     "@slack/socket-mode": "^2.0.5",
     "@slack/web-api": "^7.14.1",
     "@xterm/headless": "^5.5.0",
