@@ -317,7 +317,10 @@ function wireHookBridge(): void {
           // determine the correct status. The guard is cleared, so the next
           // status update will go through naturally.
         }
-      })();
+      })().catch((err) => {
+        debugLog(`permission handler unexpected error for ${sessionId}:`, String(err));
+        clearPermissionPending(sessionId);
+      });
     },
   );
 

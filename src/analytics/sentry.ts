@@ -39,6 +39,10 @@ export function initSentry(): void {
       error: err.message,
       type: "uncaughtException",
     });
+    // Flush synchronously so the event reaches Sentry before the process dies
+    void Sentry.flush(2000).finally(() => {
+      process.exit(1);
+    });
   });
 
   process.on("unhandledRejection", (reason) => {
@@ -47,6 +51,8 @@ export function initSentry(): void {
       error: reason instanceof Error ? reason.message : String(reason),
       type: "unhandledRejection",
     });
+    // Flush so the event actually reaches Sentry
+    void Sentry.flush(2000);
   });
 }
 

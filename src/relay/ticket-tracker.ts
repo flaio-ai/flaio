@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { removeWorktree } from "./worktree-manager.js";
+import { getSessionInstance } from "../store/app-store.js";
 
 export interface TrackedTicket {
   sessionId: string;
@@ -103,9 +104,17 @@ export class TicketTracker {
     const timer = setTimeout(() => {
       this.cleanupTimers.delete(ticketId);
       const entry = this.ticketMap.get(ticketId);
-      if (entry?.status === "done") {
-        void this.remove(ticketId);
+      if (entry?.status !== "done") return;
+
+      // Verify session is actually dead before removing worktree
+      const instance = getSessionInstance(entry.sessionId);
+      if (instance) {
+        // Session still alive — reschedule instead of removing
+        this.scheduleCleanup(ticketId);
+        return;
       }
+
+      void this.remove(ticketId);
     }, 5 * 60 * 1000);
     timer.unref();
     this.cleanupTimers.set(ticketId, timer);

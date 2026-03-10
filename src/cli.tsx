@@ -79,6 +79,9 @@ program
     // Clean up on exit
     instance.waitUntilExit().then(async () => {
       cleanup();
+      // Stop relay client, connectors, and hook server before analytics flush
+      const { stopConnectors } = await import("./store/connector-store.js");
+      await stopConnectors().catch(() => {});
       await shutdownAnalytics();
       process.exit(0);
     });

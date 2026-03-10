@@ -15,7 +15,7 @@ import {
   type RelayRequestChangesMsg,
 } from "./relay-protocol.js";
 import { ticketTracker } from "./ticket-tracker.js";
-import { createWorktree, autoSaveAllWorktrees } from "./worktree-manager.js";
+import { createWorktree, autoSaveAllWorktrees, pruneStaleEntries } from "./worktree-manager.js";
 import {
   setRelayConnectionStatus,
   setSessionEncryptionStatus,
@@ -201,6 +201,8 @@ export class RelayClient extends EventEmitter {
   private shouldReconnect = false;
   private isHandlingAuthFailure = false;
   private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private tokenRefreshRetries = 0;
+  private static readonly MAX_TOKEN_REFRESH_RETRIES = 10;
 
   // Heartbeat state
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -239,6 +241,13 @@ export class RelayClient extends EventEmitter {
     this.started = true;
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
+
+    // Clean up stale worktree manifest entries from previous sessions
+    const projectCwds = ticketTracker.getTrackedProjectCwds();
+    const cwd = projectCwds[0] ?? process.cwd();
+    await pruneStaleEntries(cwd).catch((err) =>
+      debugLog(`relay: worktree prune on startup failed: ${err}`),
+    );
 
     await this.watchSessions();
     await this.connect();
@@ -368,6 +377,17 @@ export class RelayClient extends EventEmitter {
           this.connectSpan = null;
         }
         setRelayConnectionStatus("error", err.message);
+        // Note: "error" is always followed by "close" in the ws library,
+        // so reconnect is handled in the "close" handler. If for some reason
+        // "close" doesn't fire, schedule reconnect as a safety net.
+        setTimeout(() => {
+          if (this.ws && this.shouldReconnect && this.ws.readyState > 1) {
+            debugLog("relay: error handler safety net — forcing reconnect");
+            this.ws = null;
+            this.clearHeartbeat();
+            this.scheduleReconnect();
+          }
+        }, 5000);
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -891,13 +911,12 @@ export class RelayClient extends EventEmitter {
       // calls kill() → xterm.dispose() before we can read it.
       // Cap at 2MB to prevent unbounded memory growth in long planning sessions.
       const RAW_OUTPUT_MAX = 2 * 1024 * 1024;
-      let rawOutput = "";
+      const rawChunks: string[] = [];
+      let rawSize = 0;
       const rawUnsub = session.onRawData((data) => {
-        if (rawOutput.length < RAW_OUTPUT_MAX) {
-          rawOutput += data;
-          if (rawOutput.length > RAW_OUTPUT_MAX) {
-            rawOutput = rawOutput.slice(-RAW_OUTPUT_MAX);
-          }
+        if (rawSize < RAW_OUTPUT_MAX) {
+          rawChunks.push(data);
+          rawSize += data.length;
         }
       });
 
@@ -917,7 +936,8 @@ export class RelayClient extends EventEmitter {
       const PLANNING_TIMEOUT_MS = 10 * 60 * 1000;
       const safetyTimer = setTimeout(() => {
         rawUnsub();
-        rawOutput = "";
+        rawChunks.length = 0;
+        rawSize = 0;
         if (getSessionInstance(session.id)) {
           debugLog(`relay: planning session ${session.id} timed out after 10min, force closing`);
           appStore.getState().closeSession(session.id);
@@ -929,8 +949,9 @@ export class RelayClient extends EventEmitter {
         clearTimeout(safetyTimer);
         rawUnsub();
         // Strip ANSI escape sequences from raw PTY output
-        const plainText = stripAnsi(rawOutput).trim();
-        rawOutput = ""; // Release for GC — can be up to 2MB
+        const plainText = stripAnsi(rawChunks.join("")).trim();
+        rawChunks.length = 0; // Release for GC
+        rawSize = 0;
 
         ticketTracker.updateStatus(msg.ticketId, "plan_ready");
 
@@ -1425,6 +1446,8 @@ export class RelayClient extends EventEmitter {
             if (tracked?.keyPair) {
               this.registerSession(id);
             }
+          }).catch((err) => {
+            debugLog(`relay: trackSession failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
           });
         }
       }
@@ -1691,11 +1714,18 @@ export class RelayClient extends EventEmitter {
     if (newToken) {
       debugLog("relay: token refreshed proactively, reconnecting with new token");
       this.reconnectAttempt = 0;
+      this.tokenRefreshRetries = 0;
       if (this.ws) {
         this.ws.close(1000, "Token refreshed");
       }
     } else {
-      debugLog("relay: proactive token refresh failed, will retry in 1 minute");
+      this.tokenRefreshRetries++;
+      if (this.tokenRefreshRetries >= RelayClient.MAX_TOKEN_REFRESH_RETRIES) {
+        debugLog(`relay: token refresh failed after ${this.tokenRefreshRetries} attempts, giving up`);
+        this.tokenRefreshRetries = 0;
+        return;
+      }
+      debugLog(`relay: proactive token refresh failed (attempt ${this.tokenRefreshRetries}/${RelayClient.MAX_TOKEN_REFRESH_RETRIES}), will retry in 1 minute`);
       this.tokenRefreshTimer = setTimeout(() => {
         this.tokenRefreshTimer = null;
         this.performProactiveRefresh();
