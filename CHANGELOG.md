@@ -1,5 +1,11 @@
 # flaio
 
+## 1.1.1
+
+### Patch Changes
+
+- Fix token refresh: add proactive refresh before expiry and fix reconnect race condition
+
 ## 1.1.0
 
 ### Minor Changes
