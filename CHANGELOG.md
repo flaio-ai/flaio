@@ -1,5 +1,11 @@
 # flaio
 
+## 1.1.0-beta.0
+
+### Minor Changes
+
+- Migrate CLI token refresh from Firebase Auth to custom endpoint with rotating refresh tokens
+
 ## 1.0.15
 
 ### Patch Changes

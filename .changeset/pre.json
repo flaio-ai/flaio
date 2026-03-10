@@ -1,0 +1,10 @@
+{
+  "mode": "pre",
+  "tag": "beta",
+  "initialVersions": {
+    "flaio-cli": "1.0.15"
+  },
+  "changesets": [
+    "clerk-auth-migration"
+  ]
+}
