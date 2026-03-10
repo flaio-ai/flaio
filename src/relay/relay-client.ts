@@ -25,7 +25,7 @@ import {
   getSessionOrgSettings,
   setWorktreeDefaults,
 } from "./relay-store.js";
-import { refreshAuthToken } from "./relay-auth.js";
+import { refreshAuthToken, getTokenExpiry } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
 import { getAllDrivers } from "../agents/agent-registry.js";
@@ -199,6 +199,8 @@ export class RelayClient extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private shouldReconnect = false;
+  private isHandlingAuthFailure = false;
+  private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Heartbeat state
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -262,6 +264,7 @@ export class RelayClient extends EventEmitter {
 
     this.clearReconnectTimer();
     this.clearHeartbeat();
+    this.clearTokenRefreshTimer();
 
     // Untrack all sessions
     for (const tracked of this.trackedSessions.values()) {
@@ -351,7 +354,7 @@ export class RelayClient extends EventEmitter {
           tracked.viewerKeys.clear();
         }
 
-        if (this.shouldReconnect) {
+        if (this.shouldReconnect && !this.isHandlingAuthFailure) {
           setRelayConnectionStatus("disconnected");
           this.scheduleReconnect();
         }
@@ -387,6 +390,8 @@ export class RelayClient extends EventEmitter {
         debugLog("relay: authenticated");
         setRelayConnectionStatus("connected", undefined, 0);
         this.reconnectAttempt = 0;
+        this.isHandlingAuthFailure = false;
+        this.scheduleTokenRefresh();
         // Register all current sessions
         this.registerAllSessions();
         break;
@@ -490,15 +495,18 @@ export class RelayClient extends EventEmitter {
   }
 
   private async handleAuthFailure(): Promise<void> {
+    this.isHandlingAuthFailure = true;
     debugLog("relay: attempting token refresh...");
     const newToken = await refreshAuthToken();
     if (newToken) {
       debugLog("relay: token refreshed, reconnecting");
       this.reconnectAttempt = 0;
+      this.isHandlingAuthFailure = false;
       this.scheduleReconnect();
     } else {
-      debugLog("relay: token refresh failed — giving up");
-      this.shouldReconnect = false;
+      debugLog("relay: token refresh failed — will retry on next reconnect");
+      this.isHandlingAuthFailure = false;
+      this.scheduleReconnect();
     }
   }
 
@@ -1643,6 +1651,62 @@ export class RelayClient extends EventEmitter {
     if (this.pongTimer) {
       clearTimeout(this.pongTimer);
       this.pongTimer = null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Proactive token refresh
+  // -------------------------------------------------------------------------
+
+  private scheduleTokenRefresh(): void {
+    this.clearTokenRefreshTimer();
+
+    const token = settingsStore.getState().config.relay.authToken;
+    if (!token) return;
+
+    const exp = getTokenExpiry(token);
+    if (!exp) return;
+
+    // Refresh 5 minutes before expiry
+    const refreshAt = (exp * 1000) - (5 * 60 * 1000);
+    const delay = refreshAt - Date.now();
+
+    if (delay <= 0) {
+      // Token is already close to expiry — refresh immediately
+      debugLog("relay: token near expiry, refreshing now");
+      this.performProactiveRefresh();
+      return;
+    }
+
+    debugLog(`relay: scheduling token refresh in ${Math.round(delay / 1000 / 60)}m`);
+    this.tokenRefreshTimer = setTimeout(() => {
+      this.tokenRefreshTimer = null;
+      this.performProactiveRefresh();
+    }, delay);
+  }
+
+  private async performProactiveRefresh(): Promise<void> {
+    debugLog("relay: proactive token refresh...");
+    const newToken = await refreshAuthToken();
+    if (newToken) {
+      debugLog("relay: token refreshed proactively, reconnecting with new token");
+      this.reconnectAttempt = 0;
+      if (this.ws) {
+        this.ws.close(1000, "Token refreshed");
+      }
+    } else {
+      debugLog("relay: proactive token refresh failed, will retry in 1 minute");
+      this.tokenRefreshTimer = setTimeout(() => {
+        this.tokenRefreshTimer = null;
+        this.performProactiveRefresh();
+      }, 60_000);
+    }
+  }
+
+  private clearTokenRefreshTimer(): void {
+    if (this.tokenRefreshTimer) {
+      clearTimeout(this.tokenRefreshTimer);
+      this.tokenRefreshTimer = null;
     }
   }
 

@@ -221,6 +221,17 @@ export function extractUidFromToken(token: string): string | null {
   }
 }
 
+export function getTokenExpiry(token: string): number | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString());
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractEmailFromToken(token: string): string | null {
   try {
     const parts = token.split(".");
