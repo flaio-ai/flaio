@@ -1,5 +1,11 @@
 # flaio
 
+## 1.1.2
+
+### Patch Changes
+
+- Fix worktree race conditions, crash resilience, and memory issues
+
 ## 1.1.1
 
 ### Patch Changes
