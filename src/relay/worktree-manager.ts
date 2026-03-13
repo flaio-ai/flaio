@@ -30,6 +30,10 @@ async function withManifestLock<T>(repoRoot: string, fn: () => Promise<T>): Prom
     return await fn();
   } finally {
     resolve!();
+    // Clean up: if this promise is still the latest, remove the entry
+    if (manifestLocks.get(repoRoot) === next) {
+      manifestLocks.delete(repoRoot);
+    }
   }
 }
 
