@@ -51,25 +51,25 @@
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
-    "@sentry/node": "^10.42.0",
-    "@sentry/profiling-node": "^10.42.0",
-    "@slack/socket-mode": "^2.0.5",
-    "@slack/web-api": "^7.14.1",
-    "@xterm/headless": "^5.5.0",
-    "commander": "^13.1.0",
+    "@sentry/node": "^10.43.0",
+    "@sentry/profiling-node": "^10.43.0",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.0",
+    "@xterm/headless": "^6.0.0",
+    "commander": "^14.0.3",
     "ink": "^6.8.0",
     "node-pty": "^1.2.0-beta.11",
-    "posthog-node": "^5.28.0",
+    "posthog-node": "^5.28.2",
     "react": "^19.2.4",
-    "zod": "^3.24.0",
-    "zustand": "^5.0.5"
+    "zod": "^4.3.6",
+    "zustand": "^5.0.11"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.4",
-    "@types/node": "^25.2.3",
+    "@changesets/cli": "^2.30.0",
+    "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.3",
-    "vitest": "^3.1.0"
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
   }
 }
