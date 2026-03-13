@@ -11,6 +11,8 @@ let reportTimer: ReturnType<typeof setInterval> | null = null;
 let baselineHeap: number | null = null;
 let alertedThresholds = new Set<number>();
 let eventLoopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
+let previousHeapUsed: number | null = null;
+let consecutiveGrowths = 0;
 
 // Accumulator for samples between reports
 let samples: { heapUsed: number; rss: number; userCpu: number; systemCpu: number }[] = [];
@@ -56,6 +58,25 @@ export function startResourceMonitor(): void {
           );
         }
       }
+
+      // Sustained growth detection — 20 consecutive growth samples (~10 min)
+      if (previousHeapUsed !== null) {
+        if (mem.heapUsed > previousHeapUsed) {
+          consecutiveGrowths++;
+        } else {
+          consecutiveGrowths = 0;
+        }
+
+        if (consecutiveGrowths === 20) {
+          captureException(
+            new Error(
+              `Sustained memory growth: heap has grown for ${consecutiveGrowths} consecutive samples (${heapMB}MB)`,
+            ),
+          );
+          consecutiveGrowths = 0; // Reset to report again later
+        }
+      }
+      previousHeapUsed = mem.heapUsed;
     }
   }, SAMPLE_INTERVAL_MS);
   sampleTimer.unref();
@@ -105,4 +126,6 @@ export function stopResourceMonitor(): void {
   samples = [];
   baselineHeap = null;
   alertedThresholds = new Set();
+  previousHeapUsed = null;
+  consecutiveGrowths = 0;
 }

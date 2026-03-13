@@ -20,7 +20,7 @@ import {
   extractEmailFromToken,
 } from "./relay/relay-auth.js";
 import { settingsStore } from "./store/settings-store.js";
-import { initAnalytics, shutdownAnalytics, trackCliEvent } from "./analytics/index.js";
+import { initAnalytics, shutdownAnalytics, trackCliEvent, startHeartbeat } from "./analytics/index.js";
 import {
   installHookScripts,
   getClaudeHooksConfig,
@@ -32,6 +32,7 @@ import {
 } from "./agents/sideband/hook-scripts.js";
 import { parseSettingValue, setNestedValue, checkLatestVersion } from "./cli-utils.js";
 import { listTickets, getTicket, updateTicket } from "./api/ticket-client.js";
+import { appStore } from "./store/app-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
@@ -75,6 +76,9 @@ program
       exitOnCtrlC: false,
       maxFps: 15,
     });
+
+    // Start crash-recovery heartbeat with session count getter
+    startHeartbeat(() => appStore.getState().sessions.length);
 
     // Clean up on exit
     instance.waitUntilExit().then(async () => {

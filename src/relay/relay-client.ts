@@ -213,6 +213,7 @@ export class RelayClient extends EventEmitter {
   // Analytics
   private lastPingTime = 0;
   private connectSpan: Span | null = null;
+  private errorSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Rate limiters
   private inputLimiter = new RateLimiter(30, 30); // 30 inputs/sec per key
@@ -274,6 +275,18 @@ export class RelayClient extends EventEmitter {
     this.clearReconnectTimer();
     this.clearHeartbeat();
     this.clearTokenRefreshTimer();
+
+    // Clean up orphaned connect span
+    if (this.connectSpan) {
+      this.connectSpan.end();
+      this.connectSpan = null;
+    }
+
+    // Clean up error safety timer
+    if (this.errorSafetyTimer) {
+      clearTimeout(this.errorSafetyTimer);
+      this.errorSafetyTimer = null;
+    }
 
     // Untrack all sessions
     for (const tracked of this.trackedSessions.values()) {
@@ -358,6 +371,12 @@ export class RelayClient extends EventEmitter {
         this.clearHeartbeat();
         clearViewerCounts();
 
+        // Cancel the error handler safety-net timer — close already fired
+        if (this.errorSafetyTimer) {
+          clearTimeout(this.errorSafetyTimer);
+          this.errorSafetyTimer = null;
+        }
+
         // Clear viewer keys on disconnect — viewers must re-handshake
         for (const tracked of this.trackedSessions.values()) {
           tracked.viewerKeys.clear();
@@ -380,7 +399,8 @@ export class RelayClient extends EventEmitter {
         // Note: "error" is always followed by "close" in the ws library,
         // so reconnect is handled in the "close" handler. If for some reason
         // "close" doesn't fire, schedule reconnect as a safety net.
-        setTimeout(() => {
+        this.errorSafetyTimer = setTimeout(() => {
+          this.errorSafetyTimer = null;
           if (this.ws && this.shouldReconnect && this.ws.readyState > 1) {
             debugLog("relay: error handler safety net — forcing reconnect");
             this.ws = null;
@@ -392,6 +412,12 @@ export class RelayClient extends EventEmitter {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: failed to connect: ${message}`);
+      // End orphaned connect span
+      if (this.connectSpan) {
+        this.connectSpan.setStatus({ code: 2, message });
+        this.connectSpan.end();
+        this.connectSpan = null;
+      }
       setRelayConnectionStatus("error", message);
 
       if (this.shouldReconnect) {
