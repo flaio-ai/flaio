@@ -14,23 +14,22 @@ function isCrashReportsEnabled(): boolean {
 export function initSentry(): void {
   if (!isCrashReportsEnabled()) return;
 
-  // Profiling integration — native bindings, optional
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const integrations: any[] = [];
-  try {
-    // @ts-ignore — dynamic require for optional native dependency
-    const { nodeProfilingIntegration } = require("@sentry/profiling-node");
-    integrations.push(nodeProfilingIntegration());
-  } catch {
-    // Profiling unavailable — Sentry still works without it
-  }
-
+  // No profiling — the CLI is a long-running process and profiling
+  // accumulates memory indefinitely. Use dev:debug-heap for profiling.
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: process.env.NODE_ENV ?? "production",
     tracesSampleRate: 1.0,
-    profilesSampleRate: 1.0,
-    integrations,
+    beforeSend(event) {
+      const mem = process.memoryUsage();
+      event.extra = {
+        ...event.extra,
+        heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+        rssMB: Math.round(mem.rss / 1024 / 1024),
+        uptimeHours: Math.round((process.uptime() / 3600) * 100) / 100,
+      };
+      return event;
+    },
   });
 
   process.on("uncaughtException", (err) => {
@@ -52,6 +51,20 @@ export function initSentry(): void {
       type: "unhandledRejection",
     });
     // Flush so the event actually reaches Sentry
+    void Sentry.flush(2000);
+  });
+
+  // V8 sends SIGABRT on heap exhaustion — this IS catchable (unlike SIGKILL)
+  process.on("SIGABRT", () => {
+    const mem = process.memoryUsage();
+    Sentry.captureMessage("CLI received SIGABRT (likely V8 OOM)", {
+      level: "fatal",
+      extra: {
+        heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+        rssMB: Math.round(mem.rss / 1024 / 1024),
+        uptimeHours: Math.round((process.uptime() / 3600) * 100) / 100,
+      },
+    });
     void Sentry.flush(2000);
   });
 }
@@ -92,4 +105,9 @@ export async function startSpanAsync<T>(
 /** Fire-and-forget span for long-running operations (sessions, connections). */
 export function startTransaction(name: string, op: string): Sentry.Span {
   return Sentry.startInactiveSpan({ name, op, forceTransaction: true });
+}
+
+/** Drain Sentry transport buffers during clean shutdown. */
+export async function closeSentry(): Promise<void> {
+  await Sentry.close(5000);
 }

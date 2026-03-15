@@ -72,6 +72,15 @@ export class AgentDetector extends EventEmitter {
     this.scanning = true;
 
     try {
+      // Prune dead ignored PIDs every scan to prevent unbounded growth
+      for (const pid of this.ignoredPids) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          this.ignoredPids.delete(pid);
+        }
+      }
+
       const drivers = getAllDrivers();
 
       const psOutput = await execAsync("ps", ["aux"], 5000);
