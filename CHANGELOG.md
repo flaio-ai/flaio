@@ -1,5 +1,11 @@
 # flaio
 
+## 1.1.3-beta.0
+
+### Patch Changes
+
+- Fix CLI crash after ~20h: memory leak fixes, OOM crash recovery with heartbeat monitoring, and sustained heap growth detection. Update all dependencies to latest versions (xterm 6, commander 14, zod 4, vitest 4, typescript 5.9).
+
 ## 1.1.2
 
 ### Patch Changes
