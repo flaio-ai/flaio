@@ -59,24 +59,24 @@ const TelemetryConfigSchema = z.object({
   crashReports: z.boolean().default(true),
 });
 
+const ConnectorsSchema = z.object({
+  slack: SlackConfigSchema.default(() => SlackConfigSchema.parse({})),
+  discord: DiscordConfigSchema.default(() => DiscordConfigSchema.parse({})),
+  telegram: TelegramConfigSchema.default(() => TelegramConfigSchema.parse({})),
+});
+
+const AgentsSchema = z.object({
+  statusCheckInterval: z.number().default(DEFAULTS.agents.statusCheckInterval),
+  detectorInterval: z.number().default(DEFAULTS.agents.detectorInterval),
+});
+
 const AppConfigSchema = z.object({
-  ui: UiConfigSchema.default({}),
-  connectors: z
-    .object({
-      slack: SlackConfigSchema.default({}),
-      discord: DiscordConfigSchema.default({}),
-      telegram: TelegramConfigSchema.default({}),
-    })
-    .default({}),
-  agents: z
-    .object({
-      statusCheckInterval: z.number().default(DEFAULTS.agents.statusCheckInterval),
-      detectorInterval: z.number().default(DEFAULTS.agents.detectorInterval),
-    })
-    .default({}),
-  relay: RelayConfigSchema.default({}),
-  worktree: WorktreeConfigSchema.default({}),
-  telemetry: TelemetryConfigSchema.default({}),
+  ui: UiConfigSchema.default(() => UiConfigSchema.parse({})),
+  connectors: ConnectorsSchema.default(() => ConnectorsSchema.parse({})),
+  agents: AgentsSchema.default(() => AgentsSchema.parse({})),
+  relay: RelayConfigSchema.default(() => RelayConfigSchema.parse({})),
+  worktree: WorktreeConfigSchema.default(() => WorktreeConfigSchema.parse({})),
+  telemetry: TelemetryConfigSchema.default(() => TelemetryConfigSchema.parse({})),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
