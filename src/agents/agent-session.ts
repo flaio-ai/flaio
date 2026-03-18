@@ -8,6 +8,7 @@ import { SidebandReceiver } from "./sideband/sideband-receiver.js";
 import {
   resolveFromClaudeHook,
   resolveFromGeminiHook,
+  resolveFromCopilotHook,
   resolveFromGeminiOscTitle,
   extractOscTitle,
   type DetailedStatus,
@@ -131,9 +132,12 @@ export class AgentSession extends EventEmitter {
       const prevStatus = this._status;
       this.sidebandActive = true;
       this.lastHookTime = Date.now();
-      const resolver = this.driverName === "gemini"
-        ? resolveFromGeminiHook
-        : resolveFromClaudeHook;
+      const HOOK_RESOLVERS: Record<string, (event: HookEvent) => ResolvedStatus> = {
+        claude: resolveFromClaudeHook,
+        gemini: resolveFromGeminiHook,
+        copilot: resolveFromCopilotHook,
+      };
+      const resolver = HOOK_RESOLVERS[this.driverName] ?? resolveFromClaudeHook;
       const resolved = resolver(event);
       this.applyResolvedStatus(resolved);
 
