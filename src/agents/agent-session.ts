@@ -8,6 +8,7 @@ import { SidebandReceiver } from "./sideband/sideband-receiver.js";
 import {
   resolveFromClaudeHook,
   resolveFromGeminiHook,
+  resolveFromCopilotHook,
   resolveFromGeminiOscTitle,
   extractOscTitle,
   type DetailedStatus,
@@ -16,6 +17,12 @@ import {
 } from "./sideband/status-resolver.js";
 import { sessionMetadataStore, type SessionMetadata } from "./session-metadata.js";
 import { trackCliEvent, startSpanAsync, startTransaction } from "../analytics/index.js";
+
+const HOOK_RESOLVERS: Record<string, (event: HookEvent) => ResolvedStatus> = {
+  claude: resolveFromClaudeHook,
+  gemini: resolveFromGeminiHook,
+  copilot: resolveFromCopilotHook,
+};
 
 /** Map a basic AgentStatus to a DetailedStatus for PTY polling fallback. */
 function statusToDetailed(status: AgentStatus): DetailedStatus {
@@ -131,9 +138,7 @@ export class AgentSession extends EventEmitter {
       const prevStatus = this._status;
       this.sidebandActive = true;
       this.lastHookTime = Date.now();
-      const resolver = this.driverName === "gemini"
-        ? resolveFromGeminiHook
-        : resolveFromClaudeHook;
+      const resolver = HOOK_RESOLVERS[this.driverName] ?? resolveFromClaudeHook;
       const resolved = resolver(event);
       this.applyResolvedStatus(resolved);
 

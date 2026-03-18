@@ -242,6 +242,36 @@ function extractCommand(entry: Record<string, unknown>): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Copilot CLI settings hooks config
+// ---------------------------------------------------------------------------
+
+/** Copilot CLI hook event names we want to intercept (camelCase). */
+const COPILOT_HOOK_EVENTS = [
+  "sessionStart",
+  "sessionEnd",
+  "userPromptSubmitted",
+  "preToolUse",
+  "postToolUse",
+  "errorOccurred",
+] as const;
+
+/**
+ * Returns hooks config to merge into ~/.copilot/settings.json.
+ */
+export function getCopilotHooksConfig(hookPath: string): Record<string, unknown> {
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of COPILOT_HOOK_EVENTS) {
+    hooks[event] = [
+      {
+        type: "command",
+        command: `${hookPath} ${event}`,
+      },
+    ];
+  }
+  return { hooks };
+}
+
+// ---------------------------------------------------------------------------
 // Check if hooks are already configured
 // ---------------------------------------------------------------------------
 
@@ -270,6 +300,26 @@ export async function areClaudeHooksConfigured(): Promise<boolean> {
       // Legacy format: { type, command }
       return (entry as Record<string, unknown>).command === hookPath;
     });
+  } catch {
+    return false;
+  }
+}
+
+export async function areCopilotHooksConfigured(): Promise<boolean> {
+  try {
+    const settingsPath = path.join(os.homedir(), ".copilot", "settings.json");
+    const text = await fs.readFile(settingsPath, "utf-8");
+    const settings = JSON.parse(text);
+    const hooks = settings?.hooks;
+    if (!hooks || typeof hooks !== "object") return false;
+
+    const sessionStartHooks = hooks.sessionStart;
+    if (!Array.isArray(sessionStartHooks)) return false;
+
+    const hookPath = path.join(HOOK_DIR, "relay-hook.sh");
+    return sessionStartHooks.some(
+      (h: unknown) => isObj(h) && (h as Record<string, unknown>).command === `${hookPath} sessionStart`,
+    );
   } catch {
     return false;
   }

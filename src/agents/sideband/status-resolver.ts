@@ -248,6 +248,60 @@ export function resolveFromGeminiHook(event: HookEvent): ResolvedStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Copilot CLI — hook resolver
+// ---------------------------------------------------------------------------
+
+export function resolveFromCopilotHook(event: HookEvent): ResolvedStatus {
+  switch (event.hook) {
+    case "preToolUse": {
+      const toolName = event.toolName ?? "unknown";
+      const detail = WRITING_TOOLS.has(toolName) ? "writing" as const : "tool_use" as const;
+      return {
+        agentStatus: "running",
+        detailed: { state: "running", detail },
+        toolName,
+      };
+    }
+
+    case "postToolUse":
+      return {
+        agentStatus: "running",
+        detailed: { state: "running", detail: "thinking" },
+      };
+
+    case "userPromptSubmitted":
+      return {
+        agentStatus: "running",
+        detailed: { state: "running", detail: "thinking" },
+      };
+
+    case "errorOccurred":
+      return {
+        agentStatus: "running",
+        detailed: { state: "running", detail: "general" },
+      };
+
+    case "sessionStart":
+      return {
+        agentStatus: "starting",
+        detailed: { state: "starting" },
+      };
+
+    case "sessionEnd":
+      return {
+        agentStatus: "exited",
+        detailed: { state: "exited" },
+      };
+
+    default:
+      return {
+        agentStatus: "running",
+        detailed: { state: "running", detail: "general" },
+      };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // OSC escape sequence extraction
 // ---------------------------------------------------------------------------
 

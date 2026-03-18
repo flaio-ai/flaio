@@ -7,9 +7,11 @@ import {
   getClaudeHooksConfig,
   getClaudeStatusLineConfig,
   getGeminiHooksConfig,
+  getCopilotHooksConfig,
   mergeSettingsFile,
   areClaudeHooksConfigured,
   areGeminiHooksConfigured,
+  areCopilotHooksConfigured,
 } from "../../agents/sideband/hook-scripts.js";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +23,7 @@ type InstallMethod = "npm" | "brew";
 const AGENT_DEFS = [
   { driverName: "claude", displayName: "Claude Code", command: "claude", npmPackage: "@anthropic-ai/claude-code", brewFormula: "claude-code" },
   { driverName: "gemini", displayName: "Gemini CLI", command: "gemini", npmPackage: "@google/gemini-cli", brewFormula: "gemini-cli" },
+  { driverName: "copilot", displayName: "Copilot CLI", command: "copilot", npmPackage: "@github/copilot", brewFormula: "copilot" },
 ] as const;
 
 type AgentInstallStatus = "checking" | "not_installed" | "up_to_date" | "update_available" | "installing" | "error";
@@ -84,7 +87,9 @@ type HooksStatus = "checking" | "configured" | "not_configured" | "installing" |
 export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps): React.ReactElement {
   const [subTab, setSubTab] = useState(0);
   const [agents, setAgents] = useState<AgentVersionInfo[]>(initAgents);
-  const [hooksStatus, setHooksStatus] = useState<{ claude: HooksStatus; gemini: HooksStatus }>({ claude: "checking", gemini: "checking" });
+  const [hooksStatus, setHooksStatus] = useState<Record<string, HooksStatus>>(
+    () => Object.fromEntries(AGENT_DEFS.map((d) => [d.driverName, "checking" as const])),
+  );
   const [hooksError, setHooksError] = useState<string | null>(null);
 
   const checkVersions = useCallback((currentAgents: AgentVersionInfo[]) => {
@@ -138,18 +143,24 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
 
   // Check hooks status on mount
   useEffect(() => {
-    Promise.all([areClaudeHooksConfigured(), areGeminiHooksConfigured()]).then(
-      ([claude, gemini]) => {
-        setHooksStatus({
-          claude: claude ? "configured" : "not_configured",
-          gemini: gemini ? "configured" : "not_configured",
-        });
-      },
-    );
+    const checks: Record<string, Promise<boolean>> = {
+      claude: areClaudeHooksConfigured(),
+      gemini: areGeminiHooksConfigured(),
+      copilot: areCopilotHooksConfigured(),
+    };
+    Promise.all(
+      Object.entries(checks).map(async ([name, p]) => [name, await p] as const),
+    ).then((results) => {
+      setHooksStatus(Object.fromEntries(
+        results.map(([name, ok]) => [name, ok ? "configured" : "not_configured"]),
+      ));
+    });
   }, []);
 
   const handleSetupHooks = useCallback(async () => {
-    setHooksStatus((prev) => ({ ...prev, claude: "installing", gemini: "installing" }));
+    setHooksStatus((prev) => Object.fromEntries(
+      Object.keys(prev).map((k) => [k, "installing" as const]),
+    ));
     setHooksError(null);
     try {
       const { hookPath, statusLinePath } = await installHookScripts();
@@ -163,14 +174,19 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       const geminiCfg = getGeminiHooksConfig(hookPath);
       await mergeSettingsFile(geminiSettingsPath, geminiCfg);
 
-      setHooksStatus({ claude: "done", gemini: "done" });
+      const copilotSettingsPath = path.join(os.homedir(), ".copilot", "settings.json");
+      const copilotCfg = getCopilotHooksConfig(hookPath);
+      await mergeSettingsFile(copilotSettingsPath, copilotCfg);
+
+      setHooksStatus((prev) => Object.fromEntries(
+        Object.keys(prev).map((k) => [k, "done" as const]),
+      ));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setHooksError(msg);
-      setHooksStatus((prev) => ({
-        claude: prev.claude === "installing" ? "error" : prev.claude,
-        gemini: prev.gemini === "installing" ? "error" : prev.gemini,
-      }));
+      setHooksStatus((prev) => Object.fromEntries(
+        Object.entries(prev).map(([k, v]) => [k, v === "installing" ? "error" : v]),
+      ));
     }
   }, []);
 
@@ -344,7 +360,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>─── Sideband Hooks ───</Text>
           {(() => {
-            const hs = agent.command === "claude" ? hooksStatus.claude : hooksStatus.gemini;
+            const hs = hooksStatus[AGENT_DEFS[subTab]!.driverName] ?? "checking";
             return (
               <Box marginTop={0}>
                 <Text>
@@ -358,7 +374,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
             );
           })()}
           {(() => {
-            const hs = agent.command === "claude" ? hooksStatus.claude : hooksStatus.gemini;
+            const hs = hooksStatus[AGENT_DEFS[subTab]!.driverName] ?? "checking";
             if (hs === "not_configured" || hs === "error") {
               return (
                 <Box>
