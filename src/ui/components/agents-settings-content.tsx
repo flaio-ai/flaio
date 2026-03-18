@@ -87,7 +87,9 @@ type HooksStatus = "checking" | "configured" | "not_configured" | "installing" |
 export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps): React.ReactElement {
   const [subTab, setSubTab] = useState(0);
   const [agents, setAgents] = useState<AgentVersionInfo[]>(initAgents);
-  const [hooksStatus, setHooksStatus] = useState<{ claude: HooksStatus; gemini: HooksStatus; copilot: HooksStatus }>({ claude: "checking", gemini: "checking", copilot: "checking" });
+  const [hooksStatus, setHooksStatus] = useState<Record<string, HooksStatus>>(
+    () => Object.fromEntries(AGENT_DEFS.map((d) => [d.driverName, "checking" as const])),
+  );
   const [hooksError, setHooksError] = useState<string | null>(null);
 
   const checkVersions = useCallback((currentAgents: AgentVersionInfo[]) => {
@@ -141,19 +143,24 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
 
   // Check hooks status on mount
   useEffect(() => {
-    Promise.all([areClaudeHooksConfigured(), areGeminiHooksConfigured(), areCopilotHooksConfigured()]).then(
-      ([claude, gemini, copilot]) => {
-        setHooksStatus({
-          claude: claude ? "configured" : "not_configured",
-          gemini: gemini ? "configured" : "not_configured",
-          copilot: copilot ? "configured" : "not_configured",
-        });
-      },
-    );
+    const checks: Record<string, Promise<boolean>> = {
+      claude: areClaudeHooksConfigured(),
+      gemini: areGeminiHooksConfigured(),
+      copilot: areCopilotHooksConfigured(),
+    };
+    Promise.all(
+      Object.entries(checks).map(async ([name, p]) => [name, await p] as const),
+    ).then((results) => {
+      setHooksStatus(Object.fromEntries(
+        results.map(([name, ok]) => [name, ok ? "configured" : "not_configured"]),
+      ));
+    });
   }, []);
 
   const handleSetupHooks = useCallback(async () => {
-    setHooksStatus((prev) => ({ ...prev, claude: "installing", gemini: "installing", copilot: "installing" }));
+    setHooksStatus((prev) => Object.fromEntries(
+      Object.keys(prev).map((k) => [k, "installing" as const]),
+    ));
     setHooksError(null);
     try {
       const { hookPath, statusLinePath } = await installHookScripts();
@@ -171,15 +178,15 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       const copilotCfg = getCopilotHooksConfig(hookPath);
       await mergeSettingsFile(copilotSettingsPath, copilotCfg);
 
-      setHooksStatus({ claude: "done", gemini: "done", copilot: "done" });
+      setHooksStatus((prev) => Object.fromEntries(
+        Object.keys(prev).map((k) => [k, "done" as const]),
+      ));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setHooksError(msg);
-      setHooksStatus((prev) => ({
-        claude: prev.claude === "installing" ? "error" : prev.claude,
-        gemini: prev.gemini === "installing" ? "error" : prev.gemini,
-        copilot: prev.copilot === "installing" ? "error" : prev.copilot,
-      }));
+      setHooksStatus((prev) => Object.fromEntries(
+        Object.entries(prev).map(([k, v]) => [k, v === "installing" ? "error" : v]),
+      ));
     }
   }, []);
 
@@ -353,7 +360,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>─── Sideband Hooks ───</Text>
           {(() => {
-            const hs = agent.command === "claude" ? hooksStatus.claude : agent.command === "copilot" ? hooksStatus.copilot : hooksStatus.gemini;
+            const hs = hooksStatus[AGENT_DEFS[subTab]!.driverName] ?? "checking";
             return (
               <Box marginTop={0}>
                 <Text>
@@ -367,7 +374,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
             );
           })()}
           {(() => {
-            const hs = agent.command === "claude" ? hooksStatus.claude : agent.command === "copilot" ? hooksStatus.copilot : hooksStatus.gemini;
+            const hs = hooksStatus[AGENT_DEFS[subTab]!.driverName] ?? "checking";
             if (hs === "not_configured" || hs === "error") {
               return (
                 <Box>

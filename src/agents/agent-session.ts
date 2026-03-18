@@ -18,6 +18,12 @@ import {
 import { sessionMetadataStore, type SessionMetadata } from "./session-metadata.js";
 import { trackCliEvent, startSpanAsync, startTransaction } from "../analytics/index.js";
 
+const HOOK_RESOLVERS: Record<string, (event: HookEvent) => ResolvedStatus> = {
+  claude: resolveFromClaudeHook,
+  gemini: resolveFromGeminiHook,
+  copilot: resolveFromCopilotHook,
+};
+
 /** Map a basic AgentStatus to a DetailedStatus for PTY polling fallback. */
 function statusToDetailed(status: AgentStatus): DetailedStatus {
   switch (status) {
@@ -132,11 +138,6 @@ export class AgentSession extends EventEmitter {
       const prevStatus = this._status;
       this.sidebandActive = true;
       this.lastHookTime = Date.now();
-      const HOOK_RESOLVERS: Record<string, (event: HookEvent) => ResolvedStatus> = {
-        claude: resolveFromClaudeHook,
-        gemini: resolveFromGeminiHook,
-        copilot: resolveFromCopilotHook,
-      };
       const resolver = HOOK_RESOLVERS[this.driverName] ?? resolveFromClaudeHook;
       const resolved = resolver(event);
       this.applyResolvedStatus(resolved);
