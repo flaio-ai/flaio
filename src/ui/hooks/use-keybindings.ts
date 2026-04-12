@@ -83,8 +83,8 @@ export function useKeybindings(actions: KeybindingActions): void {
       return;
     }
 
-    // Alt+A: Adopt standalone agent (ESC prefix or macOS Option+A = å)
-    if ((key.meta && input === "a") || input === "å") {
+    // Ctrl+A: Adopt standalone agent
+    if (key.ctrl && input === "a") {
       actions.onAdoptAgent();
       return;
     }
