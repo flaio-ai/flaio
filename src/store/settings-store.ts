@@ -14,6 +14,10 @@ export interface SettingsState {
   ) => void;
   updateUi: (patch: Record<string, unknown>) => void;
   updateRelay: (patch: Record<string, unknown>) => void;
+  updateAgentDriver: (
+    driverName: "claude" | "gemini",
+    patch: Record<string, unknown>,
+  ) => void;
 }
 
 export const settingsStore = createStore<SettingsState>((set, get) => ({
@@ -72,6 +76,22 @@ export const settingsStore = createStore<SettingsState>((set, get) => ({
         relay: {
           ...prev.config.relay,
           ...patch,
+        },
+      },
+    }));
+    get().save();
+  },
+
+  updateAgentDriver: (driverName, patch) => {
+    set((prev) => ({
+      config: {
+        ...prev.config,
+        agents: {
+          ...prev.config.agents,
+          [driverName]: {
+            ...prev.config.agents[driverName],
+            ...patch,
+          },
         },
       },
     }));

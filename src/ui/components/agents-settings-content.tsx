@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
-import { execFile } from "node:child_process";
+import { TextInput } from "@inkjs/ui";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import {
   installHookScripts,
@@ -11,6 +12,7 @@ import {
   areClaudeHooksConfigured,
   areGeminiHooksConfigured,
 } from "../../agents/sideband/hook-scripts.js";
+import { settingsStore } from "../../store/settings-store.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -86,6 +88,15 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
   const [agents, setAgents] = useState<AgentVersionInfo[]>(initAgents);
   const [hooksStatus, setHooksStatus] = useState<{ claude: HooksStatus; gemini: HooksStatus }>({ claude: "checking", gemini: "checking" });
   const [hooksError, setHooksError] = useState<string | null>(null);
+  const [editingCustomCommand, setEditingCustomCommand] = useState(false);
+  const [customCommandDraft, setCustomCommandDraft] = useState("");
+  const [customCommandWarning, setCustomCommandWarning] = useState<string | null>(null);
+
+  const getCustomCommand = useCallback((): string | undefined => {
+    const { agents } = settingsStore.getState().config;
+    const driverName = AGENT_DEFS[subTab]!.driverName as "claude" | "gemini";
+    return agents[driverName]?.customCommand;
+  }, [subTab]);
 
   const checkVersions = useCallback((currentAgents: AgentVersionInfo[]) => {
     let cancelled = false;
@@ -174,6 +185,26 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
     }
   }, []);
 
+  const handleCustomCommandSubmit = useCallback((value: string) => {
+    const trimmed = value.trim();
+    const driverName = AGENT_DEFS[subTab]!.driverName as "claude" | "gemini";
+
+    if (trimmed === "") {
+      settingsStore.getState().updateAgentDriver(driverName, { customCommand: undefined });
+      setCustomCommandWarning(null);
+    } else {
+      try {
+        execFileSync("which", [trimmed], { stdio: "ignore" });
+        setCustomCommandWarning(null);
+      } catch {
+        setCustomCommandWarning(`Command "${trimmed}" not found on PATH`);
+      }
+      settingsStore.getState().updateAgentDriver(driverName, { customCommand: trimmed });
+    }
+
+    setEditingCustomCommand(false);
+  }, [subTab]);
+
   const handleAction = useCallback((idx: number) => {
     const agent = agents[idx];
     if (!agent) return;
@@ -253,12 +284,22 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
   useInput((input, key) => {
     if (!isActive) return;
 
+    if (editingCustomCommand) {
+      if (key.escape) {
+        setEditingCustomCommand(false);
+        setCustomCommandWarning(null);
+      }
+      return;
+    }
+
     if (key.leftArrow) {
       setSubTab((t) => (t > 0 ? t - 1 : AGENT_DEFS.length - 1));
+      setCustomCommandWarning(null);
       return;
     }
     if (key.rightArrow) {
       setSubTab((t) => (t < AGENT_DEFS.length - 1 ? t + 1 : 0));
+      setCustomCommandWarning(null);
       return;
     }
     if (input === "m") {
@@ -267,6 +308,13 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
     }
     if (input === "h") {
       handleSetupHooks();
+      return;
+    }
+    if (input === "c") {
+      const current = getCustomCommand() ?? "";
+      setCustomCommandDraft(current);
+      setCustomCommandWarning(null);
+      setEditingCustomCommand(true);
       return;
     }
     if (key.return) {
@@ -373,6 +421,33 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
           })()}
           {hooksError && (
             <Text color="red">{hooksError}</Text>
+          )}
+        </Box>
+
+        {/* Custom Command */}
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>─── Custom Command ───</Text>
+          {editingCustomCommand ? (
+            <Box>
+              <Text>Command:    </Text>
+              <TextInput
+                defaultValue={customCommandDraft}
+                onSubmit={handleCustomCommandSubmit}
+                placeholder={AGENT_DEFS[subTab]!.command}
+              />
+              <Text dimColor>  (Enter to save, Esc to cancel)</Text>
+            </Box>
+          ) : (
+            <Text>
+              Command:    <Text color={getCustomCommand() ? "cyan" : "gray"} bold={!!getCustomCommand()}>
+                {getCustomCommand() ?? AGENT_DEFS[subTab]!.command}
+              </Text>
+              {!getCustomCommand() && <Text dimColor> (default)</Text>}
+              <Text dimColor>  (c to edit)</Text>
+            </Text>
+          )}
+          {customCommandWarning && (
+            <Text color="yellow">  {customCommandWarning}</Text>
           )}
         </Box>
       </Box>

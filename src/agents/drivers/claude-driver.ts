@@ -1,14 +1,33 @@
 import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 export class ClaudeDriver extends BaseDriver {
   readonly name = "claude";
   readonly displayName = "Claude Code";
   readonly command = "claude";
 
+  private _customCommand?: string;
+
+  setCustomCommand(cmd: string | undefined): void {
+    this._customCommand = cmd?.trim() || undefined;
+  }
+
+  get effectiveCommand(): string {
+    return this._customCommand ?? this.command;
+  }
+
+  override resolveCommand(): string {
+    const cmd = this.effectiveCommand;
+    try {
+      return execFileSync("which", [cmd], { encoding: "utf-8" }).trim();
+    } catch {
+      return cmd;
+    }
+  }
+
   async checkInstalled(): Promise<boolean> {
     try {
-      execSync("which claude", { stdio: "ignore" });
+      execFileSync("which", [this.effectiveCommand], { stdio: "ignore" });
       return true;
     } catch {
       return false;

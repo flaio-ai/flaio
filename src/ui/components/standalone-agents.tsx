@@ -57,7 +57,7 @@ export function StandaloneAgents({
       })}
       <Box paddingX={1}>
         <Text dimColor italic>
-          Alt+A to adopt
+          Ctrl+A to adopt
         </Text>
       </Box>
     </Box>
