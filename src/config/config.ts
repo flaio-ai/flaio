@@ -65,9 +65,19 @@ const ConnectorsSchema = z.object({
   telegram: TelegramConfigSchema.default(() => TelegramConfigSchema.parse({})),
 });
 
+const ClaudeAgentConfigSchema = z.object({
+  customCommand: z.string().optional(),
+});
+
+const GeminiAgentConfigSchema = z.object({
+  customCommand: z.string().optional(),
+});
+
 const AgentsSchema = z.object({
   statusCheckInterval: z.number().default(DEFAULTS.agents.statusCheckInterval),
   detectorInterval: z.number().default(DEFAULTS.agents.detectorInterval),
+  claude: ClaudeAgentConfigSchema.default(() => ClaudeAgentConfigSchema.parse({})),
+  gemini: GeminiAgentConfigSchema.default(() => GeminiAgentConfigSchema.parse({})),
 });
 
 const AppConfigSchema = z.object({
@@ -85,6 +95,8 @@ export type DiscordConfig = z.infer<typeof DiscordConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type RelayConfig = z.infer<typeof RelayConfigSchema>;
 export type WorktreeConfig = z.infer<typeof WorktreeConfigSchema>;
+export type ClaudeAgentConfig = z.infer<typeof ClaudeAgentConfigSchema>;
+export type GeminiAgentConfig = z.infer<typeof GeminiAgentConfigSchema>;
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "flaio");
 const CONFIG_FILE = path.join(CONFIG_DIR, "settings.json");

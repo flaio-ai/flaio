@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { stripAnsi } from "../../strip-ansi.js";
 
 export type AgentStatus = "idle" | "starting" | "running" | "waiting_input" | "waiting_permission" | "exited";
@@ -22,7 +22,7 @@ export abstract class BaseDriver {
   /** Resolve the full path of the command binary */
   resolveCommand(): string {
     try {
-      return execSync(`which ${this.command}`, { encoding: "utf-8" }).trim();
+      return execFileSync("which", [this.command], { encoding: "utf-8" }).trim();
     } catch {
       return this.command;
     }

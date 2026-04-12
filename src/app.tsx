@@ -12,6 +12,7 @@ import { useRawInput } from "./ui/hooks/use-raw-input.js";
 import { usePortalConnected } from "./ui/hooks/use-portal-connected.js";
 import { appStore, getSessionInstance, startAgentDetector, stopAgentDetector } from "./store/app-store.js";
 import { settingsStore } from "./store/settings-store.js";
+import { initDriverConfigs } from "./agents/agent-registry.js";
 import { startConnectors, stopConnectors } from "./store/connector-store.js";
 
 function useAppStore<T>(selector: (state: ReturnType<typeof appStore.getState>) => T): T {
@@ -35,6 +36,7 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     settingsStore.getState().load();
+    initDriverConfigs();
   }, []);
 
   useEffect(() => {

@@ -33,6 +33,7 @@ import {
 import { parseSettingValue, setNestedValue, checkLatestVersion } from "./cli-utils.js";
 import { listTickets, getTicket, updateTicket } from "./api/ticket-client.js";
 import { appStore } from "./store/app-store.js";
+import { initDriverConfigs } from "./agents/agent-registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
@@ -171,6 +172,7 @@ program
     // Ensure settings are loaded
     if (!settingsStore.getState().loaded) {
       settingsStore.getState().load();
+      initDriverConfigs();
     }
 
     if (isLoggedIn()) {
@@ -198,6 +200,7 @@ program
     // Ensure settings are loaded
     if (!settingsStore.getState().loaded) {
       settingsStore.getState().load();
+      initDriverConfigs();
     }
 
     if (!isLoggedIn()) {
@@ -273,6 +276,7 @@ program
 function ensureLoaded() {
   if (!settingsStore.getState().loaded) {
     settingsStore.getState().load();
+    initDriverConfigs();
   }
 }
 
