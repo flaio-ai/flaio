@@ -1,0 +1,11 @@
+{
+  "name": "flaio",
+  "displayName": "Flaio",
+  "version": "0.1.0",
+  "description": "Work on Flaio tickets from Claude Code: the Flaio MCP tools (ticket context, plans, questions, decisions, progress, phase completion), /flaio:ticket and /flaio:handoff, and a Stop hook that asks for a handoff note before a ticket session ends.",
+  "author": { "name": "Flaio", "url": "https://github.com/flaio-ai" },
+  "homepage": "https://github.com/flaio-ai/flaio",
+  "repository": "https://github.com/flaio-ai/flaio",
+  "license": "MIT",
+  "keywords": ["flaio", "tickets", "agents", "handoff"]
+}

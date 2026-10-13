@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "flaio": {
+      "command": "flaio",
+      "args": ["mcp", "--ticket", "${FLAIO_TICKET_ID:-}"]
+    }
+  }
+}
