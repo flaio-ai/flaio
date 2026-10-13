@@ -7,14 +7,35 @@ import { EventEmitter } from "node:events";
 const SOCKET_DIR = path.join(os.tmpdir(), "flaio");
 const SOCKET_PATH = path.join(SOCKET_DIR, "hooks.sock");
 
+/** Default socket path of the in-process hook server. */
+export const HOOK_SOCKET_PATH = SOCKET_PATH;
+
+/**
+ * Socket path clients should connect to. `FLAIO_HOOK_SOCKET` (set by
+ * getMcpSpawnConfig for the `flaio mcp` process) overrides the default.
+ */
+export function getHookSocketPath(): string {
+  return process.env.FLAIO_HOOK_SOCKET || SOCKET_PATH;
+}
+
 export interface HookMessage {
-  type: "permission_request" | "post_tool_use" | "stop" | "notification";
+  /**
+   * `mcp_tool_call` — a tool call forwarded by the `flaio mcp` stdio server.
+   * Payload: { token, tool, input, cwd }. Authenticated by the per-session
+   * token (see src/mcp/session-registry.ts); unauthenticated calls are refused.
+   */
+  type: "permission_request" | "post_tool_use" | "stop" | "notification" | "mcp_tool_call";
   payload: Record<string, unknown>;
 }
 
 export interface HookResponse {
-  type: "permission_reply" | "ack";
+  type: "permission_reply" | "ack" | "mcp_tool_result";
   payload: Record<string, unknown>;
+}
+
+export interface HookServerOptions {
+  /** Override the unix socket path (tests, multiple instances). */
+  socketPath?: string;
 }
 
 /**
@@ -23,18 +44,24 @@ export interface HookResponse {
  */
 export class HookServer extends EventEmitter {
   private server: net.Server | null = null;
+  private readonly path: string;
+
+  constructor(opts: HookServerOptions = {}) {
+    super();
+    this.path = opts.socketPath ?? SOCKET_PATH;
+  }
 
   get socketPath(): string {
-    return SOCKET_PATH;
+    return this.path;
   }
 
   async start(): Promise<void> {
-    // Ensure socket directory exists
-    fs.mkdirSync(SOCKET_DIR, { recursive: true });
+    // Ensure socket directory exists (owner-only)
+    fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
 
     // Remove stale socket file
     try {
-      fs.unlinkSync(SOCKET_PATH);
+      fs.unlinkSync(this.path);
     } catch {
       // Doesn't exist — fine
     }
@@ -49,7 +76,7 @@ export class HookServer extends EventEmitter {
       // Set restrictive umask before listen so the socket is created
       // with owner-only permissions (no race window)
       const oldUmask = process.umask(0o077);
-      this.server.listen(SOCKET_PATH, () => {
+      this.server.listen(this.path, () => {
         process.umask(oldUmask);
         resolve();
       });
@@ -60,8 +87,9 @@ export class HookServer extends EventEmitter {
     return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => resolve());
+        this.server = null;
         try {
-          fs.unlinkSync(SOCKET_PATH);
+          fs.unlinkSync(this.path);
         } catch {
           // Best effort
         }
@@ -131,7 +159,26 @@ export class HookServer extends EventEmitter {
         conn.end();
         break;
       }
+      case "mcp_tool_call": {
+        void this.handleMcpToolCall(msg.payload, conn);
+        break;
+      }
     }
+  }
+
+  private async handleMcpToolCall(payload: Record<string, unknown>, conn: net.Socket): Promise<void> {
+    let result: Record<string, unknown>;
+    try {
+      // Lazy import: hook scripts import this module too and must stay light.
+      const { handleMcpToolCall } = await import("../mcp/bridge.js");
+      result = await handleMcpToolCall(payload);
+    } catch (err) {
+      result = { ok: false, code: "error", error: err instanceof Error ? err.message : String(err) };
+    }
+    if (result.ok) this.emit("mcp_tool_call", { tool: payload.tool });
+    const response: HookResponse = { type: "mcp_tool_result", payload: result };
+    this.safeWrite(conn, JSON.stringify(response) + "\n");
+    conn.end();
   }
 }
 
@@ -142,11 +189,12 @@ export class HookServer extends EventEmitter {
 export async function sendToHookServer(
   msg: HookMessage,
   timeoutMs = 10000,
+  socketPath: string = getHookSocketPath(),
 ): Promise<HookResponse | null> {
-  if (!fs.existsSync(SOCKET_PATH)) return null;
+  if (!fs.existsSync(socketPath)) return null;
 
   return new Promise((resolve) => {
-    const conn = net.createConnection(SOCKET_PATH);
+    const conn = net.createConnection(socketPath);
     let buffer = "";
     const timeout = setTimeout(() => {
       conn.destroy();

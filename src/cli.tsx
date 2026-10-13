@@ -269,6 +269,17 @@ program
     }
   });
 
+program
+  .command("mcp")
+  .description("Run the Flaio MCP server over stdio (spawned by agent CLIs)")
+  .option("--ticket <ticketId>", "Ticket this session works on (defaults to $FLAIO_TICKET_ID)")
+  .option("--job <jobId>", "Job id (defaults to $FLAIO_JOB_ID)")
+  .action(async (opts: { ticket?: string; job?: string }) => {
+    const { runMcpStdioServer } = await import("./mcp/server.js");
+    await runMcpStdioServer(opts, pkg.version);
+    process.exit(0);
+  });
+
 // ── helpers ──────────────────────────────────────────────────────────
 function ensureLoaded() {
   if (!settingsStore.getState().loaded) {
