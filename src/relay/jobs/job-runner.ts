@@ -118,6 +118,8 @@ interface ActiveRun {
   rawChunks: string[];
   rawSize: number;
   disposers: (() => void)[];
+  /** Ends the run when its PTY session has disappeared without an exit event. */
+  exitCheck?: () => void;
 }
 
 const IDLE_STATES: ReadonlySet<AgentStatus> = new Set(["waiting_input", "waiting_permission", "idle"]);
@@ -532,9 +534,44 @@ export class JobRunner {
     session.on("agent_session_info", onInfo);
     run.disposers.push(() => session.removeListener("agent_session_info", onInfo));
 
-    const onExit = (code?: number) => this.onExit(run, code);
+    this.watchExit(run, (code) => this.onExit(run, code));
+  }
+
+  /**
+   * Call `handler` once when the agent goes away. A natural PTY exit emits
+   * status "exited" then "exit" (with the code); closeSession() (user closed
+   * the tab, print timeout) kills the session, which emits only status
+   * "exited" before dropping every listener — no "exit" event at all.
+   */
+  private watchExit(run: ActiveRun, handler: (code: number | undefined) => void): void {
+    const { session } = run;
+    let fired = false;
+    const fire = (code: number | undefined) => {
+      if (fired) return;
+      fired = true;
+      handler(code);
+    };
+    const onExit = (code?: number) => fire(code);
+    // Deferred so a natural exit's "exit" event (which carries the code) wins.
+    // Only a session that is really gone counts: a SessionEnd hook (e.g. /clear)
+    // also reports "exited" while the agent keeps running.
+    const onStatus = (status: AgentStatus) => {
+      if (status !== "exited") return;
+      setImmediate(() => {
+        if (!this.deps.getSession(session.id)) fire(undefined);
+      });
+    };
     session.on("exit", onExit);
-    run.disposers.push(() => session.removeListener("exit", onExit));
+    session.on("status", onStatus);
+    run.exitCheck = () => {
+      if (!this.deps.getSession(session.id)) fire(undefined);
+    };
+    run.disposers.push(() => {
+      fired = true;
+      run.exitCheck = undefined;
+      session.removeListener("exit", onExit);
+      session.removeListener("status", onStatus);
+    });
   }
 
   /** Stop timers/listeners for a run (does not kill the agent). */
@@ -635,6 +672,7 @@ export class JobRunner {
   // -------------------------------------------------------------------------
 
   private checkIdle(run: ActiveRun): void {
+    run.exitCheck?.();
     if (run.finished || run.stuckReported || run.idleSince === null) return;
     const timeout = this.deps.idleTimeoutMs?.() ?? DEFAULT_IDLE_TIMEOUT_MS;
     const since = Math.max(run.idleSince, run.lastActivityAt);
@@ -673,7 +711,8 @@ export class JobRunner {
     if (run.finished) return;
 
     const window = this.deps.resumeFailWindowMs ?? 15_000;
-    if (run.resumed && code !== 0 && this.now() - run.spawnedAt < window) {
+    // code undefined = the session was closed (killed), not a failed resume.
+    if (run.resumed && code !== undefined && code !== 0 && this.now() - run.spawnedAt < window) {
       debugLog(`jobs: resume of ${run.agentSession?.id ?? "?"} failed fast (code ${code}) — retrying with a fresh session + brief`);
       run.finished = true;
       void this.spawnRun(run.ctx, true);
@@ -914,12 +953,10 @@ export class JobRunner {
   /** After completion keep the exit listener (to clear the PTY mapping) but drop the rest. */
   private endRunTimersOnly(run: ActiveRun): void {
     this.endRun(run);
-    const onExit = () => {
+    this.watchExit(run, () => {
       if (this.runs.get(run.ticketId) === run) this.runs.delete(run.ticketId);
       this.deps.tracker.clearSession(run.ticketId, run.session.id);
-    };
-    run.session.on("exit", onExit);
-    run.disposers.push(() => run.session.removeListener("exit", onExit));
+    });
   }
 
   private finishLegacyOnComplete(run: ActiveRun, result: "success" | "needs_info" | "failed", summary: string): void {

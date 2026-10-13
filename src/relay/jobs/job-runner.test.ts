@@ -104,11 +104,14 @@ function makeHarness(opts: { mcpPath?: string } = {}): Harness {
       return s;
     },
     getSession: (id) => sessions.find((s) => s.id === id && !s.closed && s.status !== "exited") ?? null,
+    // Mirrors appStore.closeSession → AgentSession.kill(): status "exited" is
+    // emitted, then every listener is dropped — no "exit" event.
     closeSession: (id) => {
       const s = sessions.find((x) => x.id === id);
       if (s && !s.closed) {
         s.closed = true;
-        s.exit(-1);
+        s.setStatus("exited");
+        s.removeAllListeners();
       }
     },
     announceSession: () => undefined,
@@ -603,6 +606,15 @@ describe("legacy → job mapping", () => {
 // Concurrency and session teardown
 // ---------------------------------------------------------------------------
 
+/** What appStore.closeSession does to a live session: status "exited", then all listeners dropped. */
+function userCloses(s: FakeSession): void {
+  s.closed = true;
+  s.setStatus("exited");
+  s.removeAllListeners();
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
 describe("JobRunner concurrency", () => {
   it("two jobs for one ticket arriving together spawn only the newer one", async () => {
     const h = harness;
@@ -633,5 +645,68 @@ describe("JobRunner concurrency", () => {
     h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job1", ticketId: "t1", reason: "user" });
     expect(h.runner.getActiveSessionId("t1")).toBeNull();
     expect(h.tracker.getSessionForTicket("t1")).toBeUndefined();
+  });
+});
+
+describe("JobRunner session closed without an exit event", () => {
+  it("fails the job when the user closes the agent session", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    userCloses(h.last());
+    await tick();
+    expect(h.ofType("cli_job_failed")).toEqual([
+      expect.objectContaining({ jobId: "job1", error: expect.stringContaining("before calling complete_phase") }),
+    ]);
+    expect(h.runner.getActiveSessionId("t1")).toBeNull();
+    expect(h.tracker.get("t1")?.activeJob).toBeNull();
+  });
+
+  it("legacy implementation still reaches done when the session is closed", async () => {
+    const h = harness;
+    const impl = mapStartImplementation(
+      { type: "relay_start_implementation", ticketId: "t1", plan: "P", systemInstructions: [], cwd: tmp },
+      undefined,
+      [],
+      1,
+    );
+    await h.runner.runJob(impl.msg, impl.options);
+    userCloses(h.last());
+    await tick();
+    expect(h.ofType("cli_implementation_done")).toHaveLength(1);
+    expect(h.ofType("cli_ticket_status").at(-1)?.status).toBe("done");
+  });
+
+  it("a SessionEnd hook (status exited while the PTY lives) does not end the job", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    const s = h.last();
+    s.status = "running";
+    s.setStatus("exited"); // e.g. /clear fires SessionEnd; the process keeps running
+    s.status = "running"; // fake getSession treats "exited" as gone; the real one does not
+    await tick();
+    expect(h.ofType("cli_job_failed")).toEqual([]);
+    expect(h.runner.getActiveSessionId("t1")).toBe(s.id);
+  });
+
+  it("a resumed session closed by the user is not retried as a fresh session", async () => {
+    const h = harness;
+    const prev: TicketAgentSession = { id: UUIDS[2] as string, driver: "claude", runnerId: "runner-a", resumeCount: 0 };
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), prev));
+    h.clock.now += 1_000;
+    userCloses(h.last());
+    await tick();
+    expect(h.sessions).toHaveLength(1);
+    expect(h.ofType("cli_job_failed").map((m) => m.jobId)).toEqual(["job1"]);
+  });
+
+  it("the idle watchdog notices a session that vanished silently", async () => {
+    vi.useFakeTimers();
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    const s = h.last();
+    s.closed = true;
+    s.removeAllListeners(); // no status event at all
+    vi.advanceTimersByTime(1_000);
+    expect(h.ofType("cli_job_failed").map((m) => m.jobId)).toEqual(["job1"]);
   });
 });
