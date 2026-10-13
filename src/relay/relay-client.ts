@@ -30,6 +30,8 @@ import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
 import { getAllDrivers, getDriver } from "../agents/agent-registry.js";
 import { JobRunner } from "./jobs/job-runner.js";
+import { buildRunnerRegisterMsg } from "./runner-info.js";
+import { cleanupTickets, DAY_MS } from "./ticket-cleanup.js";
 import type { McpSpawnConfigProvider, TicketWorkspaceWriter } from "./jobs/job-seams.js";
 import {
   mapStartImplementation,
@@ -235,8 +237,14 @@ export class RelayClient extends EventEmitter {
   // Ticket job path (session continuity)
   private jobRunner: JobRunner;
 
-  constructor() {
+  // Runner presence for the job orchestrator
+  private runnerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly runnerHeartbeatMs: number;
+  static readonly RUNNER_HEARTBEAT_MS = 30_000;
+
+  constructor(options: { runnerHeartbeatMs?: number } = {}) {
     super();
+    this.runnerHeartbeatMs = options.runnerHeartbeatMs ?? RelayClient.RUNNER_HEARTBEAT_MS;
     const maxKB = settingsStore.getState().config.relay.maxReplayBufferKB;
     this.replayBuffer = new ReplayBuffer(maxKB);
     this.jobRunner = this.createJobRunner();
@@ -268,6 +276,12 @@ export class RelayClient extends EventEmitter {
       debugLog(`relay: worktree prune on startup failed: ${err}`),
     );
 
+    // Drop tickets (and their clean worktrees) whose last job is long done
+    const retentionDays = settingsStore.getState().config.agents.ticketRetentionDays;
+    if (retentionDays > 0) {
+      await this.cleanupTickets({ retentionMs: retentionDays * DAY_MS });
+    }
+
     await this.watchSessions();
     await this.connect();
   }
@@ -293,6 +307,7 @@ export class RelayClient extends EventEmitter {
 
     this.clearReconnectTimer();
     this.clearHeartbeat();
+    this.clearRunnerHeartbeat();
     this.clearTokenRefreshTimer();
 
     // Clean up orphaned connect span
@@ -388,6 +403,7 @@ export class RelayClient extends EventEmitter {
         debugLog(`relay: disconnected (code ${code})`);
         this.ws = null;
         this.clearHeartbeat();
+        this.clearRunnerHeartbeat();
         clearViewerCounts();
 
         // Cancel the error handler safety-net timer — close already fired
@@ -459,6 +475,8 @@ export class RelayClient extends EventEmitter {
         this.scheduleTokenRefresh();
         // Register all current sessions
         this.registerAllSessions();
+        // Announce this machine as a job runner (again after every reconnect)
+        void this.registerRunner();
         break;
 
       case "relay_auth_fail":
@@ -688,6 +706,10 @@ export class RelayClient extends EventEmitter {
   // TODO: Web app polls this every 5s (code-relay-server epics.ts refreshSessionsPollingEpic).
   // Consider increasing interval to 30-60s or switching to push-based updates.
   private async handleListDrivers(viewerId: string): Promise<void> {
+    this.send({ type: "cli_drivers_result", viewerId, drivers: await this.getDriverList() });
+  }
+
+  private async getDriverList(): Promise<NonNullable<RelayClient["cachedDriversResult"]>> {
     const now = Date.now();
     if (!this.cachedDriversResult || now - this.cachedDriversTimestamp > RelayClient.DRIVERS_CACHE_TTL_MS) {
       const allDrivers = getAllDrivers();
@@ -701,7 +723,66 @@ export class RelayClient extends EventEmitter {
       );
       this.cachedDriversTimestamp = now;
     }
-    this.send({ type: "cli_drivers_result", viewerId, drivers: this.cachedDriversResult });
+    return this.cachedDriversResult;
+  }
+
+  // -------------------------------------------------------------------------
+  // Runner presence (job orchestrator)
+  // -------------------------------------------------------------------------
+
+  /** cli_runner_register, then cli_runner_heartbeat every 30s while connected. */
+  private async registerRunner(): Promise<void> {
+    const ws = this.ws;
+    this.clearRunnerHeartbeat();
+    let msg: Awaited<ReturnType<typeof buildRunnerRegisterMsg>>;
+    try {
+      const drivers = (await this.getDriverList()).filter((d) => d.installed).map((d) => d.name);
+      msg = await buildRunnerRegisterMsg({
+        runnerId: ticketTracker.getRunnerId(),
+        drivers,
+        projectCwds: ticketTracker.getTrackedProjectCwds(),
+        maxConcurrent: settingsStore.getState().config.agents.maxConcurrentJobs,
+      });
+    } catch (err) {
+      debugLog(`relay: building runner registration failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // The connection changed while gathering: the new one registers itself.
+    if (!ws || this.ws !== ws) return;
+    this.send(msg);
+    debugLog(`relay: registered runner ${msg.runner.id} (drivers: ${msg.runner.drivers.join(", ") || "none"})`);
+
+    const runnerId = msg.runner.id;
+    this.runnerHeartbeatTimer = setInterval(() => {
+      if (this.ws !== ws) {
+        this.clearRunnerHeartbeat();
+        return;
+      }
+      this.send({ type: "cli_runner_heartbeat", runnerId, activeJobs: this.jobRunner.activeJobCount() });
+    }, this.runnerHeartbeatMs);
+    this.runnerHeartbeatTimer.unref?.();
+  }
+
+  private clearRunnerHeartbeat(): void {
+    if (this.runnerHeartbeatTimer) {
+      clearInterval(this.runnerHeartbeatTimer);
+      this.runnerHeartbeatTimer = null;
+    }
+  }
+
+  /** Remove tickets (and clean worktrees) whose last job ended long ago. */
+  private async cleanupTickets(opts: { retentionMs: number; only?: string[] }): Promise<void> {
+    try {
+      const { removed, kept } = await cleanupTickets(
+        { tracker: ticketTracker, isBusy: (id) => this.jobRunner.isTicketBusy(id) },
+        opts,
+      );
+      if (removed.length || kept.length) {
+        debugLog(`relay: ticket cleanup removed ${removed.length}, kept ${kept.length} with unsaved work`);
+      }
+    } catch (err) {
+      debugLog(`relay: ticket cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private async browseFileSystem(
@@ -960,7 +1041,12 @@ export class RelayClient extends EventEmitter {
   }
 
   private handleCancelJob(msg: RelayCancelJobMsg): void {
-    this.jobRunner.cancelJob(msg);
+    if (this.jobRunner.cancelJob(msg)) return;
+    // Nothing running: a cancel for a finished ticket means the platform is
+    // done with it — drop its local state now (unsaved work is kept).
+    if (ticketTracker.get(msg.ticketId)?.status === "done") {
+      void this.cleanupTickets({ retentionMs: 0, only: [msg.ticketId] });
+    }
   }
 
   private handleStartPlanning(msg: RelayStartPlanningMsg): void {

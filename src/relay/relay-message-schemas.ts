@@ -205,6 +205,21 @@ const JobSchema = z.object({
   error: z.string().nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  availableAt: z.number().nullable().optional(),
+  runOptions: z
+    .object({
+      cwd: z.string().optional(),
+      driverName: z.string().optional(),
+      model: z.string().optional(),
+      useWorktree: z.boolean().optional(),
+      systemInstructions: z.array(z.string()).optional(),
+      teamId: z.string().nullable().optional(),
+      sessionId: z.string().optional(),
+      iteration: z.number().optional(),
+    })
+    .nullable()
+    .optional(),
+  result: z.enum(["success", "needs_info", "failed"]).nullable().optional(),
 });
 
 const RelayRunJobSchema = z.object({
