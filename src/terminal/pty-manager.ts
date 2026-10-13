@@ -32,13 +32,22 @@ export class PtyManager extends EventEmitter {
     const extraPaths = ["/opt/homebrew/bin", "/usr/local/bin"];
     const fullPath = [...extraPaths.filter(p => !currentPath.includes(p)), currentPath].join(":");
 
+    // Filter sensitive env vars before passing to child processes
+    const filteredEnv: Record<string, string> = {};
+    const sensitivePatterns = /^(AWS_SECRET|ANTHROPIC_API_KEY|OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|SENTRY_AUTH_TOKEN|DATABASE_URL|DB_PASSWORD|PRIVATE_KEY|SECRET_KEY|AUTH_TOKEN|REFRESH_TOKEN)/i;
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && !sensitivePatterns.test(k)) {
+        filteredEnv[k] = v;
+      }
+    }
+
     this.pty = spawn(shell, args, {
       name: "xterm-256color",
       cols,
       rows,
       cwd: options.cwd ?? process.cwd(),
       env: {
-        ...process.env,
+        ...filteredEnv,
         ...options.env,
         CLAUDECODE: "",
         PATH: fullPath,

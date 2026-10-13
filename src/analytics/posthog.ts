@@ -21,7 +21,7 @@ function getCliVersion(): string {
       cliVersion = "unknown";
     }
   }
-  return cliVersion!;
+  return cliVersion ?? "unknown";
 }
 
 function isTelemetryEnabled(): boolean {

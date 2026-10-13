@@ -3,7 +3,7 @@
 
 export const DEBUG =
   typeof process !== "undefined" &&
-  /flaio|agent-manager|\*/i.test(process.env.DEBUG ?? "");
+  /flaio|\*/i.test(process.env.DEBUG ?? "");
 
 export function makeDebugLog(
   prefix: string,

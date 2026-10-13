@@ -46,7 +46,7 @@ const ANSI_16: string[] = [
 ];
 
 function color256ToHex(index: number): string {
-  if (index < 16) return ANSI_16[index]!;
+  if (index < 16) return ANSI_16[index] ?? "";
 
   if (index < 232) {
     // 6x6x6 color cube (indices 16-231)
@@ -161,11 +161,13 @@ export class XtermBridge {
 
     for (let y = 0; y < this.terminal.rows; y++) {
       const line = buffer.getLine(y + buffer.viewportY);
-      const row = this.gridBuffer[y]!;
+      const row = this.gridBuffer[y];
+      if (!row) continue;
 
       if (!line) {
         for (let x = 0; x < this.terminal.cols; x++) {
-          const target = row[x]!;
+          const target = row[x];
+          if (!target) continue;
           target.char = " ";
           target.fg = undefined;
           target.bg = undefined;
@@ -181,7 +183,8 @@ export class XtermBridge {
 
       for (let x = 0; x < this.terminal.cols; x++) {
         const cell = line.getCell(x);
-        const target = row[x]!;
+        const target = row[x];
+        if (!target) continue;
 
         if (!cell) {
           target.char = " ";

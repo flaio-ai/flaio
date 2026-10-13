@@ -109,9 +109,17 @@ export class PortalServer {
     this.clients.set(socket, client);
 
     let buffer = "";
+    const MAX_BUFFER_SIZE = 64 * 1024; // 64KB
 
     socket.on("data", (chunk) => {
       buffer += chunk.toString();
+
+      if (buffer.length > MAX_BUFFER_SIZE) {
+        this.send(client, { type: "portal_error", message: "Message too large" });
+        socket.destroy();
+        return;
+      }
+
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
 

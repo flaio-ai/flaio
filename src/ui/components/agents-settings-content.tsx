@@ -91,7 +91,8 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
     let cancelled = false;
 
     for (let idx = 0; idx < currentAgents.length; idx++) {
-      const agent = currentAgents[idx]!;
+      const agent = currentAgents[idx];
+      if (!agent) continue;
       const i = idx;
 
       // Reset to checking
@@ -100,7 +101,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       const getInstalled = execFileAsync(agent.command, ["--version"])
         .then(({ stdout }) => {
           const match = stdout.match(SEMVER_RE);
-          return match ? match[1]! : null;
+          return match ? (match[1] ?? null) : null;
         })
         .catch(() => null);
 
@@ -187,7 +188,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         const getInstalled = execFileAsync(agent.command, ["--version"])
           .then(({ stdout }) => {
             const match = stdout.match(SEMVER_RE);
-            return match ? match[1]! : null;
+            return match ? (match[1] ?? null) : null;
           })
           .catch(() => null);
 
@@ -230,11 +231,12 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         return { ...a, installMethod: newMethod, status: "checking" as const, installedVersion: null, latestVersion: null, error: undefined };
       });
       // Re-check versions for the toggled agent
-      const agent = updated[idx]!;
+      const agent = updated[idx];
+      if (!agent) return updated;
       const getInstalled = execFileAsync(agent.command, ["--version"])
         .then(({ stdout }) => {
           const match = stdout.match(SEMVER_RE);
-          return match ? match[1]! : null;
+          return match ? (match[1] ?? null) : null;
         })
         .catch(() => null);
       const getLatest = getLatestVersion(agent);
@@ -274,7 +276,8 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
     }
   });
 
-  const agent = agents[subTab]!;
+  const agent = agents[subTab];
+  if (!agent) return <></>;
 
   return (
     <Box flexDirection="column">

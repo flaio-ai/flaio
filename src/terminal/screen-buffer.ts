@@ -42,21 +42,28 @@ export function gridToSpans(grid: CellGrid): ScreenContent {
     }
 
     const spans: SpanLine = [];
+    const first = row[0];
+    if (!first) {
+      lines.push([]);
+      continue;
+    }
     let current: Span = {
-      text: row[0]!.char,
-      fg: row[0]!.fg,
-      bg: row[0]!.bg,
-      bold: row[0]!.bold,
-      italic: row[0]!.italic,
-      underline: row[0]!.underline,
-      dim: row[0]!.dim,
-      inverse: row[0]!.inverse,
-      strikethrough: row[0]!.strikethrough,
+      text: first.char,
+      fg: first.fg,
+      bg: first.bg,
+      bold: first.bold,
+      italic: first.italic,
+      underline: first.underline,
+      dim: first.dim,
+      inverse: first.inverse,
+      strikethrough: first.strikethrough,
     };
 
     for (let i = 1; i < row.length; i++) {
-      const cell = row[i]!;
-      if (cellsMatch(cell, row[i - 1]!)) {
+      const cell = row[i];
+      const prev = row[i - 1];
+      if (!cell || !prev) continue;
+      if (cellsMatch(cell, prev)) {
         current.text += cell.char;
       } else {
         spans.push(current);

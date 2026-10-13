@@ -100,7 +100,7 @@ class SessionRingBuffer {
 
   push(data: string): void {
     while (this.size + data.length > this.maxBytes && this.count > 0) {
-      const removed = this.chunks[this.head]!;
+      const removed = this.chunks[this.head] ?? "";
       this.chunks[this.head] = null;
       this.head = (this.head + 1) % this.capacity;
       this.count--;
@@ -123,7 +123,8 @@ class SessionRingBuffer {
   toArray(): string[] {
     const result: string[] = [];
     for (let i = 0; i < this.count; i++) {
-      result.push(this.chunks[(this.head + i) % this.capacity]!);
+      const chunk = this.chunks[(this.head + i) % this.capacity];
+      if (chunk != null) result.push(chunk);
     }
     return result;
   }
@@ -222,6 +223,8 @@ export class RelayClient extends EventEmitter {
 
   // Cached driver list (avoids re-checking installed status on every poll)
   private cachedDriversResult: Array<{ name: string; displayName: string; installed: boolean; models: any[] }> | null = null;
+  private cachedDriversTimestamp = 0;
+  private static readonly DRIVERS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
     super();
@@ -344,7 +347,7 @@ export class RelayClient extends EventEmitter {
         this.connectSpan?.end();
         this.connectSpan = null;
         setRelayConnectionStatus("authenticating");
-        this.send({ type: "cli_auth", token: token! });
+        this.send({ type: "cli_auth", token });
         this.startHeartbeat();
         trackCliEvent("cli_relay_connected", {
           attempt: this.reconnectAttempt,
@@ -583,13 +586,22 @@ export class RelayClient extends EventEmitter {
   }
 
   private resolveCwd(cwd: string): string {
+    const home = process.env.HOME ?? os.homedir();
+    let resolved: string;
     if (cwd.startsWith("~/")) {
-      return cwd.replace("~", process.env.HOME ?? os.homedir());
+      resolved = cwd.replace("~", home);
+    } else if (cwd === "~") {
+      resolved = home;
+    } else {
+      resolved = cwd;
     }
-    if (cwd === "~") {
-      return process.env.HOME ?? os.homedir();
+    // Normalize to prevent path traversal (e.g. ../../etc/passwd)
+    resolved = path.resolve(resolved);
+    // Validate the resolved path is within the user's home directory
+    if (!resolved.startsWith(home + path.sep) && resolved !== home) {
+      throw new Error(`Path traversal blocked: ${cwd} resolves outside home directory`);
     }
-    return cwd;
+    return resolved;
   }
 
   private handleRelayCreateSession(driverName: string, cwd: string): void {
@@ -652,7 +664,8 @@ export class RelayClient extends EventEmitter {
   // TODO: Web app polls this every 5s (code-relay-server epics.ts refreshSessionsPollingEpic).
   // Consider increasing interval to 30-60s or switching to push-based updates.
   private async handleListDrivers(viewerId: string): Promise<void> {
-    if (!this.cachedDriversResult) {
+    const now = Date.now();
+    if (!this.cachedDriversResult || now - this.cachedDriversTimestamp > RelayClient.DRIVERS_CACHE_TTL_MS) {
       const allDrivers = getAllDrivers();
       this.cachedDriversResult = await Promise.all(
         allDrivers.map(async (d) => ({
@@ -662,109 +675,109 @@ export class RelayClient extends EventEmitter {
           models: d.listModels(),
         })),
       );
+      this.cachedDriversTimestamp = now;
     }
     this.send({ type: "cli_drivers_result", viewerId, drivers: this.cachedDriversResult });
   }
 
-  private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
+  private async browseFileSystem(
+    requestId: string,
+    viewerId: string,
+    dirPath: string,
+    includeFiles: boolean,
+  ): Promise<void> {
     if (!this.browseLimiter.allow(viewerId)) {
-      debugLog(`relay: rate limited browse dir from ${viewerId}`);
-      this.send({
-        type: "cli_browse_dir_result",
-        requestId,
-        viewerId,
-        resolvedPath: dirPath,
-        directories: [],
-        error: "Rate limited — try again",
-      });
+      debugLog(`relay: rate limited browse from ${viewerId}`);
+      const base = { requestId, viewerId, resolvedPath: dirPath, directories: [], error: "Rate limited — try again" };
+      this.send(includeFiles
+        ? { type: "cli_browse_files_result", ...base, files: [] }
+        : { type: "cli_browse_dir_result", ...base });
       return;
     }
 
-    const resolvedPath = this.resolveCwd(dirPath);
+    let resolvedPath: string;
+    try {
+      resolvedPath = this.resolveCwd(dirPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: browse path blocked: ${message}`);
+      const base = { requestId, viewerId, resolvedPath: dirPath, directories: [], error: message };
+      this.send(includeFiles
+        ? { type: "cli_browse_files_result", ...base, files: [] }
+        : { type: "cli_browse_dir_result", ...base });
+      return;
+    }
 
     try {
       const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      const sortLocale = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
       const directories = entries
         .filter((e) => e.isDirectory() && !e.name.startsWith("."))
         .map((e) => e.name)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        .sort(sortLocale);
 
-      this.send({
-        type: "cli_browse_dir_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories,
-        error: null,
-      });
+      if (includeFiles) {
+        const files = entries
+          .filter((e) => e.isFile() && !e.name.startsWith("."))
+          .map((e) => e.name)
+          .sort(sortLocale);
+        this.send({
+          type: "cli_browse_files_result",
+          requestId,
+          viewerId,
+          resolvedPath: path.resolve(resolvedPath),
+          directories,
+          files,
+          error: null,
+        });
+      } else {
+        this.send({
+          type: "cli_browse_dir_result",
+          requestId,
+          viewerId,
+          resolvedPath: path.resolve(resolvedPath),
+          directories,
+          error: null,
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: browse dir failed: ${message}`);
-      this.send({
-        type: "cli_browse_dir_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories: [],
-        error: message,
-      });
+      debugLog(`relay: browse failed: ${message}`);
+      const base = { requestId, viewerId, resolvedPath: path.resolve(resolvedPath), directories: [], error: message };
+      this.send(includeFiles
+        ? { type: "cli_browse_files_result", ...base, files: [] }
+        : { type: "cli_browse_dir_result", ...base });
     }
+  }
+
+  private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
+    return this.browseFileSystem(requestId, viewerId, dirPath, false);
   }
 
   private async handleBrowseFiles(requestId: string, viewerId: string, dirPath: string): Promise<void> {
-    if (!this.browseLimiter.allow(viewerId)) {
-      debugLog(`relay: rate limited browse files from ${viewerId}`);
+    return this.browseFileSystem(requestId, viewerId, dirPath, true);
+  }
+
+  private async handleRequestGitInfo(requestId: string, viewerId: string, cwd: string): Promise<void> {
+    let resolvedPath: string;
+    try {
+      resolvedPath = this.resolveCwd(cwd);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       this.send({
-        type: "cli_browse_files_result",
+        type: "cli_git_info_result",
         requestId,
         viewerId,
-        resolvedPath: dirPath,
-        directories: [],
-        files: [],
-        error: "Rate limited — try again",
+        branch: null,
+        remoteUrl: null,
+        commits: [],
+        changedFiles: 0,
+        isClean: true,
+        error: message,
       });
       return;
     }
 
-    const resolvedPath = this.resolveCwd(dirPath);
-
-    try {
-      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-      const directories = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-        .map((e) => e.name)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-      const files = entries
-        .filter((e) => e.isFile() && !e.name.startsWith("."))
-        .map((e) => e.name)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-
-      this.send({
-        type: "cli_browse_files_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories,
-        files,
-        error: null,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: browse files failed: ${message}`);
-      this.send({
-        type: "cli_browse_files_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories: [],
-        files: [],
-        error: message,
-      });
-    }
-  }
-
-  private async handleRequestGitInfo(requestId: string, viewerId: string, cwd: string): Promise<void> {
-    const resolvedPath = this.resolveCwd(cwd);
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
     const execFileAsync = promisify(execFile);
@@ -795,10 +808,10 @@ export class RelayClient extends EventEmitter {
         const lines = logResult.value.split("\n");
         for (let i = 0; i + 3 < lines.length; i += 4) {
           commits.push({
-            hash: lines[i]!,
-            message: lines[i + 1]!,
-            author: lines[i + 2]!,
-            timestamp: parseInt(lines[i + 3]!, 10),
+            hash: lines[i] ?? "",
+            message: lines[i + 1] ?? "",
+            author: lines[i + 2] ?? "",
+            timestamp: parseInt(lines[i + 3] ?? "0", 10),
           });
         }
       }
@@ -837,6 +850,44 @@ export class RelayClient extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
+  // Phase 3: Shared helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolve worktree for a ticket — reuses existing worktree or creates a new one.
+   * Returns the effective cwd, worktree path, and branch name.
+   */
+  private async resolveWorktree(
+    resolvedCwd: string,
+    ticketId: string,
+    useWorktree: boolean | undefined,
+  ): Promise<{ effectiveCwd: string; worktreePath: string | null; branchName: string | null }> {
+    if (!useWorktree) return { effectiveCwd: resolvedCwd, worktreePath: null, branchName: null };
+    const existingWt = ticketTracker.getWorktreeInfo(ticketId);
+    if (existingWt?.worktreePath) {
+      return {
+        effectiveCwd: existingWt.worktreePath,
+        worktreePath: existingWt.worktreePath,
+        branchName: existingWt.branchName,
+      };
+    }
+    const wt = await createWorktree(resolvedCwd, ticketId);
+    if (wt) {
+      return { effectiveCwd: wt.worktreePath, worktreePath: wt.worktreePath, branchName: wt.branchName };
+    }
+    return { effectiveCwd: resolvedCwd, worktreePath: null, branchName: null };
+  }
+
+  /**
+   * Merge org-level system instructions with per-request instructions, deduped.
+   */
+  private mergeInstructions(sessionId: string | undefined, systemInstructions: string[]): string[] {
+    const orgSettings = sessionId ? getSessionOrgSettings(sessionId) : undefined;
+    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
+    return [...new Set([...orgInstructions, ...systemInstructions])];
+  }
+
+  // -------------------------------------------------------------------------
   // Phase 3: Ticket dev-loop handlers
   // -------------------------------------------------------------------------
 
@@ -844,31 +895,10 @@ export class RelayClient extends EventEmitter {
     const resolvedCwd = this.resolveCwd(msg.cwd);
     const iteration = msg.iteration ?? 0;
 
-    // --- Worktree resolution ---
-    let effectiveCwd = resolvedCwd;
-    let worktreePath: string | null = null;
-    let branchName: string | null = null;
+    const { effectiveCwd, worktreePath, branchName } =
+      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
 
-    if (msg.useWorktree) {
-      // Reuse existing worktree if one exists for this ticket
-      const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
-      if (existingWt?.worktreePath) {
-        effectiveCwd = existingWt.worktreePath;
-        worktreePath = existingWt.worktreePath;
-        branchName = existingWt.branchName;
-      } else {
-        const wt = await createWorktree(resolvedCwd, msg.ticketId);
-        if (wt) {
-          effectiveCwd = wt.worktreePath;
-          worktreePath = wt.worktreePath;
-          branchName = wt.branchName;
-        }
-      }
-    }
-
-    const orgSettings = msg.sessionId ? getSessionOrgSettings(msg.sessionId) : undefined;
-    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
-    const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
+    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
 
     const promptParts = [
       "You are planning the implementation of a ticket.",
@@ -919,6 +949,13 @@ export class RelayClient extends EventEmitter {
       const session = appStore.getState().createSession(driverName, effectiveCwd, undefined, undefined, 1);
       if (!session) {
         debugLog("relay: failed to create planning session");
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: "",
+          status: "error",
+          message: `Failed to create planning session (driver "${driverName}" not found?)`,
+        });
         return;
       }
 
@@ -1009,30 +1046,10 @@ export class RelayClient extends EventEmitter {
   private async handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
 
-    // --- Worktree resolution ---
-    let effectiveCwd = resolvedCwd;
-    let worktreePath: string | null = null;
-    let branchName: string | null = null;
+    const { effectiveCwd, worktreePath, branchName } =
+      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
 
-    if (msg.useWorktree) {
-      const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
-      if (existingWt?.worktreePath) {
-        effectiveCwd = existingWt.worktreePath;
-        worktreePath = existingWt.worktreePath;
-        branchName = existingWt.branchName;
-      } else {
-        const wt = await createWorktree(resolvedCwd, msg.ticketId);
-        if (wt) {
-          effectiveCwd = wt.worktreePath;
-          worktreePath = wt.worktreePath;
-          branchName = wt.branchName;
-        }
-      }
-    }
-
-    const orgSettings = msg.sessionId ? getSessionOrgSettings(msg.sessionId) : undefined;
-    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
-    const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
+    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
 
     const planningPrompt = [
       "You are planning the implementation of a ticket.",
@@ -1055,6 +1072,13 @@ export class RelayClient extends EventEmitter {
       const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create interactive planning session");
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: "",
+          status: "error",
+          message: `Failed to create interactive planning session (driver "${driverName}" not found?)`,
+        });
         return;
       }
 
@@ -1085,29 +1109,11 @@ export class RelayClient extends EventEmitter {
   private async handleStartImplementation(msg: RelayStartImplementationMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
 
-    // --- Worktree resolution ---
-    let effectiveCwd = resolvedCwd;
-    let worktreePath: string | null = null;
-    let branchName: string | null = null;
+    // Implementation always tries to reuse an existing worktree first (from planning phase)
+    const { effectiveCwd, worktreePath, branchName } =
+      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
 
-    // Reuse worktree from planning phase if one exists
-    const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
-    if (existingWt?.worktreePath) {
-      effectiveCwd = existingWt.worktreePath;
-      worktreePath = existingWt.worktreePath;
-      branchName = existingWt.branchName;
-    } else if (msg.useWorktree) {
-      const wt = await createWorktree(resolvedCwd, msg.ticketId);
-      if (wt) {
-        effectiveCwd = wt.worktreePath;
-        worktreePath = wt.worktreePath;
-        branchName = wt.branchName;
-      }
-    }
-
-    const orgSettings = msg.sessionId ? getSessionOrgSettings(msg.sessionId) : undefined;
-    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
-    const allInstructions = [...new Set([...orgInstructions, ...msg.systemInstructions])];
+    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
 
     const promptParts = [
       "You are implementing a plan. Follow the plan exactly.",
@@ -1140,6 +1146,13 @@ export class RelayClient extends EventEmitter {
       const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create implementation session");
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: "",
+          status: "error",
+          message: `Failed to create implementation session (driver "${driverName}" not found?)`,
+        });
         return;
       }
 
@@ -1774,7 +1787,7 @@ export class RelayClient extends EventEmitter {
     this.clearReconnectTimer();
 
     const delays = [1000, 2000, 4000, 8000, 16000, 30000];
-    const delay = delays[Math.min(this.reconnectAttempt, delays.length - 1)]!;
+    const delay = delays[Math.min(this.reconnectAttempt, delays.length - 1)] ?? 30000;
     this.reconnectAttempt++;
 
     debugLog(`relay: reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`);

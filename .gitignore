@@ -8,3 +8,7 @@ dist/
 website/node_modules/
 website/dist/
 website/.astro/
+
+# Flaio + Claude local state
+.flaio/
+.claude/settings.local.json

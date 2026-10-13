@@ -210,6 +210,15 @@ export async function refreshAuthToken(): Promise<string | null> {
   }
 }
 
+/**
+ * Extract UID from JWT payload WITHOUT signature verification.
+ *
+ * This is intentional: the CLI only decodes tokens it received from our own
+ * auth server / Firebase. Signature verification happens server-side when the
+ * token is used to authenticate the WebSocket connection. These helpers are
+ * convenience extractors for display / local logic only — never for
+ * authorization decisions.
+ */
 export function extractUidFromToken(token: string): string | null {
   try {
     const parts = token.split(".");
@@ -225,7 +234,7 @@ export function getTokenExpiry(token: string): number | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
-    const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString());
+    const payload = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString());
     return typeof payload.exp === "number" ? payload.exp : null;
   } catch {
     return null;

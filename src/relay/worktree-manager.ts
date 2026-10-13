@@ -4,12 +4,16 @@
 
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
-import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { makeDebugLog } from "../connectors/debug.js";
 
 const execFile = promisify(execFileCb);
 const debugLog = makeDebugLog("worktree");
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsp.access(p); return true; } catch { return false; }
+}
 
 // ---------------------------------------------------------------------------
 // Concurrency — serialize manifest read-modify-write per repo root
@@ -19,7 +23,7 @@ const manifestLocks = new Map<string, Promise<void>>();
 
 async function withManifestLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
   const prev = manifestLocks.get(repoRoot) ?? Promise.resolve();
-  let resolve: () => void;
+  let resolve: (() => void) | undefined;
   const next = new Promise<void>((r) => {
     resolve = r;
   });
@@ -29,7 +33,7 @@ async function withManifestLock<T>(repoRoot: string, fn: () => Promise<T>): Prom
   try {
     return await fn();
   } finally {
-    resolve!();
+    resolve?.();
     // Clean up: if this promise is still the latest, remove the entry
     if (manifestLocks.get(repoRoot) === next) {
       manifestLocks.delete(repoRoot);
@@ -94,24 +98,22 @@ function manifestPath(repoRoot: string): string {
 // Manifest I/O
 // ---------------------------------------------------------------------------
 
-export function getManifest(repoRoot: string): WorktreeManifest {
+export async function getManifest(repoRoot: string): Promise<WorktreeManifest> {
   const p = manifestPath(repoRoot);
   try {
-    if (fs.existsSync(p)) {
-      const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
-      return raw as WorktreeManifest;
-    }
-  } catch (err) {
-    debugLog(`worktree: failed to read manifest: ${err}`);
+    const text = await fsp.readFile(p, "utf-8");
+    return JSON.parse(text) as WorktreeManifest;
+  } catch {
+    // File doesn't exist or invalid JSON
   }
   return { worktrees: {} };
 }
 
-function writeManifest(repoRoot: string, manifest: WorktreeManifest): void {
+async function writeManifest(repoRoot: string, manifest: WorktreeManifest): Promise<void> {
   const p = manifestPath(repoRoot);
   const dir = path.dirname(p);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(p, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
 }
 
 // ---------------------------------------------------------------------------
@@ -140,15 +142,15 @@ export async function createWorktree(
       const worktreePath = path.join(repoRoot, ".flaio", "worktrees", sanitized);
 
       // Check manifest first — if entry exists, validate and return
-      const manifest = getManifest(repoRoot);
+      const manifest = await getManifest(repoRoot);
       const existing = manifest.worktrees[sanitized];
-      if (existing && fs.existsSync(existing.worktreePath)) {
+      if (existing && await pathExists(existing.worktreePath)) {
         debugLog(`worktree: reusing existing worktree for ${ticketId} at ${existing.worktreePath}`);
         return { worktreePath: existing.worktreePath, branchName: existing.branchName };
       }
 
       // Check if the worktree directory already exists (e.g. from a previous run)
-      if (fs.existsSync(worktreePath)) {
+      if (await pathExists(worktreePath)) {
         debugLog(`worktree: directory exists at ${worktreePath}, reusing`);
         // Update manifest
         manifest.worktrees[sanitized] = {
@@ -158,12 +160,12 @@ export async function createWorktree(
           projectCwd: repoRoot,
           createdAt: Date.now(),
         };
-        writeManifest(repoRoot, manifest);
+        await writeManifest(repoRoot, manifest);
         return { worktreePath, branchName };
       }
 
       // Ensure parent directory exists
-      fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+      await fsp.mkdir(path.dirname(worktreePath), { recursive: true });
 
       // Check if branch already exists
       let branchExists = false;
@@ -190,7 +192,7 @@ export async function createWorktree(
         projectCwd: repoRoot,
         createdAt: Date.now(),
       };
-      writeManifest(repoRoot, manifest);
+      await writeManifest(repoRoot, manifest);
 
       return { worktreePath, branchName };
     });
@@ -240,12 +242,12 @@ export async function removeWorktree(
 
     await withManifestLock(repoRoot, async () => {
       const sanitized = sanitizeBranchSegment(ticketId);
-      const manifest = getManifest(repoRoot);
+      const manifest = await getManifest(repoRoot);
       const entry = manifest.worktrees[sanitized];
       if (!entry) return;
 
       // Auto-commit if dirty
-      if (fs.existsSync(entry.worktreePath)) {
+      if (await pathExists(entry.worktreePath)) {
         await autoSaveWorktree(entry.worktreePath, ticketId);
 
         // Remove the worktree — try without --force first
@@ -280,7 +282,7 @@ export async function removeWorktree(
 
       // Remove manifest entry
       delete manifest.worktrees[sanitized];
-      writeManifest(repoRoot, manifest);
+      await writeManifest(repoRoot, manifest);
 
       debugLog(`worktree: removed worktree for ticket ${ticketId}`);
     });
@@ -298,10 +300,10 @@ export async function autoSaveAllWorktrees(projectCwd: string): Promise<void> {
     if (!(await isGitRepo(projectCwd))) return;
 
     const repoRoot = await getRepoRoot(projectCwd);
-    const manifest = getManifest(repoRoot);
+    const manifest = await getManifest(repoRoot);
 
     for (const [, entry] of Object.entries(manifest.worktrees)) {
-      if (entry.projectCwd === repoRoot && fs.existsSync(entry.worktreePath)) {
+      if (entry.projectCwd === repoRoot && await pathExists(entry.worktreePath)) {
         await autoSaveWorktree(entry.worktreePath, entry.ticketId);
       }
     }
@@ -319,11 +321,11 @@ export async function pruneStaleEntries(projectCwd: string): Promise<void> {
     if (!(await isGitRepo(projectCwd))) return;
 
     const repoRoot = await getRepoRoot(projectCwd);
-    const manifest = getManifest(repoRoot);
+    const manifest = await getManifest(repoRoot);
     let changed = false;
 
     for (const [key, entry] of Object.entries(manifest.worktrees)) {
-      if (!fs.existsSync(entry.worktreePath)) {
+      if (!await pathExists(entry.worktreePath)) {
         debugLog(`worktree: pruning stale manifest entry for ${entry.ticketId}`);
         delete manifest.worktrees[key];
         changed = true;
@@ -331,7 +333,7 @@ export async function pruneStaleEntries(projectCwd: string): Promise<void> {
     }
 
     if (changed) {
-      writeManifest(repoRoot, manifest);
+      await writeManifest(repoRoot, manifest);
       // Also prune git's internal worktree references
       try {
         await execFile("git", ["worktree", "prune"], { cwd: repoRoot });

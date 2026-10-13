@@ -117,7 +117,7 @@ function formatModelName(displayName: string, modelId?: string): string {
   if (modelId) {
     const match = modelId.match(/claude-(\w+)-(\d+)-(\d+)/);
     if (match) {
-      const family = match[1]!.charAt(0).toUpperCase() + match[1]!.slice(1);
+      const family = (match[1] ?? "").charAt(0).toUpperCase() + (match[1] ?? "").slice(1);
       return `${family} ${match[2]}.${match[3]}`;
     }
   }

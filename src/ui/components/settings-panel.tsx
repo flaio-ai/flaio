@@ -272,7 +272,8 @@ export function SettingsPanel({
   });
 
   const handleEditSubmit = (value: string) => {
-    const field = fields[editingField!];
+    if (editingField == null) return;
+    const field = fields[editingField];
     if (field) {
       const error = validateField(field, value);
       if (error) {
