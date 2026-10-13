@@ -709,4 +709,23 @@ describe("JobRunner session closed without an exit event", () => {
     vi.advanceTimersByTime(1_000);
     expect(h.ofType("cli_job_failed").map((m) => m.jobId)).toEqual(["job1"]);
   });
+
+  it("a print-mode timeout reports an error instead of a truncated plan", async () => {
+    vi.useFakeTimers();
+    const h = harness;
+    const p = mapStartPlanning(
+      { type: "relay_start_planning", ticketId: "t1", ticketTitle: "T", ticketDescription: "D", systemInstructions: [], cwd: tmp },
+      undefined,
+      [],
+      1,
+    );
+    await h.runner.runJob(p.msg, p.options);
+    h.last().emit("raw_data", "half a pla");
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    await vi.runOnlyPendingTimersAsync();
+    expect(h.last().closed).toBe(true);
+    expect(h.ofType("cli_plan_ready")).toEqual([]);
+    expect(h.ofType("cli_ticket_status").at(-1)).toMatchObject({ status: "error", message: expect.stringContaining("timed out") });
+    expect(h.runner.getActiveSessionId("t1")).toBeNull();
+  });
 });

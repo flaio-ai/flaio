@@ -504,10 +504,17 @@ export class JobRunner {
       );
       const timeoutMs = this.deps.printTimeoutMs ?? 10 * 60 * 1000;
       const timer = setTimeout(() => {
-        if (this.deps.getSession(session.id)) {
-          debugLog(`jobs: print run ${session.id} timed out after ${timeoutMs}ms, closing`);
-          this.deps.closeSession(session.id);
-        }
+        if (run.finished) return;
+        debugLog(`jobs: print run ${session.id} timed out after ${timeoutMs}ms, closing`);
+        // Report the timeout rather than letting the kill pass a truncated
+        // stdout off as the finished plan.
+        run.finished = true;
+        this.endRun(run);
+        if (this.runs.get(run.ticketId) === run) this.runs.delete(run.ticketId);
+        this.deps.tracker.clearSession(run.ticketId, session.id);
+        this.deps.tracker.setActiveJob(run.ticketId, null);
+        this.reportStartFailure(run.job, run.legacy, `Agent timed out after ${Math.round(timeoutMs / 60_000)}m`, session.id);
+        if (this.deps.getSession(session.id)) this.deps.closeSession(session.id);
       }, timeoutMs);
       timer.unref?.();
       run.disposers.push(() => clearTimeout(timer));
