@@ -1,10 +1,47 @@
-import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
+import {
+  BaseDriver,
+  inlineSystemPrompt,
+  type AgentStatus,
+  type SpawnConfig,
+  type ModelInfo,
+  type TicketCapabilities,
+  type TicketSpawnConfig,
+  type TicketSpawnOptions,
+} from "./base-driver.js";
+import type { AgentPermissionMode } from "../../contracts/agent-loop.js";
 import { execSync } from "node:child_process";
+
+/**
+ * BEST EFFORT — Gemini CLI is not installed in the build environment, so these
+ * flags are NOT verified. Mapping follows the Gemini CLI docs:
+ *   --approval-mode default|auto_edit|yolo|plan   (plan is newer/experimental)
+ */
+const GEMINI_APPROVAL_MODES: Record<AgentPermissionMode, string> = {
+  plan: "plan",
+  acceptEdits: "auto_edit",
+  default: "default",
+};
 
 export class GeminiDriver extends BaseDriver {
   readonly name = "gemini";
   readonly displayName = "Gemini CLI";
   readonly command = "gemini";
+
+  /**
+   * BEST EFFORT (unverified). Gemini CLI can resume by session id/index
+   * (`--resume <id>`), but cannot preset a session id, fork, take an MCP config
+   * on the command line (MCP servers come from .gemini/settings.json) or append
+   * a system prompt (GEMINI_SYSTEM_MD replaces it). The session id is learned
+   * from sideband hook events after the first run.
+   */
+  override readonly ticketCapabilities: TicketCapabilities = {
+    presetSessionId: false,
+    resume: true,
+    fork: false,
+    permissionModes: true,
+    mcpConfig: false,
+    appendSystemPrompt: false,
+  };
 
   async checkInstalled(): Promise<boolean> {
     try {
@@ -15,7 +52,7 @@ export class GeminiDriver extends BaseDriver {
     }
   }
 
-  listModels(): ModelInfo[] {
+  protected defaultModels(): ModelInfo[] {
     return [
       { id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro" },
       { id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash" },
@@ -60,6 +97,32 @@ export class GeminiDriver extends BaseDriver {
       args.push("-p", options.prompt);
     }
     return { command: this.resolveCommand(), args };
+  }
+
+  /**
+   * BEST EFFORT (unverified flags). First run: fresh session (id unknown until
+   * the sideband reports it). Later runs: `--resume <id>` when an id is known.
+   * mcpConfigPath and fork options are ignored (no CLI equivalent); system
+   * instructions are inlined into the prompt.
+   */
+  override buildTicketSpawnArgs(options: TicketSpawnOptions): TicketSpawnConfig {
+    const args: string[] = [];
+    const resumed = options.resume && !!options.sessionId;
+    if (resumed && options.sessionId) {
+      args.push("--resume", options.sessionId);
+    }
+    if (options.model) {
+      args.push("--model", options.model);
+    }
+    args.push("--approval-mode", GEMINI_APPROVAL_MODES[options.permissionMode]);
+    const prompt = inlineSystemPrompt(options.prompt, options.appendSystemPrompt);
+    args.push(options.print ? "-p" : "-i", prompt);
+    return {
+      command: this.resolveCommand(),
+      args,
+      agentSessionId: resumed ? options.sessionId : null,
+      resumed,
+    };
   }
 
   buildContinueArgs(_options: { cwd: string }): SpawnConfig {

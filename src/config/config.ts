@@ -65,9 +65,15 @@ const ConnectorsSchema = z.object({
   telegram: TelegramConfigSchema.default(() => TelegramConfigSchema.parse({})),
 });
 
+const ModelInfoSchema = z.object({ id: z.string(), displayName: z.string() });
+
 const AgentsSchema = z.object({
   statusCheckInterval: z.number().default(DEFAULTS.agents.statusCheckInterval),
   detectorInterval: z.number().default(DEFAULTS.agents.detectorInterval),
+  /** Per-driver model list override (driver name -> models). Drivers fall back to their built-in list. */
+  models: z.record(z.string(), z.array(ModelInfoSchema)).default({}),
+  /** Ticket jobs: how long an agent may sit idle (waiting for input) before the job is reported stuck. */
+  ticketIdleTimeoutMs: z.number().default(DEFAULTS.agents.ticketIdleTimeoutMs),
 });
 
 const AppConfigSchema = z.object({
@@ -122,4 +128,9 @@ export function saveConfig(config: AppConfig): void {
 
 export function getConfigPath(): string {
   return CONFIG_FILE;
+}
+
+/** Flaio's config directory (~/.config/flaio). Other state files (e.g. tickets.json) live here. */
+export function getConfigDir(): string {
+  return CONFIG_DIR;
 }

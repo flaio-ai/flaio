@@ -3,7 +3,7 @@ import type * as Sentry from "@sentry/node";
 import { PtyManager } from "../terminal/pty-manager.js";
 import { XtermBridge } from "../terminal/xterm-bridge.js";
 import { ScreenBuffer, type ScreenContent } from "../terminal/screen-buffer.js";
-import type { BaseDriver, AgentStatus } from "./drivers/base-driver.js";
+import type { BaseDriver, AgentStatus, TicketSpawnConfig, TicketSpawnOptions } from "./drivers/base-driver.js";
 import { SidebandReceiver } from "./sideband/sideband-receiver.js";
 import {
   resolveFromClaudeHook,
@@ -38,6 +38,24 @@ function statusToDetailed(status: AgentStatus): DetailedStatus {
 
 let nextId = 1;
 
+/** Agent CLI session identity reported by the agent itself (hooks / status line). */
+export interface AgentSessionInfo {
+  /** The agent CLI's own session id (e.g. Claude Code session UUID). */
+  agentSessionId?: string;
+  transcriptPath?: string;
+}
+
+/** Pull session_id / transcript_path out of a raw hook payload. */
+function agentInfoFromHookRaw(raw: Record<string, unknown> | undefined): AgentSessionInfo {
+  if (!raw) return {};
+  const info: AgentSessionInfo = {};
+  const id = raw.session_id ?? raw.sessionId;
+  const transcript = raw.transcript_path ?? raw.transcriptPath;
+  if (typeof id === "string" && id) info.agentSessionId = id;
+  if (typeof transcript === "string" && transcript) info.transcriptPath = transcript;
+  return info;
+}
+
 export class AgentSession extends EventEmitter {
   readonly id: string;
   readonly driverName: string;
@@ -60,6 +78,9 @@ export class AgentSession extends EventEmitter {
   private lastHookTime = 0;
   /** Timestamp of the last status change — used for hysteresis in PTY polling. */
   private lastStatusChangeTime = 0;
+
+  /** Last agent session identity seen on the sideband (deduplicates "agent_session_info"). */
+  private _agentInfo: AgentSessionInfo = {};
 
   // Analytics
   private sessionSpan: Sentry.Span | null = null;
@@ -138,6 +159,7 @@ export class AgentSession extends EventEmitter {
       const prevStatus = this._status;
       this.sidebandActive = true;
       this.lastHookTime = Date.now();
+      this.noteAgentInfo(agentInfoFromHookRaw(event.raw));
       const resolver = HOOK_RESOLVERS[this.driverName] ?? resolveFromClaudeHook;
       const resolved = resolver(event);
       this.applyResolvedStatus(resolved);
@@ -156,6 +178,7 @@ export class AgentSession extends EventEmitter {
     // Wire sideband metadata events
     this.sideband.on("metadata", (metadata: SessionMetadata) => {
       sessionMetadataStore.update(this.id, metadata);
+      this.noteAgentInfo({ agentSessionId: metadata.sessionId, transcriptPath: metadata.transcriptPath });
       this.emit("metadata", metadata);
     });
   }
@@ -170,6 +193,27 @@ export class AgentSession extends EventEmitter {
 
   get currentTool(): string | undefined {
     return this._currentTool;
+  }
+
+  /** Agent CLI session id / transcript path as last reported by the agent. */
+  get agentInfo(): AgentSessionInfo {
+    return { ...this._agentInfo };
+  }
+
+  /** Merge newly seen agent identity and emit "agent_session_info" when it changed. */
+  private noteAgentInfo(info: AgentSessionInfo): void {
+    const next: AgentSessionInfo = {
+      agentSessionId: info.agentSessionId || this._agentInfo.agentSessionId,
+      transcriptPath: info.transcriptPath || this._agentInfo.transcriptPath,
+    };
+    if (
+      next.agentSessionId === this._agentInfo.agentSessionId &&
+      next.transcriptPath === this._agentInfo.transcriptPath
+    ) {
+      return;
+    }
+    this._agentInfo = next;
+    this.emit("agent_session_info", { ...next });
   }
 
   get pid(): number | null {
@@ -240,6 +284,45 @@ export class AgentSession extends EventEmitter {
       mode: options?.mode ?? "interactive",
       model: options?.model,
     });
+  }
+
+  /**
+   * Spawn the agent for a ticket job via the driver's buildTicketSpawnArgs
+   * (preset session id / resume / permission mode / MCP config). Returns the
+   * spawn config so callers know the agent session id up front when possible.
+   */
+  async startTicket(
+    options: Omit<TicketSpawnOptions, "cwd">,
+    extraEnv?: Record<string, string>,
+  ): Promise<TicketSpawnConfig> {
+    this.sessionSpan = startTransaction("agent-session", "session.lifecycle");
+    this.sessionStartTime = Date.now();
+    this.setStatus("starting");
+
+    await startSpanAsync("sideband.start", "session.setup", () => this.sideband.start());
+
+    const config = this.driver.buildTicketSpawnArgs({ ...options, cwd: this.cwd });
+
+    this.pty.spawn({
+      command: config.command,
+      args: config.args,
+      cwd: this.cwd,
+      env: { ...config.env, ...extraEnv, ...this.sideband.getSpawnEnv() },
+      cols: this.xterm.cols,
+      rows: this.xterm.rows,
+    });
+
+    this.screenBuffer.start(() => this.xterm.extractGrid());
+    this.startStatusChecking();
+    this.setStatus("running");
+
+    trackCliEvent("cli_session_spawned", {
+      driver: this.driverName,
+      mode: options.print ? "print" : "interactive",
+      model: options.model ?? undefined,
+    });
+
+    return config;
   }
 
   async resume(sessionId: string, prompt?: string): Promise<void> {
