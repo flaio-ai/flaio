@@ -7,6 +7,7 @@
 // JobRunner.setMcpSpawnConfigProvider() (or RelayClient's pass-throughs).
 // ---------------------------------------------------------------------------
 
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../../contracts/mcp-tools.js";
@@ -26,16 +27,48 @@ export interface TicketWorkspaceWriter {
 /** Default writer: plain file write + info/exclude entry. */
 export const defaultTicketWorkspace: TicketWorkspaceWriter = {
   async writeBrief(worktreePath, _ticketId, markdown) {
-    const dir = path.join(worktreePath, TICKET_WORKSPACE_DIR);
-    await fsp.mkdir(dir, { recursive: true });
+    const dir = await ensureRealDir(worktreePath, TICKET_WORKSPACE_DIR);
     const file = path.join(dir, TICKET_WORKSPACE_FILES.brief);
-    await fsp.writeFile(file, markdown.endsWith("\n") ? markdown : markdown + "\n", "utf-8");
+    // O_NOFOLLOW: a brief.md symlink in the repo must not redirect the write.
+    const flags =
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0);
+    const fh = await fsp.open(file, flags, 0o644);
+    try {
+      await fh.writeFile(markdown.endsWith("\n") ? markdown : markdown + "\n", "utf-8");
+    } finally {
+      await fh.close();
+    }
     return file;
   },
   async ensureExcluded(worktreePath) {
     await ensureFlaioExcluded(worktreePath);
   },
 };
+
+/**
+ * Create `<root>/<rel>` one segment at a time, refusing any segment that is a
+ * symlink or not a directory, so a repo that ships `.flaio` (or
+ * `.flaio/ticket`) as a symlink cannot make Flaio write outside the worktree.
+ */
+async function ensureRealDir(root: string, rel: string): Promise<string> {
+  let dir = path.resolve(root);
+  for (const segment of rel.split("/").filter(Boolean)) {
+    dir = path.join(dir, segment);
+    let st: fs.Stats | null = null;
+    try {
+      st = await fsp.lstat(dir);
+    } catch {
+      // Missing — created below
+    }
+    if (st && (st.isSymbolicLink() || !st.isDirectory())) {
+      throw new Error(`Refusing to write ticket workspace: ${dir} is not a plain directory`);
+    }
+    if (!st) await fsp.mkdir(dir).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "EEXIST") throw err;
+    });
+  }
+  return dir;
+}
 
 /** What the agent needs to attach the Flaio MCP server for a ticket job. */
 export interface McpSpawnConfig {
