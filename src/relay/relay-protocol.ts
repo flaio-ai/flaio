@@ -1,3 +1,5 @@
+import type { Job, JobKind, PhaseResult, Runner, TicketAgentSession, TicketEvent } from "../contracts/agent-loop.js";
+
 // ---------------------------------------------------------------------------
 // WebSocket protocol message types for CLI ↔ Relay ↔ Browser communication
 // ---------------------------------------------------------------------------
@@ -222,6 +224,68 @@ export interface CliSetUserSettingsMsg {
   worktreeDefaults?: Partial<{ planning: boolean; interactivePlanning: boolean; implementation: boolean }>;
 }
 
+// Virtual developer (Stage 0): job loop messages (CLI -> Relay)
+
+/** Runner announces itself after auth (and on capability change). */
+export interface CliRunnerRegisterMsg {
+  type: "cli_runner_register";
+  runner: Omit<Runner, "ownerUid" | "online" | "lastHeartbeatAt" | "activeJobs">;
+}
+
+export interface CliRunnerHeartbeatMsg {
+  type: "cli_runner_heartbeat";
+  runnerId: string;
+  activeJobs: number;
+}
+
+/** Runner accepted a dispatched job. */
+export interface CliJobClaimedMsg {
+  type: "cli_job_claimed";
+  jobId: string;
+  ticketId: string;
+  runnerId: string;
+  /** Flaio PTY session id hosting the agent (for terminal view). */
+  sessionId: string;
+}
+
+/** Agent CLI session id + transcript captured (first run or after fork). */
+export interface CliAgentSessionMsg {
+  type: "cli_agent_session";
+  ticketId: string;
+  agentSession: TicketAgentSession;
+}
+
+/** Event emitted by the agent through the Flaio MCP tools. id/at may be filled by the relay. */
+export interface CliTicketEventMsg {
+  type: "cli_ticket_event";
+  ticketId: string;
+  jobId: string | null;
+  event: Omit<TicketEvent, "id" | "at" | "ticketId"> & { id?: string; at?: number };
+}
+
+/** The only way a job ends successfully: the agent called complete_phase (or it failed). */
+export interface CliPhaseCompleteMsg {
+  type: "cli_phase_complete";
+  ticketId: string;
+  jobId: string;
+  phase: JobKind;
+  result: PhaseResult;
+  summary: string;
+  testsRun?: string[];
+  /** Structured plan when phase is plan / revise_plan. */
+  plan?: { steps: string[]; risks: string[]; files: string[]; markdown: string };
+  gitContext?: { branch?: string; prUrl?: string; headSha?: string };
+}
+
+export interface CliJobFailedMsg {
+  type: "cli_job_failed";
+  jobId: string;
+  ticketId: string;
+  error: string;
+  /** Fallback heuristics flagged the agent as stuck rather than crashed. */
+  stuck?: boolean;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -240,7 +304,14 @@ export type CliToRelayMsg =
   | CliTicketStatusMsg
   | CliGitInfoResultMsg
   | CliDriversResultMsg
-  | CliSetUserSettingsMsg;
+  | CliSetUserSettingsMsg
+  | CliRunnerRegisterMsg
+  | CliRunnerHeartbeatMsg
+  | CliJobClaimedMsg
+  | CliAgentSessionMsg
+  | CliTicketEventMsg
+  | CliPhaseCompleteMsg
+  | CliJobFailedMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -497,6 +568,33 @@ export interface RelayUserSettingsMsg {
   worktreeDefaults: { planning: boolean; interactivePlanning: boolean; implementation: boolean };
 }
 
+// Virtual developer (Stage 0): job dispatch (Relay -> CLI)
+
+export interface RelayRunJobMsg {
+  type: "relay_run_job";
+  job: Job;
+  ticket: {
+    id: string;
+    title: string;
+    cwd: string;
+    useWorktree: boolean;
+    driverName: string;
+    model: string | null;
+    /** Resume this agent session if present; otherwise start one and report it via cli_agent_session. */
+    agentSession: TicketAgentSession | null;
+  };
+  /** Markdown brief built by the context assembler; written to .flaio/ticket/brief.md. */
+  briefMarkdown: string;
+  systemInstructions: string[];
+}
+
+export interface RelayCancelJobMsg {
+  type: "relay_cancel_job";
+  jobId: string;
+  ticketId: string;
+  reason: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -518,7 +616,9 @@ export type RelayToCliMsg =
   | RelayRequestGitInfoMsg
   | RelayListDriversMsg
   | RelayRepoDetectedMsg
-  | RelayUserSettingsMsg;
+  | RelayUserSettingsMsg
+  | RelayRunJobMsg
+  | RelayCancelJobMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

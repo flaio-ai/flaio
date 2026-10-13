@@ -176,6 +176,60 @@ const RelayUserSettingsSchema = z.object({
   }),
 });
 
+// Virtual developer (Stage 0): job dispatch. Mirrors RelayRunJobMsg / RelayCancelJobMsg.
+
+const JobKindSchema = z.enum(["plan", "implement", "revise_plan", "review_fixes", "ci_fix", "answer_resume"]);
+
+const TicketAgentSessionSchema = z.object({
+  id: z.string(),
+  driver: z.string(),
+  transcriptPath: z.string().optional(),
+  runnerId: z.string().optional(),
+  resumeCount: z.number().int(),
+  lastResumedAt: z.number().optional(),
+});
+
+const JobSchema = z.object({
+  id: z.string(),
+  ticketId: z.string(),
+  ownerUid: z.string(),
+  orgId: z.string().nullable(),
+  kind: JobKindSchema,
+  prompt: z.string().nullable(),
+  permissionMode: z.enum(["plan", "acceptEdits", "default"]),
+  status: z.enum(["queued", "claimed", "running", "done", "failed", "cancelled"]),
+  runnerId: z.string().nullable(),
+  leaseExpiresAt: z.number().nullable(),
+  attempts: z.number().int(),
+  maxAttempts: z.number().int(),
+  error: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
+const RelayRunJobSchema = z.object({
+  type: z.literal("relay_run_job"),
+  job: JobSchema,
+  ticket: z.object({
+    id: z.string(),
+    title: z.string(),
+    cwd: z.string().max(4096),
+    useWorktree: z.boolean(),
+    driverName: z.string(),
+    model: z.string().nullable(),
+    agentSession: TicketAgentSessionSchema.nullable(),
+  }),
+  briefMarkdown: z.string().max(512 * 1024),
+  systemInstructions: z.array(z.string()),
+});
+
+const RelayCancelJobSchema = z.object({
+  type: z.literal("relay_cancel_job"),
+  jobId: z.string(),
+  ticketId: z.string(),
+  reason: z.string(),
+});
+
 export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayAuthOkSchema,
   RelayAuthFailSchema,
@@ -198,4 +252,6 @@ export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayListDriversSchema,
   RelayRepoDetectedSchema,
   RelayUserSettingsSchema,
+  RelayRunJobSchema,
+  RelayCancelJobSchema,
 ]);
