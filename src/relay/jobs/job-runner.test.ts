@@ -598,3 +598,40 @@ describe("legacy → job mapping", () => {
     expect(h.ofType("cli_ticket_status")[0]).toMatchObject({ ticketId: "zz", status: "error" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Concurrency and session teardown
+// ---------------------------------------------------------------------------
+
+describe("JobRunner concurrency", () => {
+  it("two jobs for one ticket arriving together spawn only the newer one", async () => {
+    const h = harness;
+    const first = h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    const second = h.runner.runJob(runJobMsg(job("revise_plan", "job2", "plan"), null));
+    expect(await first).toBeNull();
+    expect(await second).toBe("session-1");
+
+    expect(h.sessions).toHaveLength(1);
+    expect(h.last().spawned?.env?.FLAIO_JOB_ID).toBe("job2");
+    expect(h.ofType("cli_job_claimed").map((m) => m.jobId)).toEqual(["job2"]);
+    expect(h.ofType("cli_job_failed")).toEqual([]);
+    expect(h.runner.getActiveSessionId("t1")).toBe("session-1");
+  });
+
+  it("cancelling a job that is still setting up keeps it from spawning", async () => {
+    const h = harness;
+    const pending = h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    expect(h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job1", ticketId: "t1", reason: "user" })).toBe(true);
+    expect(await pending).toBeNull();
+    expect(h.sessions).toHaveLength(0);
+    expect(h.ofType("cli_job_claimed")).toEqual([]);
+  });
+
+  it("cancel drops the run and the ticket's PTY mapping", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job1", ticketId: "t1", reason: "user" });
+    expect(h.runner.getActiveSessionId("t1")).toBeNull();
+    expect(h.tracker.getSessionForTicket("t1")).toBeUndefined();
+  });
+});

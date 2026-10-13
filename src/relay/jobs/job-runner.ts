@@ -126,6 +126,9 @@ const DEFAULT_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 
 export class JobRunner {
   private runs = new Map<string, ActiveRun>();
+  /** runJob calls still in their async setup, per ticket (newest wins; cancellable). */
+  private pending = new Map<string, { token: number; jobId: string }>();
+  private pendingSeq = 0;
   private workspace: TicketWorkspaceWriter;
   private getMcpSpawnConfig: McpSpawnConfigProvider;
   private readonly bus: TicketPhaseBus;
@@ -171,10 +174,24 @@ export class JobRunner {
     const { job, ticket } = msg;
     const tracker = this.deps.tracker;
 
+    // A newer runJob (or a cancel) for the same ticket while this one is still
+    // awaiting setup makes this one stale: it must not spawn a second agent.
+    const token = ++this.pendingSeq;
+    this.pending.set(ticket.id, { token, jobId: job.id });
+    const stale = (): boolean => {
+      if (this.pending.get(ticket.id)?.token === token) return false;
+      debugLog(`jobs: job ${job.id} superseded or cancelled during setup (ticket ${ticket.id})`);
+      return true;
+    };
+    const release = () => {
+      if (this.pending.get(ticket.id)?.token === token) this.pending.delete(ticket.id);
+    };
+
     let resolvedCwd: string;
     try {
       resolvedCwd = this.deps.resolveCwd(ticket.cwd);
     } catch (err) {
+      release();
       this.reportStartFailure(job, options.legacy, errMessage(err));
       return null;
     }
@@ -182,6 +199,7 @@ export class JobRunner {
     const driverName = ticket.driverName || DEFAULT_DRIVER_NAME;
     const driver = this.deps.getDriver(driverName);
     if (!driver) {
+      release();
       this.reportStartFailure(job, options.legacy, `Driver "${driverName}" not found`);
       return null;
     }
@@ -190,15 +208,19 @@ export class JobRunner {
     try {
       wt = await this.deps.resolveWorktree(resolvedCwd, ticket.id, ticket.useWorktree);
     } catch (err) {
+      if (stale()) return null;
+      release();
       this.reportStartFailure(job, options.legacy, `Worktree setup failed: ${errMessage(err)}`);
       return null;
     }
+    if (stale()) return null;
     const workdir = wt.effectiveCwd;
 
     // One agent per ticket: a new job supersedes whatever is still running.
     this.supersede(ticket.id);
 
     await this.prepareWorkspace(workdir, ticket.id, msg.briefMarkdown, options.briefMode ?? "replace");
+    if (stale()) return null;
 
     const prevEntry = tracker.get(ticket.id);
     tracker.upsert(ticket.id, {
@@ -218,6 +240,11 @@ export class JobRunner {
     } catch (err) {
       debugLog(`jobs: getMcpSpawnConfig failed for ${ticket.id}: ${errMessage(err)}`);
     }
+    if (stale()) return null;
+    release();
+    // Nothing awaits between here and spawnRun registering the run, but a run
+    // registered by another path in the meantime is superseded all the same.
+    this.supersede(ticket.id);
 
     const ctx: RunContext = {
       msg,
@@ -235,6 +262,14 @@ export class JobRunner {
 
   /** relay_cancel_job: stop the agent for that job. */
   cancelJob(msg: RelayCancelJobMsg): boolean {
+    const pending = this.pending.get(msg.ticketId);
+    if (pending && pending.jobId === msg.jobId) {
+      // Still setting up: drop it so it never spawns.
+      debugLog(`jobs: cancelling ${msg.jobId} during setup: ${msg.reason}`);
+      this.pending.delete(msg.ticketId);
+      this.deps.tracker.updateStatus(msg.ticketId, "cancelled");
+      return true;
+    }
     const run = this.runs.get(msg.ticketId);
     if (!run || run.job.id !== msg.jobId) {
       debugLog(`jobs: cancel for unknown job ${msg.jobId} (ticket ${msg.ticketId})`);
@@ -245,6 +280,8 @@ export class JobRunner {
     this.deps.tracker.updateStatus(run.ticketId, "cancelled");
     this.deps.tracker.setActiveJob(run.ticketId, null);
     this.endRun(run);
+    this.runs.delete(run.ticketId);
+    this.deps.tracker.clearSession(run.ticketId, run.session.id);
     this.deps.closeSession(run.session.id);
     return true;
   }
