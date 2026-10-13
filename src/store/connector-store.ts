@@ -7,6 +7,7 @@ import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
 import { PortalServer } from "../portal/portal-server.js";
 import { RelayClient } from "../relay/relay-client.js";
+import { wireTicketIntegrations } from "../relay/jobs/ticket-integration.js";
 import { setRelayLoggedIn, clearSessionState } from "../relay/relay-store.js";
 import { installHooks } from "../hooks/install.js";
 import {
@@ -93,6 +94,8 @@ const connectorManager = new ConnectorManager();
 const hookServer = new HookServer();
 const portalServer = new PortalServer();
 export const relayClient = new RelayClient();
+// Ticket jobs: real ticket workspace (brief/questions) + Flaio MCP server.
+wireTicketIntegrations(relayClient);
 
 let started = false;
 let unsubSettings: (() => void) | null = null;
