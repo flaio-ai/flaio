@@ -7,6 +7,7 @@ export const DEFAULTS = {
   agents: {
     statusCheckInterval: 1000,
     detectorInterval: 5000,
+    ticketIdleTimeoutMs: 20 * 60 * 1000,
   },
   connectors: {
     slack: {
