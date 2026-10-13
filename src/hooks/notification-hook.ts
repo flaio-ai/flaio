@@ -16,19 +16,21 @@ async function main(): Promise<void> {
     input = fs.readFileSync(0, "utf-8");
   } catch {
     process.exit(0);
+    return;
   }
 
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(input!);
+    data = JSON.parse(input);
   } catch {
     process.exit(0);
+    return;
   }
 
-  const sessionId = data!.session_id as string;
-  const cwd = data!.cwd as string;
-  const message = data!.message as string;
-  const title = data!.title as string | undefined;
+  const sessionId = data.session_id as string;
+  const cwd = data.cwd as string;
+  const message = data.message as string;
+  const title = data.title as string | undefined;
 
   await sendToHookServer({
     type: "notification",

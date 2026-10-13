@@ -155,7 +155,7 @@ export const appStore = createStore<AppState>((set, get) => ({
       const sessions = prev.sessions.filter((s) => s.id !== sessionId);
       let activeSessionId = prev.activeSessionId;
       if (activeSessionId === sessionId) {
-        activeSessionId = sessions.length > 0 ? sessions[0]!.id : null;
+        activeSessionId = sessions[0]?.id ?? null;
       }
       return { sessions, activeSessionId };
     });
@@ -184,7 +184,8 @@ export const appStore = createStore<AppState>((set, get) => ({
     if (sessions.length === 0) return;
     const idx = sessions.findIndex((s) => s.id === activeSessionId);
     const next = (idx + 1) % sessions.length;
-    set({ activeSessionId: sessions[next]!.id });
+    const nextSession = sessions[next];
+    if (nextSession) set({ activeSessionId: nextSession.id });
   },
 
   prevSession: () => {
@@ -192,7 +193,8 @@ export const appStore = createStore<AppState>((set, get) => ({
     if (sessions.length === 0) return;
     const idx = sessions.findIndex((s) => s.id === activeSessionId);
     const prev = (idx - 1 + sessions.length) % sessions.length;
-    set({ activeSessionId: sessions[prev]!.id });
+    const prevSession = sessions[prev];
+    if (prevSession) set({ activeSessionId: prevSession.id });
   },
 
   toggleSidebar: () => {

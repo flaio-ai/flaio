@@ -28,7 +28,7 @@ const debugLog = makeDebugLog("connector");
 // Pre-compiled regex patterns for extractFromLines (compiled once at module load)
 // ---------------------------------------------------------------------------
 const RE_PROMPT_LINE = /^[❯$]\s+\S/;
-const RE_DIVIDER = /^[─━═\-]+$/;
+const RE_DIVIDER = /^[─━═\-]+$/; // eslint-disable-line no-useless-escape -- \- is intentional for clarity
 const RE_BOX_START = /^[╭╰╮╯│┌└┐┘├┤┬┴┼]/;
 const RE_BOX_END = /[╭╰╮╯│┌└┐┘├┤┬┴┼]$/;
 const RE_EMPTY_PROMPT = /^[❯$]\s*$/;
@@ -386,8 +386,9 @@ function wirePromptBridge(): void {
     if (session) {
       // Write text first, then send Enter as a separate event after a short
       // delay so the agent's input handler can commit the text before submission.
-      session.write(text);
-      setTimeout(() => session!.write("\r"), 100);
+      const s = session;
+      s.write(text);
+      setTimeout(() => s.write("\r"), 100);
     }
   });
 }

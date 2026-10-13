@@ -17,6 +17,7 @@ const HOOK_DIR = path.join(os.homedir(), ".config", "flaio", "hooks");
  * Accepts the hook event name as $1 and injects it into the JSON.
  * No-op when FLAIO_SIDEBAND_DIR is not set (safe for normal CLI usage).
  */
+/* eslint-disable no-useless-escape -- \$ prevents template literal interpolation in shell scripts */
 const RELAY_HOOK_SH = `#!/bin/sh
 # Support both new and legacy env var names
 dir="\${FLAIO_SIDEBAND_DIR:-\$CODE_RELAY_SIDEBAND_DIR}"
@@ -25,9 +26,11 @@ hook="\$1"
 [ -z "$hook" ] && exit 0
 input=$(cat)
 [ -z "$input" ] && exit 0
-# Inject the hook event name at the start of the JSON object
-printf '%s\\n' "$input" | sed "s/^{/{\\"hook\\":\\"$hook\\",/" >> "$dir/events.jsonl"
+# Inject the hook event name at the start of the JSON object.
+# Uses printf instead of sed to avoid shell injection via $hook.
+printf '{"hook":"%s",%s\\n' "$hook" "\${input#\\{}" >> "$dir/events.jsonl"
 `;
+/* eslint-enable no-useless-escape */
 
 /**
  * Shell script for Claude Code status line. Reads JSON from stdin,

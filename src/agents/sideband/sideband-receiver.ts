@@ -152,6 +152,7 @@ export class SidebandReceiver extends EventEmitter {
       if (this.stopped) return;
       if (this.metadataDebounceTimer) clearTimeout(this.metadataDebounceTimer);
       this.metadataDebounceTimer = setTimeout(() => {
+        if (this.stopped) return;
         void this.readMetadata(filePath);
       }, 200);
     });
