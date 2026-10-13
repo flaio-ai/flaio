@@ -18,6 +18,26 @@ export function getHookSocketPath(): string {
   return process.env.FLAIO_HOOK_SOCKET || SOCKET_PATH;
 }
 
+/**
+ * Create (or validate) the default socket directory. It lives in the shared
+ * system temp dir on Linux, so another local user could pre-create it (or a
+ * symlink to their own dir); mkdir's `mode` only applies on creation. If they
+ * own it they can unlink our socket and bind their own, receiving
+ * FLAIO_MCP_TOKEN and tool payloads and forging permission replies. Refuse to
+ * use a directory we don't own; tighten permissions on one we do.
+ */
+export function ensurePrivateSocketDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === "win32" || typeof process.getuid !== "function") return;
+  const st = fs.lstatSync(dir);
+  if (!st.isDirectory() || st.uid !== process.getuid()) {
+    throw new Error(
+      `Refusing to use hook socket directory ${dir}: it is not a directory owned by the current user. Remove it and restart Flaio.`,
+    );
+  }
+  if ((st.mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
+}
+
 export interface HookMessage {
   /**
    * `mcp_tool_call` — a tool call forwarded by the `flaio mcp` stdio server.
@@ -45,10 +65,12 @@ export interface HookServerOptions {
 export class HookServer extends EventEmitter {
   private server: net.Server | null = null;
   private readonly path: string;
+  private readonly usesDefaultDir: boolean;
 
   constructor(opts: HookServerOptions = {}) {
     super();
     this.path = opts.socketPath ?? SOCKET_PATH;
+    this.usesDefaultDir = opts.socketPath === undefined;
   }
 
   get socketPath(): string {
@@ -56,8 +78,10 @@ export class HookServer extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    // Ensure socket directory exists (owner-only)
-    fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
+    // Ensure socket directory exists (owner-only). A caller-supplied path's
+    // directory is the caller's responsibility (it may be e.g. /tmp itself).
+    if (this.usesDefaultDir) ensurePrivateSocketDir(SOCKET_DIR);
+    else fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
 
     // Remove stale socket file
     try {
