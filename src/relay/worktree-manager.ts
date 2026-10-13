@@ -345,3 +345,41 @@ export async function pruneStaleEntries(projectCwd: string): Promise<void> {
     debugLog(`worktree: pruneStaleEntries failed: ${err}`);
   }
 }
+
+/**
+ * Make sure `.flaio/` is listed in the repo's info/exclude so ticket workspace
+ * files (.flaio/ticket/*) and nested worktrees never end up in commits.
+ * Resolves the exclude file via `git rev-parse --git-path info/exclude`, which
+ * points at the common git dir for linked worktrees. No-op outside git repos.
+ * Returns true when the pattern is present afterwards.
+ */
+export async function ensureFlaioExcluded(cwd: string, pattern = ".flaio/"): Promise<boolean> {
+  try {
+    if (!(await isGitRepo(cwd))) return false;
+    const { stdout } = await execFile("git", ["rev-parse", "--git-path", "info/exclude"], { cwd });
+    const rel = stdout.trim();
+    if (!rel) return false;
+    const excludePath = path.isAbsolute(rel) ? rel : path.join(cwd, rel);
+
+    let current = "";
+    try {
+      current = await fsp.readFile(excludePath, "utf-8");
+    } catch {
+      // Missing file — created below
+    }
+    const bare = pattern.replace(/\/$/, "");
+    const lines = current.split(/\r?\n/).map((l) => l.trim());
+    if (lines.some((l) => l === pattern || l === bare || l === `/${bare}` || l === `/${pattern}`)) {
+      return true;
+    }
+
+    await fsp.mkdir(path.dirname(excludePath), { recursive: true });
+    const prefix = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+    await fsp.appendFile(excludePath, `${prefix}# Flaio ticket workspace\n${pattern}\n`, "utf-8");
+    debugLog(`worktree: added ${pattern} to ${excludePath}`);
+    return true;
+  } catch (err) {
+    debugLog(`worktree: ensureFlaioExcluded failed: ${err}`);
+    return false;
+  }
+}
