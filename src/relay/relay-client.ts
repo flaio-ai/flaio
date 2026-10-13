@@ -1,4 +1,3 @@
-import { stripAnsi } from "../strip-ansi.js";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -6,13 +5,14 @@ import path from "node:path";
 import {
   PING_INTERVAL_MS,
   PONG_TIMEOUT_MS,
-  DEFAULT_DRIVER_NAME,
   type CliToRelayMsg,
   type RelayToCliMsg,
   type RelayStartPlanningMsg,
   type RelayStartInteractivePlanningMsg,
   type RelayStartImplementationMsg,
   type RelayRequestChangesMsg,
+  type RelayRunJobMsg,
+  type RelayCancelJobMsg,
 } from "./relay-protocol.js";
 import { ticketTracker } from "./ticket-tracker.js";
 import { createWorktree, autoSaveAllWorktrees, pruneStaleEntries } from "./worktree-manager.js";
@@ -28,8 +28,14 @@ import {
 import { refreshAuthToken, getTokenExpiry } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
-import { getAllDrivers } from "../agents/agent-registry.js";
-import type { AgentSession } from "../agents/agent-session.js";
+import { getAllDrivers, getDriver } from "../agents/agent-registry.js";
+import { JobRunner } from "./jobs/job-runner.js";
+import type { McpSpawnConfigProvider, TicketWorkspaceWriter } from "./jobs/job-seams.js";
+import {
+  mapStartImplementation,
+  mapStartInteractivePlanning,
+  mapStartPlanning,
+} from "./jobs/legacy-mapper.js";
 import {
   generateSessionKeyPair,
   generateSessionContentKey,
@@ -226,10 +232,14 @@ export class RelayClient extends EventEmitter {
   private cachedDriversTimestamp = 0;
   private static readonly DRIVERS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+  // Ticket job path (session continuity)
+  private jobRunner: JobRunner;
+
   constructor() {
     super();
     const maxKB = settingsStore.getState().config.relay.maxReplayBufferKB;
     this.replayBuffer = new ReplayBuffer(maxKB);
+    this.jobRunner = this.createJobRunner();
   }
 
   private get e2eEnabled(): boolean {
@@ -245,6 +255,11 @@ export class RelayClient extends EventEmitter {
     this.started = true;
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
+
+    // Restore the ticket ↔ agent session ↔ worktree map (drops vanished worktrees)
+    await ticketTracker.load().catch((err) =>
+      debugLog(`relay: loading tickets.json failed: ${err}`),
+    );
 
     // Clean up stale worktree manifest entries from previous sessions
     const projectCwds = ticketTracker.getTrackedProjectCwds();
@@ -263,6 +278,7 @@ export class RelayClient extends EventEmitter {
     this.shouldReconnect = false;
 
     // Auto-save all worktrees before shutting down
+    await ticketTracker.flush();
     const projectCwds = ticketTracker.getTrackedProjectCwds();
     for (const cwd of projectCwds) {
       await autoSaveAllWorktrees(cwd).catch((err) =>
@@ -518,6 +534,14 @@ export class RelayClient extends EventEmitter {
 
       case "relay_request_changes":
         this.handleRequestChanges(msg);
+        break;
+
+      case "relay_run_job":
+        this.handleRunJob(msg);
+        break;
+
+      case "relay_cancel_job":
+        this.handleCancelJob(msg);
         break;
 
       case "relay_request_git_info":
@@ -888,383 +912,78 @@ export class RelayClient extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
-  // Phase 3: Ticket dev-loop handlers
+  // Ticket jobs (WS-A1): relay_run_job / relay_cancel_job, and the legacy
+  // relay_start_* / relay_request_changes mapped onto the same job path.
   // -------------------------------------------------------------------------
 
-  private async handleStartPlanning(msg: RelayStartPlanningMsg): Promise<void> {
-    const resolvedCwd = this.resolveCwd(msg.cwd);
-    const iteration = msg.iteration ?? 0;
-
-    const { effectiveCwd, worktreePath, branchName } =
-      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
-
-    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
-
-    const promptParts = [
-      "You are planning the implementation of a ticket.",
-      "",
-      `Title: ${msg.ticketTitle}`,
-      `Description: ${msg.ticketDescription}`,
-      "",
-      ...allInstructions.map((i) => `System Instruction:\n${i}`),
-      "",
-    ];
-
-    if (msg.previousPlan && msg.feedback) {
-      promptParts.push(
-        "A previous plan was created but the user requested revisions.",
-        "",
-        "Previous Plan:",
-        msg.previousPlan,
-        "",
-        "User Feedback:",
-        msg.feedback,
-        "",
-        "Revise the plan based on the feedback above.",
-      );
-    } else {
-      promptParts.push(
-        "Analyze the requirements and create a detailed implementation plan.",
-      );
-    }
-
-    promptParts.push(
-      "",
-      "The plan must include:",
-      "- Files to create/modify",
-      "- Key implementation steps with code snippets where helpful",
-      "- Any potential issues or considerations",
-      "",
-      "IMPORTANT: Output ONLY the complete plan. Do NOT add a summary, introduction, or conclusion.",
-      "Your entire output will be captured and shown to the user as the plan.",
-    );
-
-    const planningPrompt = promptParts.join("\n");
-
-    const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
-    debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
-
-    try {
-      // Non-interactive: minimal scrollback to save memory (raw output is captured separately)
-      const session = appStore.getState().createSession(driverName, effectiveCwd, undefined, undefined, 1);
-      if (!session) {
-        debugLog("relay: failed to create planning session");
-        this.send({
-          type: "cli_ticket_status",
-          ticketId: msg.ticketId,
-          sessionId: "",
-          status: "error",
-          message: `Failed to create planning session (driver "${driverName}" not found?)`,
-        });
-        return;
-      }
-
-      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle, resolvedCwd, worktreePath, branchName);
-
-      this.send({
-        type: "cli_ticket_status",
-        ticketId: msg.ticketId,
-        sessionId: session.id,
-        status: "planning",
-        branchName: branchName ?? undefined,
-      });
-
-      // Accumulate raw PTY output for plan capture.
-      // We can't rely on xterm buffer because the app-store's exit listener
-      // calls kill() → xterm.dispose() before we can read it.
-      // Cap at 2MB to prevent unbounded memory growth in long planning sessions.
-      const RAW_OUTPUT_MAX = 2 * 1024 * 1024;
-      const rawChunks: string[] = [];
-      let rawSize = 0;
-      const rawUnsub = session.onRawData((data) => {
-        if (rawSize < RAW_OUTPUT_MAX) {
-          rawChunks.push(data);
-          rawSize += data.length;
-        }
-      });
-
-      session.start({
-        prompt: planningPrompt,
-        mode: "print",
-        allowedTools: ["Read", "Glob", "Grep", "Bash(git *)"],
-        model: msg.model,
-      }).catch((err) => debugLog(`relay: planning session start failed: ${err}`));
-
-      // Set session metadata so clients know this is non-interactive
-      const command = `${driverName} -p "<planning prompt>"`;
-      appStore.getState().setSessionMeta(session.id, { interactive: false, command });
-      this.registerSession(session.id);
-
-      // Safety timeout: force-close planning sessions that run too long
-      const PLANNING_TIMEOUT_MS = 10 * 60 * 1000;
-      const safetyTimer = setTimeout(() => {
-        rawUnsub();
-        rawChunks.length = 0;
-        rawSize = 0;
-        if (getSessionInstance(session.id)) {
-          debugLog(`relay: planning session ${session.id} timed out after 10min, force closing`);
-          appStore.getState().closeSession(session.id);
-        }
-      }, PLANNING_TIMEOUT_MS);
-
-      // In print mode, claude -p exits when done — listen for exit
-      const onExit = () => {
-        clearTimeout(safetyTimer);
-        rawUnsub();
-        // Strip ANSI escape sequences from raw PTY output
-        const plainText = stripAnsi(rawChunks.join("")).trim();
-        rawChunks.length = 0; // Release for GC
-        rawSize = 0;
-
-        ticketTracker.updateStatus(msg.ticketId, "plan_ready");
-
-        this.send({
-          type: "cli_plan_ready",
-          ticketId: msg.ticketId,
-          sessionId: session.id,
-          plan: plainText,
-          iteration,
-          feedback: msg.feedback ?? null,
-          branchName: branchName ?? undefined,
-        });
-
-        this.send({
-          type: "cli_ticket_status",
-          ticketId: msg.ticketId,
-          sessionId: session.id,
-          status: "plan_ready",
-          branchName: branchName ?? undefined,
-        });
-      };
-      session.once("exit", onExit);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: handleStartPlanning error: ${message}`);
-    }
+  /** WS-A2 seam: replace the default brief writer (src/workspace). */
+  public setTicketWorkspace(workspace: TicketWorkspaceWriter): void {
+    this.jobRunner.setTicketWorkspace(workspace);
   }
 
-  private async handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): Promise<void> {
-    const resolvedCwd = this.resolveCwd(msg.cwd);
-
-    const { effectiveCwd, worktreePath, branchName } =
-      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
-
-    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
-
-    const planningPrompt = [
-      "You are planning the implementation of a ticket.",
-      "",
-      `Title: ${msg.ticketTitle}`,
-      `Description: ${msg.ticketDescription}`,
-      "",
-      ...allInstructions.map((i) => `System Instruction:\n${i}`),
-      "",
-      "Please analyze the requirements and create a detailed implementation plan. Include:",
-      "- Files to create/modify",
-      "- Key implementation steps",
-      "- Any potential issues or considerations",
-    ].join("\n");
-
-    const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
-    debugLog(`relay: start interactive planning ticket=${msg.ticketId} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
-
-    try {
-      const session = appStore.getState().createSession(driverName, effectiveCwd);
-      if (!session) {
-        debugLog("relay: failed to create interactive planning session");
-        this.send({
-          type: "cli_ticket_status",
-          ticketId: msg.ticketId,
-          sessionId: "",
-          status: "error",
-          message: `Failed to create interactive planning session (driver "${driverName}" not found?)`,
-        });
-        return;
-      }
-
-      ticketTracker.startPlanning(msg.ticketId, session.id, msg.ticketTitle, resolvedCwd, worktreePath, branchName);
-
-      this.send({
-        type: "cli_ticket_status",
-        ticketId: msg.ticketId,
-        sessionId: session.id,
-        status: "planning",
-        branchName: branchName ?? undefined,
-      });
-
-      session.start({ prompt: planningPrompt, model: msg.model }).catch((err) => debugLog(`relay: interactive planning start failed: ${err}`));
-
-      // Set session metadata so clients know this is interactive
-      appStore.getState().setSessionMeta(session.id, {
-        interactive: true,
-        command: `${driverName} "<planning prompt>"`,
-      });
-      this.registerSession(session.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: handleStartInteractivePlanning error: ${message}`);
-    }
+  /** WS-A2 seam: provide the Flaio MCP config for ticket jobs (src/mcp getMcpSpawnConfig). */
+  public setMcpSpawnConfigProvider(provider: McpSpawnConfigProvider): void {
+    this.jobRunner.setMcpSpawnConfigProvider(provider);
   }
 
-  private async handleStartImplementation(msg: RelayStartImplementationMsg): Promise<void> {
-    const resolvedCwd = this.resolveCwd(msg.cwd);
+  private createJobRunner(): JobRunner {
+    return new JobRunner({
+      send: (msg) => this.send(msg),
+      resolveCwd: (cwd) => this.resolveCwd(cwd),
+      resolveWorktree: (resolvedCwd, ticketId, useWorktree) =>
+        this.resolveWorktree(resolvedCwd, ticketId, useWorktree),
+      getDriver: (name) => getDriver(name),
+      // Print-mode runs: minimal scrollback (raw output is captured separately)
+      createSession: (driverName, cwd, { print }) =>
+        appStore.getState().createSession(driverName, cwd, undefined, undefined, print ? 1 : undefined),
+      getSession: (sessionId) => getSessionInstance(sessionId),
+      closeSession: (sessionId) => appStore.getState().closeSession(sessionId),
+      announceSession: (session, meta) => {
+        appStore.getState().setSessionMeta(session.id, meta);
+        this.registerSession(session.id);
+      },
+      tracker: ticketTracker,
+      idleTimeoutMs: () => settingsStore.getState().config.agents.ticketIdleTimeoutMs,
+    });
+  }
 
-    // Implementation always tries to reuse an existing worktree first (from planning phase)
-    const { effectiveCwd, worktreePath, branchName } =
-      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
-
-    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
-
-    const promptParts = [
-      "You are implementing a plan. Follow the plan exactly.",
-      "",
-      "Plan:",
-      msg.plan,
-      "",
-      ...allInstructions.map((i) => `System Instruction:\n${i}`),
-    ];
-
-    if (branchName) {
-      promptParts.push(
-        "",
-        `You are working on a dedicated git worktree branch: ${branchName}`,
-        "All your changes are already isolated on this branch. Commit your changes when done.",
-      );
-    } else {
-      promptParts.push(
-        "",
-        "Implement the plan step by step. When done, create a git branch and commit your changes.",
-      );
-    }
-
-    const implementPrompt = promptParts.join("\n");
-
-    const driverName = msg.driverName || DEFAULT_DRIVER_NAME;
-    debugLog(`relay: start implementation ticket=${msg.ticketId} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
-
-    try {
-      const session = appStore.getState().createSession(driverName, effectiveCwd);
-      if (!session) {
-        debugLog("relay: failed to create implementation session");
-        this.send({
-          type: "cli_ticket_status",
-          ticketId: msg.ticketId,
-          sessionId: "",
-          status: "error",
-          message: `Failed to create implementation session (driver "${driverName}" not found?)`,
-        });
-        return;
-      }
-
-      ticketTracker.startImplementation(msg.ticketId, session.id);
-
-      // Update worktree info if we created/found one during implementation
-      const wtInfo = ticketTracker.getWorktreeInfo(msg.ticketId);
-      if (wtInfo && (!wtInfo.worktreePath && worktreePath)) {
-        // Patch the tracker entry with worktree info discovered in this step
-        const entry = ticketTracker.getAll().get(msg.ticketId);
-        if (entry) {
-          entry.originalCwd = resolvedCwd;
-          entry.worktreePath = worktreePath;
-          entry.branchName = branchName;
-        }
-      }
-
-      this.send({
-        type: "cli_ticket_status",
-        ticketId: msg.ticketId,
-        sessionId: session.id,
-        status: "implementing",
-        branchName: branchName ?? undefined,
-      });
-
-      session.start({ prompt: implementPrompt, model: msg.model }).catch((err) => debugLog(`relay: implementation start failed: ${err}`));
-
-      // Set session metadata so clients know this is interactive
-      appStore.getState().setSessionMeta(session.id, {
-        interactive: true,
-        command: `${driverName} "<implementation prompt>"`,
-      });
-      this.registerSession(session.id);
-
-      // Monitor session status for implementation completion
-      const cleanup = () => {
-        session.removeListener("status", onStatus);
-        session.removeListener("exit", onExitFallback);
-      };
-
-      const onStatus = (status: string) => {
-        if (status === "waiting_input" || status === "exited") {
-          cleanup();
-
-          const plainText = session.getPlainText(500).join("\n");
-
-          ticketTracker.updateStatus(msg.ticketId, "done");
-
-          this.send({
-            type: "cli_implementation_done",
-            ticketId: msg.ticketId,
-            sessionId: session.id,
-            summary: plainText,
-            gitContext: { branch: branchName ?? undefined },
-          });
-
-          this.send({
-            type: "cli_ticket_status",
-            ticketId: msg.ticketId,
-            sessionId: session.id,
-            status: "done",
-            branchName: branchName ?? undefined,
-          });
-        }
-      };
-
-      const onExitFallback = () => {
-        cleanup();
-
-        ticketTracker.updateStatus(msg.ticketId, "done");
-
-        this.send({
-          type: "cli_implementation_done",
-          ticketId: msg.ticketId,
-          sessionId: session.id,
-          summary: "(session exited)",
-          gitContext: { branch: branchName ?? undefined },
-        });
-
-        this.send({
-          type: "cli_ticket_status",
-          ticketId: msg.ticketId,
-          sessionId: session.id,
-          status: "done",
-          branchName: branchName ?? undefined,
-        });
-      };
-
-      session.on("status", onStatus);
-      session.once("exit", onExitFallback);
-    } catch (err) {
+  private runJobSafely(label: string, fn: () => Promise<unknown>): void {
+    fn().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: handleStartImplementation error: ${message}`);
-    }
+      debugLog(`relay: ${label} error: ${message}`);
+    });
+  }
+
+  private handleRunJob(msg: RelayRunJobMsg): void {
+    debugLog(`relay: run job ${msg.job.id} (${msg.job.kind}) ticket=${msg.ticket.id}`);
+    this.runJobSafely("relay_run_job", () => this.jobRunner.runJob(msg));
+  }
+
+  private handleCancelJob(msg: RelayCancelJobMsg): void {
+    this.jobRunner.cancelJob(msg);
+  }
+
+  private handleStartPlanning(msg: RelayStartPlanningMsg): void {
+    const instructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
+    const mapped = mapStartPlanning(msg, ticketTracker.get(msg.ticketId), instructions, Date.now());
+    this.runJobSafely("handleStartPlanning", () => this.jobRunner.runJob(mapped.msg, mapped.options));
+  }
+
+  private handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): void {
+    const instructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
+    const mapped = mapStartInteractivePlanning(msg, ticketTracker.get(msg.ticketId), instructions, Date.now());
+    this.runJobSafely("handleStartInteractivePlanning", () => this.jobRunner.runJob(mapped.msg, mapped.options));
+  }
+
+  private handleStartImplementation(msg: RelayStartImplementationMsg): void {
+    const instructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
+    const mapped = mapStartImplementation(msg, ticketTracker.get(msg.ticketId), instructions, Date.now());
+    this.runJobSafely("handleStartImplementation", () => this.jobRunner.runJob(mapped.msg, mapped.options));
   }
 
   private handleRequestChanges(msg: RelayRequestChangesMsg): void {
     debugLog(`relay: request changes ticket=${msg.ticketId} session=${msg.sessionId}`);
-
-    const sessionId = ticketTracker.getSessionForTicket(msg.ticketId);
-    if (!sessionId) {
-      debugLog(`relay: no tracked session for ticket ${msg.ticketId}`);
-      return;
-    }
-
-    const session = getSessionInstance(sessionId);
-    if (!session) {
-      debugLog(`relay: session instance ${sessionId} not found for changes request`);
-      return;
-    }
-
-    session.write(msg.feedback + "\n");
+    this.runJobSafely("handleRequestChanges", () => this.jobRunner.requestChanges(msg));
   }
 
   // -------------------------------------------------------------------------
