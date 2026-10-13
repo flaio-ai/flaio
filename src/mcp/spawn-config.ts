@@ -14,7 +14,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { FLAIO_MCP_SERVER_NAME } from "../contracts/mcp-tools.js";
-import { HOOK_SOCKET_PATH } from "../hooks/hook-server.js";
+import { getHookSocketPath } from "../hooks/hook-server.js";
 import { registerMcpSession, revokeMcpSession } from "./session-registry.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +40,7 @@ export interface McpSpawnConfig {
 export interface McpSpawnOptions {
   /** Ticket worktree path. Strongly recommended; otherwise the MCP process cwd is used. */
   worktreePath?: string;
-  /** Override the hook server socket (defaults to the HookServer default). */
+  /** Override the hook server socket (defaults to getHookSocketPath(), i.e. the running HookServer's). */
   socketPath?: string;
   /** Override the node binary / CLI entry (tests). */
   nodePath?: string;
@@ -93,7 +93,7 @@ export function buildMcpConfigJson(
   const toolArgs = ["mcp", "--ticket", ticketId, ...(jobId ? ["--job", jobId] : [])];
   const env: Record<string, string> = {
     FLAIO_MCP_TOKEN: token,
-    FLAIO_HOOK_SOCKET: opts.socketPath ?? HOOK_SOCKET_PATH,
+    FLAIO_HOOK_SOCKET: opts.socketPath ?? getHookSocketPath(),
     FLAIO_TICKET_ID: ticketId,
   };
   if (jobId) env.FLAIO_JOB_ID = jobId;
@@ -142,7 +142,7 @@ export function getMcpSpawnConfig(ticketId: string, jobId: string | null, opts: 
   const env: Record<string, string> = {
     FLAIO_TICKET_ID: ticketId,
     FLAIO_MCP_TOKEN: token,
-    FLAIO_HOOK_SOCKET: opts.socketPath ?? HOOK_SOCKET_PATH,
+    FLAIO_HOOK_SOCKET: opts.socketPath ?? getHookSocketPath(),
   };
   if (jobId) env.FLAIO_JOB_ID = jobId;
   if (opts.worktreePath) env.FLAIO_TICKET_WORKTREE = opts.worktreePath;
