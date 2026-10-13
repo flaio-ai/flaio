@@ -114,3 +114,38 @@ describe("ensureExcluded", () => {
     expect(git(wt, "check-ignore", ".flaio/ticket/brief.md").trim()).toBe(".flaio/ticket/brief.md");
   });
 });
+
+describe("symlink confinement", () => {
+  it("refuses to append through a symlinked workspace file (e.g. a repo-committed progress.md -> ~/.bashrc)", async () => {
+    const outside = path.join(tmp, "outside.txt");
+    fs.writeFileSync(outside, "original\n");
+    const wt = path.join(tmp, "wt");
+    fs.mkdirSync(path.join(wt, ".flaio", "ticket"), { recursive: true });
+    fs.symlinkSync(outside, workspaceFilePath(wt, "progress"));
+    fs.symlinkSync(outside, workspaceFilePath(wt, "brief"));
+
+    await expect(appendProgress(wt, "echo pwned", 0)).rejects.toThrow(/symlink/);
+    expect(fs.readFileSync(outside, "utf-8")).toBe("original\n");
+    // Reads never follow a symlink either.
+    expect((await readWorkspace(wt)).brief).toBeNull();
+  });
+
+  it("refuses to write when .flaio/ticket or .flaio is a symlink to another directory", async () => {
+    const elsewhere = path.join(tmp, "elsewhere");
+    fs.mkdirSync(elsewhere);
+
+    const wt1 = path.join(tmp, "wt1");
+    fs.mkdirSync(path.join(wt1, ".flaio"), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(wt1, ".flaio", "ticket"));
+    await expect(writePlan(wt1, "plan")).rejects.toThrow(/symlink/);
+    await expect(appendDecision(wt1, { title: "t", rationale: "r" }, 0)).rejects.toThrow(/symlink/);
+
+    const wt2 = path.join(tmp, "wt2");
+    fs.mkdirSync(wt2);
+    fs.symlinkSync(elsewhere, path.join(wt2, ".flaio"));
+    await expect(writeBrief(wt2, "brief")).rejects.toThrow(/symlink/);
+    await expect(recordQuestion(wt2, { questionId: "q", text: "?", blocking: false })).rejects.toThrow(/symlink/);
+
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+});

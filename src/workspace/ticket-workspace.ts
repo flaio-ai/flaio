@@ -133,8 +133,41 @@ export async function ensureExcluded(worktreePath: string): Promise<string | nul
 
 // ---- low-level helpers ----------------------------------------------------
 
-async function readOptional(filePath: string): Promise<string | null> {
+/**
+ * Symlink confinement. The worktree is a checkout of an arbitrary repository,
+ * which may commit `.flaio`, `.flaio/ticket` or `.flaio/ticket/<file>` as
+ * symlinks. Following them would let a repo make Flaio (running as the user,
+ * outside the agent's permission mode) read or append to files anywhere, e.g.
+ * `progress.md -> ~/.bashrc`. Every workspace path component below the
+ * worktree must therefore be a real directory/file, never a symlink.
+ */
+export class WorkspacePathError extends Error {
+  constructor(readonly target: string) {
+    super(`Refusing to use Flaio ticket workspace path ${target}: it is a symlink`);
+    this.name = "WorkspacePathError";
+  }
+}
+
+function isSymlinkSync(p: string): boolean {
   try {
+    return fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Throws WorkspacePathError if `.flaio`, `.flaio/ticket` or `filePath` (if given) is a symlink. */
+function assertNoSymlinks(worktreePath: string, filePath?: string): void {
+  const flaioDir = path.join(worktreePath, path.dirname(TICKET_WORKSPACE_DIR));
+  for (const p of [flaioDir, workspaceDir(worktreePath), ...(filePath ? [filePath] : [])]) {
+    if (isSymlinkSync(p)) throw new WorkspacePathError(p);
+  }
+}
+
+/** Reads a workspace file; a missing or symlinked path reads as null. */
+async function readWorkspaceFile(worktreePath: string, filePath: string): Promise<string | null> {
+  try {
+    assertNoSymlinks(worktreePath, filePath);
     return await fsp.readFile(filePath, "utf-8");
   } catch {
     return null;
@@ -144,24 +177,34 @@ async function readOptional(filePath: string): Promise<string | null> {
 /** Create .flaio/ticket/ and make sure it's git-excluded. */
 export async function ensureWorkspace(worktreePath: string): Promise<string> {
   const dir = workspaceDir(worktreePath);
+  assertNoSymlinks(worktreePath);
   await fsp.mkdir(dir, { recursive: true });
+  assertNoSymlinks(worktreePath);
   await ensureExcluded(worktreePath);
   return dir;
 }
 
-async function writeAtomic(filePath: string, content: string): Promise<void> {
+async function writeAtomic(worktreePath: string, filePath: string, content: string): Promise<void> {
+  assertNoSymlinks(worktreePath);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, content, "utf-8");
+  // "wx": never write through a pre-existing file/symlink at the tmp path.
+  await fsp.writeFile(tmp, content, { encoding: "utf-8", flag: "wx" });
+  // rename() replaces a symlink at filePath itself rather than following it.
   await fsp.rename(tmp, filePath);
 }
+
+const APPEND_NOFOLLOW =
+  fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0);
 
 async function appendSection(worktreePath: string, file: TicketWorkspaceFile, title: string, section: string): Promise<void> {
   await ensureWorkspace(worktreePath);
   const filePath = workspaceFilePath(worktreePath, file);
-  const existing = await readOptional(filePath);
+  assertNoSymlinks(worktreePath, filePath);
+  const existing = await readWorkspaceFile(worktreePath, filePath);
   const header = existing && existing.trim().length > 0 ? "" : `# ${title}\n`;
   const sep = existing && !existing.endsWith("\n") ? "\n" : "";
-  await fsp.appendFile(filePath, `${sep}${header}\n${section.trimEnd()}\n`);
+  // O_NOFOLLOW closes the race between the lstat check and the open.
+  await fsp.appendFile(filePath, `${sep}${header}\n${section.trimEnd()}\n`, { flag: APPEND_NOFOLLOW });
 }
 
 function timestamp(at: number): string {
@@ -171,7 +214,7 @@ function timestamp(at: number): string {
 // ---- state ----------------------------------------------------------------
 
 export async function readWorkspaceState(worktreePath: string): Promise<TicketWorkspaceState> {
-  const raw = await readOptional(workspaceStatePath(worktreePath));
+  const raw = await readWorkspaceFile(worktreePath, workspaceStatePath(worktreePath));
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
@@ -187,7 +230,7 @@ export async function updateWorkspaceState(
 ): Promise<TicketWorkspaceState> {
   await ensureWorkspace(worktreePath);
   const next = { ...(await readWorkspaceState(worktreePath)), ...patch };
-  await writeAtomic(workspaceStatePath(worktreePath), JSON.stringify(next, null, 2) + "\n");
+  await writeAtomic(worktreePath, workspaceStatePath(worktreePath), JSON.stringify(next, null, 2) + "\n");
   return next;
 }
 
@@ -220,14 +263,14 @@ export async function writeBrief(
   phase?: { ticketId?: string; jobId?: string | null },
 ): Promise<void> {
   await ensureWorkspace(worktreePath);
-  await writeAtomic(workspaceFilePath(worktreePath, "brief"), markdown.endsWith("\n") ? markdown : markdown + "\n");
+  await writeAtomic(worktreePath, workspaceFilePath(worktreePath, "brief"), markdown.endsWith("\n") ? markdown : markdown + "\n");
   await startPhase(worktreePath, phase ?? {});
 }
 
 /** Replace plan.md with the latest plan. */
 export async function writePlan(worktreePath: string, markdown: string): Promise<void> {
   await ensureWorkspace(worktreePath);
-  await writeAtomic(workspaceFilePath(worktreePath, "plan"), markdown.endsWith("\n") ? markdown : markdown + "\n");
+  await writeAtomic(worktreePath, workspaceFilePath(worktreePath, "plan"), markdown.endsWith("\n") ? markdown : markdown + "\n");
 }
 
 export async function appendDecision(
@@ -306,21 +349,21 @@ export async function recordQuestion(
 ): Promise<void> {
   await ensureWorkspace(worktreePath);
   const filePath = workspaceFilePath(worktreePath, "questions");
-  const questions = parseQuestions(await readOptional(filePath)).filter((q) => q.questionId !== question.questionId);
+  const questions = parseQuestions(await readWorkspaceFile(worktreePath, filePath)).filter((q) => q.questionId !== question.questionId);
   questions.push({ ...question, status: "open", answer: null });
-  await writeAtomic(filePath, renderQuestions(questions));
+  await writeAtomic(worktreePath, filePath, renderQuestions(questions));
 }
 
 /** Record a human answer. Returns false if the question id is unknown. */
 export async function recordAnswer(worktreePath: string, questionId: string, answer: string): Promise<boolean> {
   await ensureWorkspace(worktreePath);
   const filePath = workspaceFilePath(worktreePath, "questions");
-  const questions = parseQuestions(await readOptional(filePath));
+  const questions = parseQuestions(await readWorkspaceFile(worktreePath, filePath));
   const q = questions.find((x) => x.questionId === questionId);
   if (!q) return false;
   q.status = "answered";
   q.answer = answer;
-  await writeAtomic(filePath, renderQuestions(questions));
+  await writeAtomic(worktreePath, filePath, renderQuestions(questions));
   return true;
 }
 
@@ -328,11 +371,11 @@ export async function recordAnswer(worktreePath: string, questionId: string, ans
 
 export async function readWorkspace(worktreePath: string): Promise<TicketWorkspaceSnapshot> {
   const [brief, plan, decisions, progress, questions, state] = await Promise.all([
-    readOptional(workspaceFilePath(worktreePath, "brief")),
-    readOptional(workspaceFilePath(worktreePath, "plan")),
-    readOptional(workspaceFilePath(worktreePath, "decisions")),
-    readOptional(workspaceFilePath(worktreePath, "progress")),
-    readOptional(workspaceFilePath(worktreePath, "questions")),
+    readWorkspaceFile(worktreePath, workspaceFilePath(worktreePath, "brief")),
+    readWorkspaceFile(worktreePath, workspaceFilePath(worktreePath, "plan")),
+    readWorkspaceFile(worktreePath, workspaceFilePath(worktreePath, "decisions")),
+    readWorkspaceFile(worktreePath, workspaceFilePath(worktreePath, "progress")),
+    readWorkspaceFile(worktreePath, workspaceFilePath(worktreePath, "questions")),
     readWorkspaceState(worktreePath),
   ]);
   const parsedQuestions = parseQuestions(questions);
@@ -353,7 +396,9 @@ export async function readWorkspace(worktreePath: string): Promise<TicketWorkspa
 /** mtime (epoch ms) of a workspace file, or null when it doesn't exist. */
 export function workspaceFileMtimeSync(worktreePath: string, file: TicketWorkspaceFile): number | null {
   try {
-    return fs.statSync(workspaceFilePath(worktreePath, file)).mtimeMs;
+    const filePath = workspaceFilePath(worktreePath, file);
+    assertNoSymlinks(worktreePath, filePath);
+    return fs.statSync(filePath).mtimeMs;
   } catch {
     return null;
   }
