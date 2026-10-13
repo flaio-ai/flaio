@@ -3,24 +3,61 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
+import { makeDebugLog } from "../connectors/debug.js";
 
-const SOCKET_DIR = path.join(os.tmpdir(), "flaio");
-const SOCKET_PATH = path.join(SOCKET_DIR, "hooks.sock");
+const debugLog = makeDebugLog("hooks");
 
-/** Default socket path of the in-process hook server. */
-export const HOOK_SOCKET_PATH = SOCKET_PATH;
+const SOCKET_NAME = "hooks.sock";
 
-/**
- * Socket path clients should connect to. `FLAIO_HOOK_SOCKET` (set by
- * getMcpSpawnConfig for the `flaio mcp` process) overrides the default.
- */
-export function getHookSocketPath(): string {
-  return process.env.FLAIO_HOOK_SOCKET || SOCKET_PATH;
+/** Stable per-user id for the socket dir name (uid on POSIX, else the user name). */
+function userTag(): string {
+  if (typeof process.getuid === "function") return String(process.getuid());
+  try {
+    return os.userInfo().username.replace(/[^A-Za-z0-9_.-]/g, "_") || "user";
+  } catch {
+    return "user";
+  }
 }
 
 /**
- * Create (or validate) the default socket directory. It lives in the shared
- * system temp dir on Linux, so another local user could pre-create it (or a
+ * Default socket directory: per user, so two users on one machine never share
+ * (or fight over) it. `<tmpdir>/flaio-<uid>` — on macOS tmpdir is already
+ * per-user; on Linux it is /tmp, hence the uid suffix.
+ */
+export function defaultHookSocketDir(): string {
+  return path.join(os.tmpdir(), `flaio-${userTag()}`);
+}
+
+/**
+ * Fallback directory when the default one is unusable (e.g. another user
+ * pre-created /tmp/flaio-<uid>): under the user's own config dir. Kept short —
+ * unix socket paths are limited to ~104 bytes.
+ */
+export function fallbackHookSocketDir(): string {
+  return path.join(os.homedir(), ".config", "flaio", "run");
+}
+
+/** Default socket path of the in-process hook server (without env override). */
+export function defaultHookSocketPath(): string {
+  return path.join(defaultHookSocketDir(), SOCKET_NAME);
+}
+
+/** @deprecated Use getHookSocketPath() — it honours FLAIO_HOOK_SOCKET. */
+export const HOOK_SOCKET_PATH = defaultHookSocketPath();
+
+/**
+ * Socket path every client (hook scripts, the Stop hook, `flaio mcp`, spawn
+ * config) connects to. `FLAIO_HOOK_SOCKET` overrides the default; the running
+ * HookServer exports it into the Flaio process env on start, so every child
+ * (agents and their hooks) resolves the very path the server listens on.
+ */
+export function getHookSocketPath(): string {
+  return process.env.FLAIO_HOOK_SOCKET || defaultHookSocketPath();
+}
+
+/**
+ * Create (or validate) the default socket directory. It may live in the shared
+ * system temp dir (Linux), so another local user could pre-create it (or a
  * symlink to their own dir); mkdir's `mode` only applies on creation. If they
  * own it they can unlink our socket and bind their own, receiving
  * FLAIO_MCP_TOKEN and tool payloads and forging permission replies. Refuse to
@@ -56,6 +93,12 @@ export interface HookResponse {
 export interface HookServerOptions {
   /** Override the unix socket path (tests, multiple instances). */
   socketPath?: string;
+  /**
+   * Export the socket path as FLAIO_HOOK_SOCKET into this process's env on
+   * start, so spawned agents/hooks connect to it. Default: true when no
+   * explicit socketPath is given (the app's hook server).
+   */
+  exportEnv?: boolean;
 }
 
 /**
@@ -64,13 +107,18 @@ export interface HookServerOptions {
  */
 export class HookServer extends EventEmitter {
   private server: net.Server | null = null;
-  private readonly path: string;
+  private path: string;
   private readonly usesDefaultDir: boolean;
+  private readonly exportEnv: boolean;
 
   constructor(opts: HookServerOptions = {}) {
     super();
-    this.path = opts.socketPath ?? SOCKET_PATH;
-    this.usesDefaultDir = opts.socketPath === undefined;
+    const envPath = process.env.FLAIO_HOOK_SOCKET || undefined;
+    this.path = opts.socketPath ?? envPath ?? defaultHookSocketPath();
+    // Only the built-in default dir gets the ownership check + fallback; a
+    // caller- or env-supplied path's directory is the caller's responsibility.
+    this.usesDefaultDir = opts.socketPath === undefined && envPath === undefined;
+    this.exportEnv = opts.exportEnv ?? opts.socketPath === undefined;
   }
 
   get socketPath(): string {
@@ -80,8 +128,22 @@ export class HookServer extends EventEmitter {
   async start(): Promise<void> {
     // Ensure socket directory exists (owner-only). A caller-supplied path's
     // directory is the caller's responsibility (it may be e.g. /tmp itself).
-    if (this.usesDefaultDir) ensurePrivateSocketDir(SOCKET_DIR);
-    else fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
+    if (this.usesDefaultDir) {
+      try {
+        ensurePrivateSocketDir(path.dirname(this.path));
+      } catch (err) {
+        // Default dir unusable (e.g. owned by another user): use a dir under
+        // our own config dir instead of failing startup. Clients find it via
+        // FLAIO_HOOK_SOCKET, exported below.
+        const fallback = fallbackHookSocketDir();
+        ensurePrivateSocketDir(fallback);
+        this.path = path.join(fallback, SOCKET_NAME);
+        debugLog(`hooks: ${err instanceof Error ? err.message : String(err)} Using ${this.path} instead.`);
+      }
+    } else {
+      fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
+    }
+    if (this.exportEnv) process.env.FLAIO_HOOK_SOCKET = this.path;
 
     // Remove stale socket file
     try {

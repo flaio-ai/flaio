@@ -16,7 +16,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { stripAnsi } from "../../strip-ansi.js";
-import type { Job, TicketAgentSession, TicketEventKind, TicketEventPayloads } from "../../contracts/agent-loop.js";
+import type { Job, JobKind, TicketAgentSession, TicketEventPayloads } from "../../contracts/agent-loop.js";
 import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../../contracts/mcp-tools.js";
 import { ticketPhaseBus, type TicketPhaseBus, type TicketPhaseBusEvents } from "../../contracts/ticket-phase-bus.js";
 import type { AgentStatus, BaseDriver, TicketSpawnConfig, TicketSpawnOptions } from "../../agents/drivers/base-driver.js";
@@ -38,7 +38,14 @@ import {
   type TicketWorkspaceWriter,
 } from "./job-seams.js";
 import { buildJobPrompt, isPlanKind } from "./job-prompts.js";
-import { isLegacyJobId, mapRequestChanges, RESUME_KINDS, type LegacyRunContext, type RunJobOptions } from "./legacy-mapper.js";
+import {
+  isLegacyJobId,
+  mapRequestChanges,
+  RESUME_KINDS,
+  synthesizeLegacyJob,
+  type LegacyRunContext,
+  type RunJobOptions,
+} from "./legacy-mapper.js";
 
 const debugLog = makeDebugLog("jobs");
 
@@ -97,8 +104,13 @@ interface RunContext {
   workdir: string;
   branchName: string | null;
   mcp: McpSpawnConfig | undefined;
+  /** mcp.dispose() already called (shared by a fast-fail retry of the same job). */
+  mcpReleased?: boolean;
   runnerId: string;
 }
+
+/** Ticket event kinds the runner forwards as cli_ticket_event (phase completion has its own message). */
+export type ForwardedTicketEventKind = "plan_submitted" | "question_asked" | "decision_recorded" | "progress_reported";
 
 interface ActiveRun {
   ctx: RunContext;
@@ -120,16 +132,28 @@ interface ActiveRun {
   disposers: (() => void)[];
   /** Ends the run when its PTY session has disappeared without an exit event. */
   exitCheck?: () => void;
+  /** Earlier job ids of a reopened run (MCP events may still carry them). */
+  aliases: Set<string>;
 }
 
 const IDLE_STATES: ReadonlySet<AgentStatus> = new Set(["waiting_input", "waiting_permission", "idle"]);
 const RAW_OUTPUT_MAX = 2 * 1024 * 1024;
 const DEFAULT_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
+/** How many finished job attempts to remember for duplicate relay_run_job detection. */
+const FINISHED_JOBS_MAX = 1000;
+
+/** A dispatch attempt: retries re-send the same job id with attempts + 1. */
+function jobAttemptKey(job: Pick<Job, "id" | "attempts">): string {
+  return `${job.id}#${job.attempts}`;
+}
 
 export class JobRunner {
   private runs = new Map<string, ActiveRun>();
   /** runJob calls still in their async setup, per ticket (newest wins; cancellable). */
-  private pending = new Map<string, { token: number; jobId: string }>();
+  private pending = new Map<string, { token: number; jobId: string; attemptKey: string }>();
+  /** Job attempts that ended in this process (insertion-ordered, bounded). */
+  private finishedJobs = new Set<string>();
+  private reopenSeq = 0;
   private pendingSeq = 0;
   private workspace: TicketWorkspaceWriter;
   private getMcpSpawnConfig: McpSpawnConfigProvider;
@@ -168,6 +192,18 @@ export class JobRunner {
     return this.runs.get(ticketId)?.session.id ?? null;
   }
 
+  /** Jobs this process is working on (setting up or running) — for runner heartbeats. */
+  activeJobCount(): number {
+    let n = this.pending.size;
+    for (const run of this.runs.values()) if (!run.finished) n++;
+    return n;
+  }
+
+  /** True while a job for the ticket is setting up or its agent is still attached. */
+  isTicketBusy(ticketId: string): boolean {
+    return this.pending.has(ticketId) || this.runs.has(ticketId);
+  }
+
   /**
    * Run a job for a ticket. Returns the PTY session id hosting the agent, or
    * null when the run could not start (failure already reported).
@@ -176,10 +212,15 @@ export class JobRunner {
     const { job, ticket } = msg;
     const tracker = this.deps.tracker;
 
+    if (!options.legacy) {
+      const duplicate = this.handleDuplicate(msg);
+      if (duplicate !== undefined) return duplicate;
+    }
+
     // A newer runJob (or a cancel) for the same ticket while this one is still
     // awaiting setup makes this one stale: it must not spawn a second agent.
     const token = ++this.pendingSeq;
-    this.pending.set(ticket.id, { token, jobId: job.id });
+    this.pending.set(ticket.id, { token, jobId: job.id, attemptKey: jobAttemptKey(job) });
     const stale = (): boolean => {
       if (this.pending.get(ticket.id)?.token === token) return false;
       debugLog(`jobs: job ${job.id} superseded or cancelled during setup (ticket ${ticket.id})`);
@@ -221,7 +262,9 @@ export class JobRunner {
     // One agent per ticket: a new job supersedes whatever is still running.
     this.supersede(ticket.id);
 
-    await this.prepareWorkspace(workdir, ticket.id, msg.briefMarkdown, options.briefMode ?? "replace");
+    await this.prepareWorkspace(workdir, ticket.id, job.id, msg.briefMarkdown, options.briefMode ?? "replace");
+    if (stale()) return null;
+    if (job.kind === "answer_resume") await this.recordAnswer(workdir, job);
     if (stale()) return null;
 
     const prevEntry = tracker.get(ticket.id);
@@ -238,11 +281,15 @@ export class JobRunner {
 
     let mcp: McpSpawnConfig | undefined;
     try {
-      mcp = await this.getMcpSpawnConfig(ticket.id, job.id);
+      // Always bind the MCP session to the directory the agent runs in.
+      mcp = await this.getMcpSpawnConfig(ticket.id, job.id, { worktreePath: workdir });
     } catch (err) {
       debugLog(`jobs: getMcpSpawnConfig failed for ${ticket.id}: ${errMessage(err)}`);
     }
-    if (stale()) return null;
+    if (stale()) {
+      safeDispose(mcp);
+      return null;
+    }
     release();
     // Nothing awaits between here and spawnRun registering the run, but a run
     // registered by another path in the meantime is superseded all the same.
@@ -278,13 +325,14 @@ export class JobRunner {
       return false;
     }
     debugLog(`jobs: cancelling ${msg.jobId}: ${msg.reason}`);
-    run.finished = true;
+    this.markFinished(run);
     this.deps.tracker.updateStatus(run.ticketId, "cancelled");
     this.deps.tracker.setActiveJob(run.ticketId, null);
     this.endRun(run);
     this.runs.delete(run.ticketId);
     this.deps.tracker.clearSession(run.ticketId, run.session.id);
     this.deps.closeSession(run.session.id);
+    this.releaseMcp(run.ctx);
     return true;
   }
 
@@ -298,7 +346,11 @@ export class JobRunner {
     const live = ptyId ? this.deps.getSession(ptyId) : null;
     if (live && live.status !== "exited") {
       const run = this.runs.get(msg.ticketId);
-      if (run) {
+      if (run && run.finished && run.session.id === live.id) {
+        // The agent already completed its phase: reopen completion tracking so
+        // the revised plan / fixes are reported again.
+        await this.reopenRun(run, msg);
+      } else if (run) {
         run.lastActivityAt = this.now();
         run.stuckReported = false;
       }
@@ -326,8 +378,124 @@ export class JobRunner {
   dispose(): void {
     for (const d of this.busDisposers) d();
     this.busDisposers = [];
-    for (const run of this.runs.values()) this.endRun(run);
+    for (const run of this.runs.values()) {
+      this.endRun(run);
+      // Agents keep running; still revoke their MCP session once they exit.
+      this.watchExit(run, () => this.releaseMcp(run.ctx));
+    }
     this.runs.clear();
+  }
+
+  // -------------------------------------------------------------------------
+  // Duplicates, answers, reopening
+  // -------------------------------------------------------------------------
+
+  /**
+   * relay_run_job for a job attempt this process already has: ignore it.
+   * Returns undefined when the message is not a duplicate.
+   */
+  private handleDuplicate(msg: RelayRunJobMsg): string | null | undefined {
+    const { job, ticket } = msg;
+    const key = jobAttemptKey(job);
+    if (this.pending.get(ticket.id)?.attemptKey === key) {
+      debugLog(`jobs: duplicate relay_run_job ${job.id} (still setting up) — ignored`);
+      return null;
+    }
+    const run = this.runs.get(ticket.id);
+    if (run && !run.finished && jobAttemptKey(run.job) === key) {
+      debugLog(`jobs: duplicate relay_run_job ${job.id} (running) — re-sending cli_job_claimed`);
+      this.deps.send({
+        type: "cli_job_claimed",
+        jobId: job.id,
+        ticketId: ticket.id,
+        runnerId: run.ctx.runnerId,
+        sessionId: run.session.id,
+      });
+      return run.session.id;
+    }
+    if (this.finishedJobs.has(key)) {
+      debugLog(`jobs: duplicate relay_run_job ${job.id} (already finished) — ignored`);
+      return null;
+    }
+    return undefined;
+  }
+
+  private rememberFinished(job: Job, legacy: boolean): void {
+    if (legacy) return;
+    const key = jobAttemptKey(job);
+    this.finishedJobs.delete(key);
+    this.finishedJobs.add(key);
+    while (this.finishedJobs.size > FINISHED_JOBS_MAX) {
+      const oldest = this.finishedJobs.values().next().value;
+      if (oldest === undefined) break;
+      this.finishedJobs.delete(oldest);
+    }
+  }
+
+  /** Mark a run ended: no further end messages for its job. */
+  private markFinished(run: ActiveRun): void {
+    if (run.finished) return;
+    run.finished = true;
+    this.rememberFinished(run.job, !!run.legacy);
+    this.deps.tracker.markJobFinished(run.ticketId, this.now());
+  }
+
+  /** Revoke the run's MCP session token and remove its temp files (once). */
+  private releaseMcp(ctx: RunContext): void {
+    if (ctx.mcpReleased) return;
+    ctx.mcpReleased = true;
+    safeDispose(ctx.mcp);
+  }
+
+  /** answer_resume: record the answer (job prompt) in questions.md. */
+  private async recordAnswer(workdir: string, job: Job): Promise<void> {
+    const text = job.prompt?.trim();
+    if (!text || !this.workspace.recordAnswer) return;
+    try {
+      const questionId = await this.workspace.recordAnswer(workdir, { text, jobId: job.id });
+      debugLog(`jobs: answer for ${job.ticketId} recorded under ${questionId ?? "?"}`);
+    } catch (err) {
+      debugLog(`jobs: recording answer failed in ${workdir}: ${errMessage(err)}`);
+    }
+  }
+
+  /**
+   * request_changes typed into a live agent whose phase already completed:
+   * reopen the run under a new internal job id so the next submit_plan /
+   * complete_phase is forwarded (legacy: a second cli_plan_ready).
+   */
+  private async reopenRun(run: ActiveRun, msg: RelayRequestChangesMsg): Promise<void> {
+    const tracker = this.deps.tracker;
+    const planning = isPlanKind(run.job.kind);
+    const kind: JobKind = planning ? "revise_plan" : "review_fixes";
+    const now = this.now();
+    const prevJobId = run.job.id;
+    const job = synthesizeLegacyJob(run.ticketId, kind, run.job.permissionMode, msg.feedback, now + ++this.reopenSeq);
+    debugLog(`jobs: reopening ${prevJobId} as ${job.id} for request_changes on ticket ${run.ticketId}`);
+
+    run.aliases.add(prevJobId);
+    run.job = job;
+    run.legacy = {
+      mode: planning ? "planning_interactive" : "implementation",
+      iteration: tracker.get(run.ticketId)?.planIterations ?? (run.legacy?.iteration ?? 0) + 1,
+      feedback: msg.feedback,
+    };
+    run.finished = false;
+    run.submittedPlan = undefined;
+    run.idleSince = null;
+    run.lastActivityAt = now;
+    run.stuckReported = false;
+    run.ctx.mcp?.rebindJob?.(job.id);
+
+    // Drop the post-completion exit watcher; wire the full run again.
+    this.endRun(run);
+    this.wireSession(run);
+
+    tracker.upsert(run.ticketId, { status: planning ? "planning" : "implementing", lastJobKind: kind });
+    tracker.setActiveJob(run.ticketId, { id: job.id, kind, legacy: true, startedAt: now });
+    // Appending the change request starts a new phase for the Stop hook.
+    await this.prepareWorkspace(run.ctx.workdir, run.ticketId, job.id, `## Change request\n\n${msg.feedback.trim()}\n`, "append");
+    this.sendLegacyStatus(run, planning ? "planning" : "implementing");
   }
 
   // -------------------------------------------------------------------------
@@ -385,6 +553,7 @@ export class JobRunner {
 
     const session = this.deps.createSession(ctx.driverName, ctx.workdir, { print });
     if (!session) {
+      this.releaseMcp(ctx);
       this.reportStartFailure(job, legacy, `Failed to create agent session (driver "${ctx.driverName}")`);
       return null;
     }
@@ -409,6 +578,7 @@ export class JobRunner {
       rawChunks: [],
       rawSize: 0,
       disposers: [],
+      aliases: new Set(),
     };
     this.runs.set(ticket.id, run);
 
@@ -450,6 +620,7 @@ export class JobRunner {
           prompt,
           model: ticket.model,
           mcpConfigPath: ctx.mcp?.mcpConfigPath,
+          settingsPath: ctx.mcp?.settingsPath,
           appendSystemPrompt,
           print,
           allowedTools: options.allowedTools,
@@ -461,6 +632,7 @@ export class JobRunner {
       this.endRun(run);
       this.runs.delete(ticket.id);
       this.deps.closeSession(session.id);
+      this.releaseMcp(ctx);
       this.reportStartFailure(job, legacy, `Agent failed to start: ${errMessage(err)}`, session.id);
       return null;
     }
@@ -515,6 +687,7 @@ export class JobRunner {
         this.deps.tracker.setActiveJob(run.ticketId, null);
         this.reportStartFailure(run.job, run.legacy, `Agent timed out after ${Math.round(timeoutMs / 60_000)}m`, session.id);
         if (this.deps.getSession(session.id)) this.deps.closeSession(session.id);
+        this.releaseMcp(run.ctx);
       }, timeoutMs);
       timer.unref?.();
       run.disposers.push(() => clearTimeout(timer));
@@ -599,15 +772,17 @@ export class JobRunner {
     const run = this.runs.get(ticketId);
     if (!run) return;
     debugLog(`jobs: job ${run.job.id} superseded on ticket ${ticketId}`);
-    run.finished = true;
+    this.markFinished(run);
     this.endRun(run);
     this.runs.delete(ticketId);
     if (this.deps.getSession(run.session.id)) this.deps.closeSession(run.session.id);
+    this.releaseMcp(run.ctx);
   }
 
   private async prepareWorkspace(
     workdir: string,
     ticketId: string,
+    jobId: string,
     briefMarkdown: string,
     mode: "replace" | "append",
   ): Promise<void> {
@@ -624,7 +799,7 @@ export class JobRunner {
           .catch(() => "");
         if (existing.trim()) markdown = `${existing.trimEnd()}\n\n${briefMarkdown}`;
       }
-      await this.workspace.writeBrief(workdir, ticketId, markdown);
+      await this.workspace.writeBrief(workdir, markdown, { ticketId, jobId });
     } catch (err) {
       debugLog(`jobs: writing brief failed in ${workdir}: ${errMessage(err)}`);
     }
@@ -715,18 +890,23 @@ export class JobRunner {
     this.endRun(run);
     if (this.runs.get(run.ticketId) === run) this.runs.delete(run.ticketId);
     this.deps.tracker.clearSession(run.ticketId, run.session.id);
-    if (run.finished) return;
+    if (run.finished) {
+      this.releaseMcp(run.ctx);
+      return;
+    }
 
     const window = this.deps.resumeFailWindowMs ?? 15_000;
     // code undefined = the session was closed (killed), not a failed resume.
     if (run.resumed && code !== undefined && code !== 0 && this.now() - run.spawnedAt < window) {
       debugLog(`jobs: resume of ${run.agentSession?.id ?? "?"} failed fast (code ${code}) — retrying with a fresh session + brief`);
+      // Same job: the retry keeps the MCP session (released when it ends).
       run.finished = true;
       void this.spawnRun(run.ctx, true);
       return;
     }
 
-    run.finished = true;
+    this.markFinished(run);
+    this.releaseMcp(run.ctx);
     this.deps.tracker.setActiveJob(run.ticketId, null);
 
     if (run.legacy) {
@@ -798,6 +978,7 @@ export class JobRunner {
 
   private reportStartFailure(job: Job, legacy: LegacyRunContext | undefined, error: string, sessionId = ""): void {
     debugLog(`jobs: ${job.id} failed to start: ${error}`);
+    this.rememberFinished(job, !!legacy);
     this.deps.tracker.updateStatus(job.ticketId, "failed");
     if (legacy) {
       this.deps.send({ type: "cli_ticket_status", ticketId: job.ticketId, sessionId, status: "error", message: error });
@@ -833,7 +1014,7 @@ export class JobRunner {
   private runFor(ticketId: string, jobId: string | null): ActiveRun | null {
     const run = this.runs.get(ticketId);
     if (!run) return null;
-    if (jobId && jobId !== run.job.id) return null;
+    if (jobId && jobId !== run.job.id && !run.aliases.has(jobId)) return null;
     run.lastActivityAt = this.now();
     run.stuckReported = false;
     return run;
@@ -843,11 +1024,11 @@ export class JobRunner {
   private wireJobId(run: ActiveRun | null, jobId: string | null): string | null {
     const id = jobId ?? run?.job.id ?? null;
     if (!id) return null;
-    if (run?.legacy && id === run.job.id) return null;
+    if (run?.legacy && (id === run.job.id || run.aliases.has(id))) return null;
     return isLegacyJobId(id) ? null : id;
   }
 
-  private sendEvent<K extends TicketEventKind>(
+  private sendEvent<K extends ForwardedTicketEventKind>(
     ticketId: string,
     run: ActiveRun | null,
     jobId: string | null,
@@ -918,7 +1099,8 @@ export class JobRunner {
       debugLog(`jobs: phase_complete for ticket ${p.ticketId} with no known job — ignored`);
       return;
     }
-    this.sendEvent(p.ticketId, run, p.jobId, "phase_completed", { phase: kind, result, summary, testsRun });
+    // No cli_ticket_event for phase_completed: cli_phase_complete is the
+    // channel (the relay rejects phase_completed as a ticket event).
 
     const tracker = this.deps.tracker;
     const status =
@@ -933,7 +1115,7 @@ export class JobRunner {
       return;
     }
     if (run.finished) return;
-    run.finished = true;
+    this.markFinished(run);
     tracker.setActiveJob(p.ticketId, null);
     // The agent stays open (interactive users can keep watching / typing);
     // only the watchdog stops. The next job for the ticket supersedes it.
@@ -963,6 +1145,7 @@ export class JobRunner {
     this.watchExit(run, () => {
       if (this.runs.get(run.ticketId) === run) this.runs.delete(run.ticketId);
       this.deps.tracker.clearSession(run.ticketId, run.session.id);
+      this.releaseMcp(run.ctx);
     });
   }
 
@@ -986,6 +1169,14 @@ export class JobRunner {
       gitContext: { branch: run.ctx.branchName ?? undefined },
     });
     this.sendLegacyStatus(run, "done");
+  }
+}
+
+function safeDispose(mcp: McpSpawnConfig | undefined): void {
+  try {
+    mcp?.dispose?.();
+  } catch (err) {
+    debugLog(`jobs: disposing MCP spawn config failed: ${errMessage(err)}`);
   }
 }
 

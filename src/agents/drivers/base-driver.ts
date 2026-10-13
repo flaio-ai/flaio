@@ -31,6 +31,8 @@ export interface TicketSpawnOptions {
   model?: string | null;
   /** Path to an MCP config JSON (Flaio MCP server), when available. */
   mcpConfigPath?: string;
+  /** Path to an agent settings file adding the ticket Stop hook (Claude: --settings), when available. */
+  settingsPath?: string;
   /** Extra system prompt text (org/ticket system instructions). */
   appendSystemPrompt?: string;
   /** When resuming, branch into a new session instead of appending to the original. */
