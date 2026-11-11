@@ -271,6 +271,8 @@ export class AgentSession extends EventEmitter {
       args: config.args,
       cwd: this.cwd,
       env: { ...config.env, ...this.sideband.getSpawnEnv() },
+      // The user's own session: may keep the provider key its driver needs.
+      inheritSecretEnv: this.driver.inheritedSecretEnv,
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });
@@ -308,6 +310,8 @@ export class AgentSession extends EventEmitter {
       args: config.args,
       cwd: this.cwd,
       env: { ...config.env, ...extraEnv, ...this.sideband.getSpawnEnv() },
+      // Job agents on untrusted workspaces never inherit provider keys.
+      inheritSecretEnv: options.untrustedWorkspace ? [] : this.driver.inheritedSecretEnv,
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });
@@ -341,6 +345,8 @@ export class AgentSession extends EventEmitter {
       args: config.args,
       cwd: this.cwd,
       env: { ...config.env, ...this.sideband.getSpawnEnv() },
+      // The user's own session: may keep the provider key its driver needs.
+      inheritSecretEnv: this.driver.inheritedSecretEnv,
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });
@@ -362,6 +368,8 @@ export class AgentSession extends EventEmitter {
       args: config.args,
       cwd: this.cwd,
       env: { ...config.env, ...this.sideband.getSpawnEnv() },
+      // The user's own session: may keep the provider key its driver needs.
+      inheritSecretEnv: this.driver.inheritedSecretEnv,
       cols: this.xterm.cols,
       rows: this.xterm.rows,
     });

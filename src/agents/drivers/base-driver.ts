@@ -50,6 +50,12 @@ export interface TicketSpawnOptions {
    * ticketCapabilities.untrustedWorkspace is true honour it.
    */
   untrustedWorkspace?: boolean;
+  /**
+   * With untrustedWorkspace: the run must not modify anything (pr_review).
+   * Drivers map it to their most restrictive posture; a driver that cannot
+   * guarantee it must refuse to spawn.
+   */
+  readOnly?: boolean;
 }
 
 export interface TicketSpawnConfig extends SpawnConfig {
@@ -75,6 +81,8 @@ export interface TicketCapabilities {
   appendSystemPrompt: boolean;
   /** Honours TicketSpawnOptions.untrustedWorkspace (required for pull request jobs). */
   untrustedWorkspace?: boolean;
+  /** Can edit files safely in an untrusted workspace (required for pr_fix). */
+  untrustedWorkspaceEdits?: boolean;
 }
 
 export const NO_TICKET_CAPABILITIES: TicketCapabilities = Object.freeze({
@@ -85,6 +93,23 @@ export const NO_TICKET_CAPABILITIES: TicketCapabilities = Object.freeze({
   mcpConfig: false,
   appendSystemPrompt: false,
 });
+
+/**
+ * Values from a job that end up as agent CLI arguments (driver name, model):
+ * a conservative character set, never starting with "-" (so they can never be
+ * read as a flag). Checked where a job is accepted and again where argv is built.
+ */
+export const SAFE_AGENT_ARG_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+#[\]-]{0,199}$/;
+
+export function isSafeAgentArg(value: unknown): value is string {
+  return typeof value === "string" && SAFE_AGENT_ARG_RE.test(value);
+}
+
+/** Throw unless `value` is a safe agent argument (see SAFE_AGENT_ARG_RE). */
+export function assertSafeAgentArg(what: string, value: string): string {
+  if (!isSafeAgentArg(value)) throw new Error(`Refusing to start the agent: invalid ${what}`);
+  return value;
+}
 
 /** Prepend system instructions to the prompt for drivers that cannot take them as a flag. */
 export function inlineSystemPrompt(prompt: string, appendSystemPrompt?: string): string {
@@ -99,6 +124,14 @@ export abstract class BaseDriver {
 
   /** Ticket-run capabilities; drivers override what they support. */
   readonly ticketCapabilities: TicketCapabilities = NO_TICKET_CAPABILITIES;
+
+  /**
+   * Provider keys (normally scrubbed from every agent env) that this driver's
+   * CLI needs from the user's environment, passed only to the user's own
+   * sessions: interactive ones and job runs on a trusted workspace. Job agents
+   * on untrusted workspaces (pull requests) never get them. Default: none.
+   */
+  readonly inheritedSecretEnv: readonly string[] = [];
 
   /** Resolve the full path of the command binary */
   resolveCommand(): string {

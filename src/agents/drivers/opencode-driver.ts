@@ -14,6 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  assertSafeAgentArg,
   BaseDriver,
   type AgentStatus,
   type ModelInfo,
@@ -91,6 +92,32 @@ export const OPENCODE = {
    * URL and capture the key, so headless runs refuse to start when one is present.
    */
   projectConfigFiles: ["opencode.json", "opencode.jsonc", ".opencode"],
+  /**
+   * VERIFIED (2.2.7, value "true"; "1" is NOT honoured): with this set,
+   * `debug config` lists no project files, `debug agents` shows no
+   * `.opencode/agent/*` agents, and `.opencode/plugin(s)/*.js` plugins (which
+   * otherwise execute at startup, also from parent directories above a nested
+   * git root) do not run.
+   */
+  disableProjectConfigEnv: ["OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG_PROJECT_DISABLE"],
+  /** UNVERIFIED effect (names found in the 2.2.7 binary): skip Claude Code compat files/skills and auto-update. */
+  hardeningEnv: { OPENCODE_DISABLE_CLAUDE_CODE: "true", OPENCODE_DISABLE_AUTOUPDATE: "true" },
+  /** Config overrides a user's environment could inject; blanked for untrusted runs (VERIFIED: empty values are harmless). */
+  configOverrideEnv: ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CLI_CONFIG_CONTENT"],
+  /**
+   * VERIFIED permission actions (2.2.7 `debug agents` + runs against a fake
+   * OpenAI-compatible provider): rules are appended after the agent's own, last
+   * match wins; a denied tool is not offered to the model and a call by name
+   * fails ("No tool named ..."). Read-only posture = deny "*", then allow
+   * read/grep/glob and the Flaio MCP tools (action `<server>_<tool>`, e.g.
+   * `flaio_submit_review`). Reads outside the cwd are refused
+   * (`external_directory`), but reads THROUGH a symlink inside the cwd are not
+   * (the runner replaces escaping symlinks before the agent starts).
+   */
+  readOnlyAllow: ["read", "grep", "glob"],
+  dangerousActions: ["shell", "edit", "webfetch", "websearch", "external_directory", "skill", "subagent", "browser", "question", "execute"],
+  /** VERIFIED: `opencode run [flags] -- <message>` takes the message after "--" verbatim. */
+  endOfFlags: "--",
 } as const;
 
 /** Contract permission mode → OpenCode built-in agent. */
@@ -138,14 +165,44 @@ export function mcpServersFromClaudeConfig(json: ClaudeStyleMcpConfig): Record<s
   return servers;
 }
 
+/** `mcp__<server>__<tool>` (Claude-style allow-list entry) → OpenCode permission action `<server>_<tool>`. */
+export function openCodeMcpAction(claudeToolName: string): string | null {
+  const m = /^mcp__([A-Za-z0-9_-]+)__([A-Za-z0-9_-]+)$/.exec(claudeToolName);
+  return m ? `${m[1]}_${m[2]}` : null;
+}
+
+type PermissionRule = { action: string; resource: string; effect: string };
+
+/**
+ * Read-only posture for an untrusted workspace (pr_review): everything denied,
+ * then read/grep/glob and exactly the allowed Flaio MCP tools; dangerous
+ * actions denied again explicitly at the end (last match wins).
+ */
+export function readOnlyPermissions(allowedTools: readonly string[] = []): PermissionRule[] {
+  const deny = OPENCODE.permissionEffectDeny;
+  const allow = OPENCODE.permissionEffectAllow;
+  const mcp = [...new Set(allowedTools.map(openCodeMcpAction).filter((a): a is string => !!a))];
+  return [
+    { action: "*", resource: "*", effect: deny },
+    ...OPENCODE.readOnlyAllow.map((action) => ({ action, resource: "*", effect: allow })),
+    ...mcp.map((action) => ({ action, resource: "*", effect: allow })),
+    ...OPENCODE.dangerousActions.map((action) => ({ action, resource: "*", effect: deny })),
+  ];
+}
+
 /** The per-session OpenCode config. Holds no provider key (the key is only in the env). */
 export function buildOpenCodeConfig(opts: {
   permissionMode: AgentPermissionMode;
   mcpServers?: Record<string, unknown>;
   model?: string | null;
+  /** Untrusted read-only run: the strict posture of readOnlyPermissions(allowedTools). */
+  readOnlyUntrusted?: boolean;
+  allowedTools?: readonly string[];
 }): Record<string, unknown> {
-  const permissions: { action: string; resource: string; effect: string }[] = [];
-  if (opts.permissionMode === "plan") {
+  let permissions: PermissionRule[] = [];
+  if (opts.readOnlyUntrusted) {
+    permissions = readOnlyPermissions(opts.allowedTools);
+  } else if (opts.permissionMode === "plan") {
     // Read-only review: no file edits. Shell stays available so the reviewer can run tests.
     permissions.push({ action: OPENCODE.editAction, resource: "*", effect: OPENCODE.permissionEffectDeny });
   }
@@ -177,7 +234,14 @@ export class OpenCodeDriver extends BaseDriver {
     permissionModes: true,
     mcpConfig: true,
     appendSystemPrompt: false,
+    // Reviews only: the read-only posture below is verified against the real
+    // binary; OpenCode has no edit mode confined safely enough for pr_fix.
+    untrustedWorkspace: true,
+    untrustedWorkspaceEdits: false,
   };
+
+  /** The user's own OpenCode sessions keep their provider key (unless they ran `opencode auth`, OpenCode reads it from the env). */
+  override readonly inheritedSecretEnv: readonly string[] = Object.values(OPENCODE.providers).map((p) => p.keyEnv);
 
   constructor(private readonly options: OpenCodeDriverOptions = {}) {
     super();
@@ -206,7 +270,7 @@ export class OpenCodeDriver extends BaseDriver {
   }
 
   private modelArg(model?: string | null): string | null {
-    return model ? toOpenCodeModel(model, this.options.provider) : null;
+    return model ? assertSafeAgentArg("model", toOpenCodeModel(model, this.options.provider)) : null;
   }
 
   buildSpawnArgs(options: {
@@ -221,7 +285,7 @@ export class OpenCodeDriver extends BaseDriver {
     if (options.mode === "print" || this.headless) {
       args.push(OPENCODE.runSubcommand, OPENCODE.standaloneFlag, OPENCODE.formatFlag, OPENCODE.formatJson);
       if (model) args.push(OPENCODE.modelFlag, model);
-      if (options.prompt) args.push(safePositional(options.prompt));
+      if (options.prompt) args.push(OPENCODE.endOfFlags, options.prompt);
     } else {
       // Interactive TUI: `opencode [flags]`, first message via --prompt.
       if (model) args.push(OPENCODE.modelFlag, model);
@@ -234,7 +298,7 @@ export class OpenCodeDriver extends BaseDriver {
     const args = this.headless
       ? [OPENCODE.runSubcommand, OPENCODE.standaloneFlag, OPENCODE.formatFlag, OPENCODE.formatJson, OPENCODE.sessionFlag, options.sessionId]
       : [OPENCODE.sessionFlag, options.sessionId];
-    if (options.prompt && this.headless) args.push(safePositional(options.prompt));
+    if (options.prompt && this.headless) args.push(OPENCODE.endOfFlags, options.prompt);
     return { command: this.resolveCommand(), args };
   }
 
@@ -252,7 +316,16 @@ export class OpenCodeDriver extends BaseDriver {
    * it to the session env (see src/runner/agent-env.ts).
    */
   override buildTicketSpawnArgs(options: TicketSpawnOptions): TicketSpawnConfig {
-    if (this.headless) {
+    const untrusted = !!options.untrustedWorkspace;
+    if (untrusted && !options.readOnly) {
+      throw new Error("Refusing to run OpenCode on untrusted code with edits enabled: only read-only reviews are supported");
+    }
+    if (untrusted && !(this.headless || options.print)) {
+      throw new Error("Refusing to run OpenCode on untrusted code interactively: only headless reviews are supported");
+    }
+    // Untrusted runs disable project config outright (verified), so a repo's
+    // own opencode.json / .opencode never loads; trusted headless runs refuse.
+    if (this.headless && !untrusted) {
       const found = findProjectConfig(options.cwd);
       if (found.length > 0) {
         throw new Error(
@@ -276,7 +349,13 @@ export class OpenCodeDriver extends BaseDriver {
     }
     const model = this.modelArg(options.model);
     const configHome = writeConfigHome(
-      buildOpenCodeConfig({ permissionMode: options.permissionMode, mcpServers, model }),
+      buildOpenCodeConfig({
+        permissionMode: options.permissionMode,
+        mcpServers,
+        model,
+        readOnlyUntrusted: untrusted,
+        allowedTools: options.allowedTools,
+      }),
       this.options.tmpDir,
     );
 
@@ -286,11 +365,13 @@ export class OpenCodeDriver extends BaseDriver {
     const args: string[] = [];
     if (this.headless || options.print) {
       args.push(OPENCODE.runSubcommand, OPENCODE.standaloneFlag, OPENCODE.formatFlag, OPENCODE.formatJson);
-      args.push(OPENCODE.agentFlag, AGENT_FOR_MODE[options.permissionMode]);
-      // Unattended: approve what the rules do not deny (edits stay denied in plan mode).
+      // Untrusted: always the plan agent, whatever the job's mode says (never
+      // `build`); the config's rules then deny everything but reads + Flaio MCP.
+      args.push(OPENCODE.agentFlag, untrusted ? AGENT_FOR_MODE.plan : AGENT_FOR_MODE[options.permissionMode]);
+      // Unattended: approve what the rules do not deny (VERIFIED: denied tools stay denied with --auto).
       args.push(OPENCODE.autoApproveFlag);
       if (model) args.push(OPENCODE.modelFlag, model);
-      args.push(safePositional(prompt));
+      args.push(OPENCODE.endOfFlags, prompt);
     } else {
       // Interactive TUI with its own private server (per-session config and env).
       args.push(OPENCODE.standaloneFlag, OPENCODE.agentFlag, AGENT_FOR_MODE[options.permissionMode]);
@@ -298,10 +379,18 @@ export class OpenCodeDriver extends BaseDriver {
       args.push(OPENCODE.promptFlag, prompt);
     }
 
+    const env: Record<string, string> = { [OPENCODE.configHomeEnv]: configHome };
+    if (untrusted || this.headless) {
+      for (const k of OPENCODE.disableProjectConfigEnv) env[k] = "true";
+    }
+    if (untrusted) {
+      Object.assign(env, OPENCODE.hardeningEnv);
+      for (const k of OPENCODE.configOverrideEnv) env[k] = "";
+    }
     return {
       command: this.resolveCommand(),
       args,
-      env: { [OPENCODE.configHomeEnv]: configHome },
+      env,
       agentSessionId: null,
       resumed: false,
     };
@@ -318,11 +407,6 @@ export class OpenCodeDriver extends BaseDriver {
     if (/>\s*$/.test(this.stripAnsi(raw))) return "waiting_input";
     return idleMs > 5000 ? "waiting_input" : "running";
   }
-}
-
-/** A prompt starting with "-" would be read as a flag. */
-function safePositional(prompt: string): string {
-  return prompt.startsWith("-") ? ` ${prompt}` : prompt;
 }
 
 /** Write the config under a fresh private temp dir (0700/0600) and return it (the config home). */

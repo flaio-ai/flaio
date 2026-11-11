@@ -1,4 +1,4 @@
-import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
+import { assertSafeAgentArg, BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
 import { execSync } from "node:child_process";
 
 export class CopilotDriver extends BaseDriver {
@@ -39,7 +39,7 @@ export class CopilotDriver extends BaseDriver {
     const args: string[] = [];
 
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
 
     if (options.prompt) {

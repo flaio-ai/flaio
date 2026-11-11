@@ -1,29 +1,25 @@
 // ---------------------------------------------------------------------------
 // Shallow clone of the job's repository for the cloud runner.
 //
-// The GitHub token never appears in argv, the remote URL, a file or shell
-// history:
+// The GitHub token never appears in argv, the remote URL, a file, a git
+// config, process.env or shell history:
 //   - clone: an `http.extraHeader` passed through GIT_CONFIG_* env vars of
-//     that one git process;
-//   - later git calls in the runner process (PR fetch, pr_fix push): a
-//     credential helper in the clone's .git/config that prints the token from
-//     RUNNER_GIT_TOKEN_ENV. That env var only exists in the runner process and
-//     matches the pty-manager scrub (^GITHUB_TOKEN), so the agent never gets it.
+//     that one git process (hardened like every PR-job git call);
+//   - later fetches of the PR head / base: the token stays in runner memory
+//     (setRunnerGitToken in ../relay/safe-git.ts) and is handed, the same way,
+//     to each fetch only. No credential helper is installed, and status /
+//     add / commit never see it. Cloud runners are review-only: nothing pushes.
 // ---------------------------------------------------------------------------
 
 import { execFile as execFileCb } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { authHeaderEnv, safeConfigArgs, safeGitEnv } from "../relay/safe-git.js";
+
+export { authHeaderEnv } from "../relay/safe-git.js";
 
 const execFileP = promisify(execFileCb);
-
-export const RUNNER_GIT_TOKEN_ENV = "GITHUB_TOKEN_FLAIO_RUNNER";
-
-/** Credential helper (shell snippet run by git). References the env var, not the token. */
-export const CREDENTIAL_HELPER =
-  `!f() { test "$1" = get || exit 0; test -n "$${RUNNER_GIT_TOKEN_ENV}" || exit 0; ` +
-  `printf 'username=x-access-token\\npassword=%s\\n' "$${RUNNER_GIT_TOKEN_ENV}"; }; f`;
 
 export type GitExec = (
   args: string[],
@@ -59,16 +55,6 @@ export function cloneUrl(repository: string): string {
   return `https://github.com/${repository}.git`;
 }
 
-/** Env for one git process carrying the token as an Authorization header. */
-export function authHeaderEnv(token: string): Record<string, string> {
-  const basic = Buffer.from(`x-access-token:${token}`, "utf-8").toString("base64");
-  return {
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
-  };
-}
-
 /** Clone and return the checkout path. Throws with a message that never contains the token. */
 export async function shallowClone(opts: CloneOptions): Promise<string> {
   if (!REPO_RE.test(opts.repository) || opts.repository.includes("..")) {
@@ -79,14 +65,21 @@ export async function shallowClone(opts: CloneOptions): Promise<string> {
   const target = path.join(opts.dir, opts.repository.split("/")[1]);
   await fs.mkdir(opts.dir, { recursive: true, mode: 0o700 });
 
-  const env: NodeJS.ProcessEnv = {
-    ...(opts.baseEnv ?? process.env),
-    GIT_TERMINAL_PROMPT: "0",
-    ...(opts.token ? authHeaderEnv(opts.token) : {}),
-  };
+  // Hardened: no global/system config, hooks, filters, LFS smudge or submodules.
+  const env = safeGitEnv(opts.baseEnv ?? process.env, opts.token ? authHeaderEnv(opts.token) : {});
   // The raw error may echo git's env, so only a redacted message leaves here.
   const failure = await git(
-    ["clone", "--depth", String(opts.depth ?? 50), "--no-tags", "--single-branch", cloneUrl(opts.repository), target],
+    [
+      ...safeConfigArgs(),
+      "clone",
+      "--depth",
+      String(opts.depth ?? 50),
+      "--no-tags",
+      "--single-branch",
+      "--no-recurse-submodules",
+      cloneUrl(opts.repository),
+      target,
+    ],
     { env, timeoutMs },
   ).then(
     () => null,
@@ -94,15 +87,6 @@ export async function shallowClone(opts: CloneOptions): Promise<string> {
   );
   if (failure !== null) throw new Error(`git clone of ${opts.repository} failed: ${failure}`);
 
-  // Later fetch/push from the runner process: helper reads the token from its env.
-  await git(["config", "--local", "credential.https://github.com.helper", CREDENTIAL_HELPER], {
-    cwd: target,
-    timeoutMs: 10_000,
-  });
-  await git(["config", "--local", "credential.https://github.com.useHttpPath", "false"], {
-    cwd: target,
-    timeoutMs: 10_000,
-  });
   return target;
 }
 

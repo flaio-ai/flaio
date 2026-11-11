@@ -1,56 +1,83 @@
 // ---------------------------------------------------------------------------
-// Pull request checkouts for pr_review / pr_fix jobs (local runner)
+// Pull request checkouts for pr_review / pr_fix jobs (local and cloud runners)
 //
 //   resolvePrRepo   — find a tracked project dir whose git remote is the PR's
 //                     owner/repo (never clones; no match fails the job)
-//   checkoutPr      — fetch pull/<n>/head (+ the base branch) into private
-//                     refs/flaio/* refs, verify the head sha, add a detached
-//                     worktree under .flaio/worktrees/ (user's checkout untouched)
+//   checkoutPr      — fetch pull/<n>/head (+ the base branch, deepening a
+//                     shallow clone until they share a merge base) into
+//                     private refs/flaio/* refs, verify the head sha, add a
+//                     detached worktree under .flaio/worktrees/ (user's
+//                     checkout untouched), neutralise symlinks that leave it
 //   writePrDiff     — .flaio/ticket/pr.diff for the agent (size-capped)
-//   finishPrFix     — commit what the agent changed, verify, push (never force)
+//   finishPrFix     — build ONE commit on top of the PR head from what the
+//                     agent changed, check the change set, push (never force)
 //   cleanupPrCheckout / sweepStalePrCheckouts — remove worktrees and refs
 //
-// Every git call here runs with repo hooks disabled: the worktree holds
-// untrusted PR content (husky-style core.hooksPath would otherwise run it).
+// Every git call goes through runSafeGit (./safe-git.ts): no hooks, no
+// fsmonitor / pager / external diff / filter drivers / submodules / LFS,
+// global and system config ignored, credentials only on fetch and push. The
+// worktree holds untrusted PR content and, once the agent ran, is hostile:
+// its `.git` file is never trusted (git runs with an explicit GIT_DIR), and
+// the push is refused when the repository's config changed since checkout.
+// Fixes on fork PRs are refused (nothing derived from a fork is pushed).
 // ---------------------------------------------------------------------------
 
-import { execFile as execFileCb } from "node:child_process";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { PrFixInput, PrJobSubject } from "../contracts/agent-loop.js";
 import { writePrWorkspaceFile } from "../workspace/ticket-workspace.js";
 import { makeDebugLog } from "../connectors/debug.js";
 import { normalizeRepoUrl } from "./runner-info.js";
 import {
+  changedSensitiveKeys,
+  runSafeGit,
+  snapshotRepoConfig,
+  trustedGitConfig,
+  EMPTY_TRUSTED_CONFIG,
+  type GitResult,
+  type RepoConfigSnapshot,
+  type SafeGitOptions,
+  type TrustedGitConfig,
+} from "./safe-git.js";
+import {
   addDetachedWorktree,
   ensureFlaioExcluded,
   flaioWorktreesDir,
   listFlaioWorktreePaths,
-  NO_HOOKS_CONFIG,
   removeDetachedWorktree,
 } from "./worktree-manager.js";
 
-const execFile = promisify(execFileCb);
+export type { GitResult } from "./safe-git.js";
+
 const debugLog = makeDebugLog("pr-jobs");
 
 export type PrJobErrorCode =
   | "no_checkout"
+  | "invalid_subject"
   | "fetch_failed"
   | "head_moved"
+  | "no_diff"
   | "fork_same_branch"
+  | "fork_fix_refused"
   | "invalid_branch"
   | "branch_exists"
   | "no_changes"
   | "history_rewritten"
+  | "unsafe_checkout"
+  | "unsafe_changes"
+  | "config_tampered"
   | "commit_failed"
-  | "push_rejected";
+  | "push_rejected"
+  | "cancelled";
 
 /** A PR job failure with a message meant for the user (sent as cli_job_failed.error). */
 export class PrJobError extends Error {
   constructor(
     readonly code: PrJobErrorCode,
     message: string,
+    /** "cancelled" during a push: whether the branch was found at the fix commit afterwards (null = unknown). */
+    readonly pushed: boolean | null = null,
   ) {
     super(message);
     this.name = "PrJobError";
@@ -59,22 +86,9 @@ export class PrJobError extends Error {
 
 // ---- git -------------------------------------------------------------------
 
-export interface GitResult {
-  stdout: string;
-  stderr: string;
-}
-
-const GIT_MAX_BUFFER = 32 * 1024 * 1024;
-
-/** Run git with repo hooks disabled and no interactive credential prompts. */
-export async function git(cwd: string, args: string[], timeoutMs = 60_000): Promise<GitResult> {
-  const { stdout, stderr } = await execFile("git", [...NO_HOOKS_CONFIG, ...args], {
-    cwd,
-    timeout: timeoutMs,
-    maxBuffer: GIT_MAX_BUFFER,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-  });
-  return { stdout: String(stdout), stderr: String(stderr) };
+/** Run git hardened (see ./safe-git.ts). A number is the timeout in ms. */
+export async function git(cwd: string, args: string[], opts: number | SafeGitOptions = {}): Promise<GitResult> {
+  return runSafeGit(cwd, args, typeof opts === "number" ? { timeoutMs: opts } : opts);
 }
 
 /** stderr (or message) of a failed git call, credentials scrubbed and size-capped. */
@@ -84,8 +98,40 @@ export function gitErrorMessage(err: unknown, max = 1500): string {
   const scrubbed = raw
     .replace(/(https?:\/\/)[^@\s/]+@/gi, "$1***@")
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "***")
+    .replace(/(AUTHORIZATION:\s*basic\s+)[A-Za-z0-9+/=]+/gi, "$1***")
     .trim();
   return scrubbed.length > max ? `${scrubbed.slice(0, max)}…` : scrubbed;
+}
+
+// ---- input validation --------------------------------------------------------
+
+/**
+ * Conservative check of a branch name from job input (subset of git's
+ * check-ref-format rules, plus: no leading "-" or "+", printable ASCII only).
+ * Branch names end up in refspecs, so this runs before any git call.
+ */
+export function isSafeBranchName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0 || name.length > 200) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  if (/^[-+./]/.test(name) || name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) return false;
+  if (name.includes("..") || name.includes("//") || name.includes("/.") || name.includes("@{")) return false;
+  if (name === "HEAD" || name === "@") return false;
+  return true;
+}
+
+const SHA_RE = /^[0-9a-f]{7,64}$/i;
+
+/** Throw PrJobError("invalid_subject") unless every field used in git argv is well-formed. */
+export function validatePrSubject(subject: PrJobSubject): void {
+  const bad = (what: string) => {
+    throw new PrJobError("invalid_subject", `The pull request job has an invalid ${what}; nothing was fetched.`);
+  };
+  if (!Number.isSafeInteger(subject.number) || subject.number <= 0) bad("number");
+  if (typeof subject.headSha !== "string" || !SHA_RE.test(subject.headSha)) bad("head commit");
+  if (!isSafeBranchName(subject.baseRef)) bad("base branch name");
+  if (!isSafeBranchName(subject.headRef)) bad("head branch name");
+  if (typeof subject.owner !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(subject.owner)) bad("owner");
+  if (typeof subject.repo !== "string" || !/^[A-Za-z0-9._-]{1,100}$/.test(subject.repo) || subject.repo.startsWith(".")) bad("repository name");
 }
 
 // ---- repo resolution -------------------------------------------------------
@@ -98,7 +144,7 @@ export interface GitRemote {
 /** Fetch remotes of a project dir (empty when it is not a repo). */
 export async function listRemotes(cwd: string): Promise<GitRemote[]> {
   try {
-    const { stdout } = await execFile("git", ["remote", "-v"], { cwd, timeout: 5000 });
+    const { stdout } = await runSafeGit(cwd, ["remote", "-v"], { timeoutMs: 5000 });
     const out: GitRemote[] = [];
     for (const line of stdout.split("\n")) {
       const m = /^(\S+)\s+(\S+)\s+\(fetch\)$/.exec(line.trim());
@@ -113,10 +159,7 @@ export async function listRemotes(cwd: string): Promise<GitRemote[]> {
 /** Absolute git common dir (shared by a repo and its linked worktrees), or null. */
 export async function gitCommonDir(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execFile("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-      cwd,
-      timeout: 5000,
-    });
+    const { stdout } = await runSafeGit(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { timeoutMs: 5000 });
     const dir = stdout.trim();
     return dir ? await fsp.realpath(dir).catch(() => dir) : null;
   } catch {
@@ -126,7 +169,7 @@ export async function gitCommonDir(cwd: string): Promise<string | null> {
 
 /** Top level of the working tree that holds `cwd`. */
 async function repoTopLevel(cwd: string): Promise<string> {
-  const { stdout } = await execFile("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5000 });
+  const { stdout } = await runSafeGit(cwd, ["rev-parse", "--show-toplevel"], { timeoutMs: 5000 });
   return stdout.trim();
 }
 
@@ -225,7 +268,7 @@ function segment(s: string, max: number): string {
 
 /** Name prefix shared by every worktree / ref of one PR: `pr-<owner>-<repo>-<n>-`. */
 export function prCheckoutPrefix(subject: Pick<PrJobSubject, "owner" | "repo" | "number">): string {
-  return `pr-${segment(subject.owner, 30)}-${segment(subject.repo, 40)}-${subject.number}-`;
+  return `pr-${segment(subject.owner, 30)}-${segment(subject.repo, 40)}-${segment(String(subject.number), 12)}-`;
 }
 
 /** Worktree / ref name of one job attempt. */
@@ -234,13 +277,13 @@ export function prCheckoutName(
   jobId: string,
   attempt: number,
 ): string {
-  return `${prCheckoutPrefix(subject)}${segment(jobId, 12)}-${attempt}`;
+  return `${prCheckoutPrefix(subject)}${segment(jobId, 12)}-${segment(String(attempt), 6)}`;
 }
 
 export interface PrCheckout {
   repoRoot: string;
   remote: string;
-  /** URL of `remote` (a same-branch fix on a maintainer-editable fork pushes to the fork's URL built from it). */
+  /** URL of `remote` (informational). */
   remoteUrl?: string;
   /** Worktree / ref name (see prCheckoutName). */
   name: string;
@@ -250,6 +293,35 @@ export interface PrCheckout {
   headSha: string;
   /** Tip of the fetched base branch; null when it could not be fetched. */
   baseSha: string | null;
+  /** Merge base of base and head (the diff's left side); null when none could be found. */
+  mergeBase?: string | null;
+  /** Absolute admin dir of the worktree (git runs with GIT_DIR=this, never the worktree's `.git` file). */
+  gitDir?: string;
+  /** Security-relevant repo config at checkout (before any agent ran). */
+  repoConfig?: RepoConfigSnapshot;
+  /** User-level git settings snapshotted before any agent ran. */
+  trusted?: TrustedGitConfig;
+  /** Repo-relative paths of symlinks that pointed outside the worktree, replaced by placeholder files. */
+  neutralisedLinks?: string[];
+}
+
+/** Hardened git options for calls inside a checkout's worktree. */
+function wtGit(checkout: PrCheckout, extra: Omit<SafeGitOptions, "gitDir" | "workTree" | "trusted"> = {}): SafeGitOptions {
+  return {
+    ...extra,
+    ...(checkout.gitDir ? { gitDir: checkout.gitDir, workTree: checkout.worktreePath } : {}),
+    config: [...(checkout.repoConfig?.blanks ?? []), ...(extra.config ?? [])],
+    trusted: checkout.trusted ?? EMPTY_TRUSTED_CONFIG,
+  };
+}
+
+/** Hardened git options for calls in the main repository. */
+function repoGit(checkout: Pick<PrCheckout, "repoConfig" | "trusted">, extra: Omit<SafeGitOptions, "trusted"> = {}): SafeGitOptions {
+  return {
+    ...extra,
+    config: [...(checkout.repoConfig?.blanks ?? []), ...(extra.config ?? [])],
+    trusted: checkout.trusted ?? EMPTY_TRUSTED_CONFIG,
+  };
 }
 
 function shaMatches(actual: string, expected: string): boolean {
@@ -258,9 +330,9 @@ function shaMatches(actual: string, expected: string): boolean {
   return e.length >= 7 && (a === e || a.startsWith(e));
 }
 
-async function deleteRefs(repoRoot: string, refs: string[]): Promise<void> {
+async function deleteRefs(repoRoot: string, refs: string[], opts: SafeGitOptions = {}): Promise<void> {
   for (const ref of refs) {
-    await git(repoRoot, ["update-ref", "-d", ref]).catch(() => undefined);
+    await git(repoRoot, ["update-ref", "-d", ref], opts).catch(() => undefined);
   }
 }
 
@@ -309,31 +381,56 @@ export interface CheckoutPrOptions {
   fetchTimeoutMs?: number;
 }
 
+/** Shallow clones (cloud runner): fetch this deep first, then deepen in these steps until head and base meet. */
+export const SHALLOW_FETCH_DEPTH = 50;
+export const DEEPEN_STEPS = [200, 1000, 5000] as const;
+/** More symlinks than this in a PR checkout: refuse the job rather than scan them all. */
+export const MAX_SYMLINKS = 5000;
+
+async function isShallow(repoRoot: string, opts: SafeGitOptions): Promise<boolean> {
+  const out = await git(repoRoot, ["rev-parse", "--is-shallow-repository"], opts).catch(() => null);
+  return out?.stdout.trim() === "true";
+}
+
+async function mergeBaseOf(repoRoot: string, a: string, b: string, opts: SafeGitOptions): Promise<string | null> {
+  const out = await git(repoRoot, ["merge-base", a, b], opts).catch(() => null);
+  const sha = out?.stdout.trim() ?? "";
+  return SHA_RE.test(sha) ? sha : null;
+}
+
 /**
  * Fetch the PR head (and base) from the matching remote into private refs,
  * verify the head is `subject.headSha`, and add a detached worktree at it.
  * Never touches the user's working tree, branches or current HEAD.
  */
 export async function checkoutPr(match: PrRepoMatch, subject: PrJobSubject, opts: CheckoutPrOptions): Promise<PrCheckout> {
+  validatePrSubject(subject);
   const { repoRoot, remote } = match;
   const name = prCheckoutName(subject, opts.jobId, opts.attempt);
   const refBase = `refs/flaio/${name}`;
+
+  // Snapshots taken before any agent of this job runs (see finishPrFix).
+  const trusted = await trustedGitConfig();
+  const repoConfig = await snapshotRepoConfig(repoRoot);
+  const ctx = { repoConfig, trusted };
+  const plain = repoGit(ctx);
+
   await sweepStalePrCheckouts(repoRoot, prCheckoutPrefix(subject), new Set([...opts.activeNames, name]));
 
   const timeout = opts.fetchTimeoutMs ?? 180_000;
+  const shallow = await isShallow(repoRoot, plain);
+  const fetchArgs = ["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", ...(shallow ? [`--depth=${SHALLOW_FETCH_DEPTH}`] : [])];
+  const headSpec = `+refs/pull/${subject.number}/head:${refBase}/head`;
+  const baseSpec = `+refs/heads/${subject.baseRef}:${refBase}/base`;
   try {
-    await git(
-      repoRoot,
-      ["fetch", "--no-tags", "--no-write-fetch-head", remote, `+refs/pull/${subject.number}/head:${refBase}/head`],
-      timeout,
-    );
+    await git(repoRoot, [...fetchArgs, remote, headSpec], repoGit(ctx, { auth: true, timeoutMs: timeout }));
   } catch (err) {
-    await deleteRefs(repoRoot, [`${refBase}/head`]);
+    await deleteRefs(repoRoot, [`${refBase}/head`], plain);
     throw new PrJobError("fetch_failed", `Fetching pull/${subject.number}/head from ${remote} failed: ${gitErrorMessage(err)}`);
   }
-  const headSha = (await git(repoRoot, ["rev-parse", `${refBase}/head^{commit}`])).stdout.trim();
+  const headSha = (await git(repoRoot, ["rev-parse", `${refBase}/head^{commit}`], plain)).stdout.trim();
   if (!shaMatches(headSha, subject.headSha)) {
-    await deleteRefs(repoRoot, [`${refBase}/head`]);
+    await deleteRefs(repoRoot, [`${refBase}/head`], plain);
     throw new PrJobError(
       "head_moved",
       `The pull request head moved: the job is for ${subject.headSha.slice(0, 12)} but ${remote} now has ${headSha.slice(0, 12)}. Start a new run on the current head.`,
@@ -342,54 +439,154 @@ export async function checkoutPr(match: PrRepoMatch, subject: PrJobSubject, opts
 
   let baseSha: string | null = null;
   try {
-    await git(
-      repoRoot,
-      ["fetch", "--no-tags", "--no-write-fetch-head", remote, `+refs/heads/${subject.baseRef}:${refBase}/base`],
-      timeout,
-    );
-    baseSha = (await git(repoRoot, ["rev-parse", `${refBase}/base^{commit}`])).stdout.trim() || null;
+    await git(repoRoot, [...fetchArgs, remote, baseSpec], repoGit(ctx, { auth: true, timeoutMs: timeout }));
+    baseSha = (await git(repoRoot, ["rev-parse", `${refBase}/base^{commit}`], plain)).stdout.trim() || null;
   } catch (err) {
     debugLog(`pr-jobs: fetching base ${subject.baseRef} failed (diff unavailable): ${gitErrorMessage(err)}`);
+  }
+
+  // A shallow clone may hold too little history for a merge base: deepen, bounded.
+  let mergeBase = baseSha ? await mergeBaseOf(repoRoot, baseSha, headSha, plain) : null;
+  if (baseSha && !mergeBase && shallow) {
+    for (const step of DEEPEN_STEPS) {
+      try {
+        await git(
+          repoRoot,
+          ["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", `--deepen=${step}`, remote, headSpec, baseSpec],
+          repoGit(ctx, { auth: true, timeoutMs: timeout }),
+        );
+      } catch (err) {
+        debugLog(`pr-jobs: deepening by ${step} failed: ${gitErrorMessage(err)}`);
+        break;
+      }
+      mergeBase = await mergeBaseOf(repoRoot, baseSha, headSha, plain);
+      if (mergeBase) break;
+    }
   }
 
   let worktreePath: string;
   try {
     // Keep .flaio/ (worktrees, workspace files) out of the user's `git status`.
     await ensureFlaioExcluded(repoRoot);
-    worktreePath = await addDetachedWorktree(repoRoot, name, headSha);
+    worktreePath = await addDetachedWorktree(repoRoot, name, headSha, { config: repoConfig.blanks });
   } catch (err) {
-    await deleteRefs(repoRoot, [`${refBase}/head`, `${refBase}/base`]);
+    await deleteRefs(repoRoot, [`${refBase}/head`, `${refBase}/base`], plain);
     throw new Error(`Creating the review worktree failed: ${gitErrorMessage(err)}`, { cause: err });
   }
-  // A .flaio directory shipped by the PR must not shadow (or redirect) the
-  // workspace Flaio writes; rm removes a symlink itself, never its target.
-  await fsp.rm(path.join(worktreePath, ".flaio"), { recursive: true, force: true }).catch(() => undefined);
+  const checkout: PrCheckout = {
+    repoRoot,
+    remote,
+    remoteUrl: match.remoteUrl,
+    name,
+    worktreePath,
+    refBase,
+    headSha,
+    baseSha,
+    mergeBase,
+    repoConfig,
+    trusted,
+    neutralisedLinks: [],
+  };
+  try {
+    // Pin the admin dir now: after the agent ran, `<wt>/.git` may point anywhere.
+    checkout.gitDir = (await git(worktreePath, ["rev-parse", "--absolute-git-dir"], plain)).stdout.trim();
+    // A .flaio directory shipped by the PR must not shadow (or redirect) the
+    // workspace Flaio writes; rm removes a symlink itself, never its target.
+    await fsp.rm(path.join(worktreePath, ".flaio"), { recursive: true, force: true });
+    checkout.neutralisedLinks = await neutraliseEscapingSymlinks(checkout);
+  } catch (err) {
+    await cleanupPrCheckout(checkout);
+    if (err instanceof PrJobError) throw err;
+    throw new Error(`Preparing the review worktree failed: ${gitErrorMessage(err)}`, { cause: err });
+  }
 
   debugLog(`pr-jobs: checked out ${subject.owner}/${subject.repo}#${subject.number} at ${headSha} in ${worktreePath}`);
-  return { repoRoot, remote, remoteUrl: match.remoteUrl, name, worktreePath, refBase, headSha, baseSha };
+  return checkout;
+}
+
+/** Placeholder content for a symlink that pointed outside the worktree. */
+export function symlinkPlaceholder(target: string): string {
+  return `flaio: this path is a symbolic link to ${JSON.stringify(target.slice(0, 300))}, outside the repository; it was replaced for this run.\n`;
+}
+
+function isInside(root: string, p: string): boolean {
+  return p === root || p.startsWith(root + path.sep);
+}
+
+/**
+ * Replace every tracked symlink (mode 120000) whose target resolves outside
+ * the worktree (absolute, `..` out, or via other links) with an inert
+ * placeholder file, so an agent can neither read nor write through it.
+ * Returns the replaced repo-relative paths.
+ */
+export async function neutraliseEscapingSymlinks(checkout: PrCheckout): Promise<string[]> {
+  const wt = checkout.worktreePath;
+  const realWt = await fsp.realpath(wt);
+  const { stdout } = await git(wt, ["ls-files", "-s", "-z"], wtGit(checkout));
+  const links: string[] = [];
+  for (const rec of stdout.split("\0")) {
+    if (!rec.startsWith("120000 ")) continue;
+    const tab = rec.indexOf("\t");
+    if (tab > 0) links.push(rec.slice(tab + 1));
+  }
+  if (links.length > MAX_SYMLINKS) {
+    throw new PrJobError("unsafe_checkout", `The pull request contains ${links.length} symbolic links (limit ${MAX_SYMLINKS}); not running an agent on it.`);
+  }
+  const replaced: string[] = [];
+  const replace = async (rel: string, abs: string, target: string) => {
+    await fsp.unlink(abs);
+    await fsp.writeFile(abs, symlinkPlaceholder(target), { flag: "wx", mode: 0o644 });
+    replaced.push(rel);
+  };
+  // Decide on the pristine tree first (so chains through other escaping links
+  // are still resolvable), then replace.
+  const escaping: { rel: string; abs: string; target: string }[] = [];
+  for (const rel of links) {
+    const abs = path.join(wt, rel);
+    if (!isInside(wt, abs)) continue;
+    const st = await fsp.lstat(abs).catch(() => null);
+    if (!st?.isSymbolicLink()) continue;
+    const target = await fsp.readlink(abs);
+    // Lexical: absolute targets and `..` escapes.
+    const lexical = path.resolve(path.dirname(abs), target);
+    let out = path.isAbsolute(target) || !isInside(wt, lexical);
+    // Real resolution through chains of links.
+    if (!out) {
+      const real = await fsp.realpath(abs).catch(() => null);
+      out = real !== null && !isInside(realWt, real);
+    }
+    if (out) escaping.push({ rel, abs, target });
+  }
+  for (const { rel, abs, target } of escaping) await replace(rel, abs, target);
+  if (replaced.length) debugLog(`pr-jobs: neutralised ${replaced.length} symlink(s) pointing outside ${wt}`);
+  return replaced;
 }
 
 /** Remove the job's worktree and private refs. Safe to call more than once. */
-export async function cleanupPrCheckout(checkout: Pick<PrCheckout, "repoRoot" | "worktreePath" | "refBase">): Promise<void> {
-  await removeDetachedWorktree(checkout.repoRoot, checkout.worktreePath).catch((err) =>
+export async function cleanupPrCheckout(
+  checkout: Pick<PrCheckout, "repoRoot" | "worktreePath" | "refBase"> & Partial<Pick<PrCheckout, "repoConfig" | "trusted">>,
+): Promise<void> {
+  await removeDetachedWorktree(checkout.repoRoot, checkout.worktreePath, { config: checkout.repoConfig?.blanks }).catch((err) =>
     debugLog(`pr-jobs: removing ${checkout.worktreePath} failed: ${gitErrorMessage(err)}`),
   );
-  await deleteRefs(checkout.repoRoot, [`${checkout.refBase}/head`, `${checkout.refBase}/base`]);
+  await deleteRefs(checkout.repoRoot, [`${checkout.refBase}/head`, `${checkout.refBase}/base`], repoGit(checkout));
 }
 
 // ---- diff for the agent ----------------------------------------------------
 
 export const PR_DIFF_MAX_BYTES = 1_500_000;
 
-/** Write `.flaio/ticket/pr.diff`: commits, stat and the diff against the merge base (capped). */
+/** Write `.flaio/ticket/pr.diff`: commits, stat and the diff against the merge base (capped). Null when no diff could be produced. */
 export async function writePrDiff(checkout: PrCheckout, subject: PrJobSubject, maxBytes = PR_DIFF_MAX_BYTES): Promise<string | null> {
   if (!checkout.baseSha) return null;
-  const range = `${checkout.baseSha}...${checkout.headSha}`;
+  const base = checkout.mergeBase === undefined ? checkout.baseSha : checkout.mergeBase;
+  if (!base) return null;
   const wt = checkout.worktreePath;
+  const opts = wtGit(checkout);
   try {
-    const log = await git(wt, ["log", "--no-color", "--oneline", "--max-count=200", `${checkout.baseSha}..${checkout.headSha}`]);
-    const stat = await git(wt, ["diff", "--no-color", "--no-ext-diff", "--stat", range]);
-    const diff = await git(wt, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", range]);
+    const log = await git(wt, ["log", "--no-color", "--oneline", "--max-count=200", `${base}..${checkout.headSha}`], opts);
+    const stat = await git(wt, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--stat", base, checkout.headSha], opts);
+    const diff = await git(wt, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, checkout.headSha], opts);
     let body = diff.stdout;
     let truncated = false;
     if (Buffer.byteLength(body, "utf-8") > maxBytes) {
@@ -398,12 +595,15 @@ export async function writePrDiff(checkout: PrCheckout, subject: PrJobSubject, m
     }
     const header = [
       `# ${subject.owner}/${subject.repo}#${subject.number}: ${subject.headRef} -> ${subject.baseRef}`,
-      `# head ${checkout.headSha}  base ${subject.baseRef} @ ${checkout.baseSha}`,
+      `# head ${checkout.headSha}  base ${subject.baseRef} @ ${checkout.baseSha}  merge base ${base}`,
       "#",
       "# Commits:",
       ...log.stdout.trimEnd().split("\n").filter(Boolean).map((l) => `#   ${l}`),
       "#",
       ...stat.stdout.trimEnd().split("\n").map((l) => `# ${l}`),
+      ...(checkout.neutralisedLinks?.length
+        ? ["#", `# NOTE: ${checkout.neutralisedLinks.length} symbolic link(s) pointing outside the repository were replaced by placeholder files.`]
+        : []),
       ...(truncated ? ["#", `# NOTE: diff truncated at ${maxBytes} bytes; read the files directly for the rest.`] : []),
       "",
     ].join("\n");
@@ -420,62 +620,45 @@ export function defaultFixBranchName(subject: Pick<PrJobSubject, "number">, jobI
   return `flaio/pr-${subject.number}-fixes-${segment(jobId, 8)}`;
 }
 
-const REPO_FULL_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
-
 /**
- * Whether a same-branch fix may push to the fork the PR comes from: the server
- * checked the live PR allows edits by maintainers (`maintainerCanModify`) and
- * named the fork (`headRepository`).
+ * Refuse fix targets the runner must not push to (before any agent runs).
+ * Fixes on fork PRs are refused entirely, whatever the target: a fix commit
+ * sits on top of the fork author's commits, and pushing those anywhere in the
+ * base repo would run the fork's code (e.g. a push-triggered workflow) with
+ * the base repo's secrets. `maintainerCanModify` / `headRepository` stay in
+ * the contract but are not acted on.
  */
-export function forkSameBranchAllowed(subject: PrJobSubject, fix: PrFixInput): boolean {
-  return (
-    subject.isFork &&
-    fix.target === "same_branch" &&
-    fix.maintainerCanModify === true &&
-    typeof fix.headRepository === "string" &&
-    REPO_FULL_NAME_RE.test(fix.headRepository) &&
-    !fix.headRepository.includes("/.")
-  );
-}
-
-/**
- * The fork's URL in the style of the base remote (ssh stays ssh, https stays
- * https, same host): the last `owner/repo` of `remoteUrl` replaced by `headRepository`.
- */
-export function forkPushUrl(remoteUrl: string, headRepository: string): string {
-  const url = remoteUrl.trim();
-  const replaced = url.replace(/([:/])[^/:]+\/[^/]+?(?:\.git)?\/?$/, `$1${headRepository}.git`);
-  if (replaced === url) throw new PrJobError("push_rejected", `Cannot derive the fork's URL from ${url}`);
-  return replaced;
-}
-
-/** Refuse fix targets the runner cannot push to (before any agent runs). */
-export function checkFixTarget(subject: PrJobSubject, fix: PrFixInput): void {
-  if (fix.target === "same_branch" && subject.isFork && !forkSameBranchAllowed(subject, fix)) {
+export function checkFixTarget(subject: PrJobSubject, _fix: PrFixInput): void {
+  if (subject.isFork) {
     throw new PrJobError(
-      "fork_same_branch",
-      `Cannot push to the pull request's own branch: ${subject.headRef} lives in a fork that does not allow edits by maintainers. Use "fix in a new branch" instead.`,
+      "fork_fix_refused",
+      `Fixes are not available for pull requests from forks (${subject.headRef} lives in a fork). Nothing was changed or pushed.`,
     );
   }
 }
 
 /** Target branch of a fix, validated (git ref rules, not the PR's own branches for new_branch). */
 export async function fixTargetBranch(repoRoot: string, subject: PrJobSubject, fix: PrFixInput, jobId: string): Promise<string> {
-  if (fix.target === "same_branch") return subject.headRef;
-  const branch = fix.newBranchName?.trim() || defaultFixBranchName(subject, jobId);
-  const valid = !branch.startsWith("-") && (await git(repoRoot, ["check-ref-format", "--branch", branch]).then(() => true, () => false));
-  if (!valid) throw new PrJobError("invalid_branch", `"${branch}" is not a valid branch name`);
-  if (branch === subject.headRef || branch === subject.baseRef) {
+  const branch = fix.target === "same_branch" ? subject.headRef : fix.newBranchName?.trim() || defaultFixBranchName(subject, jobId);
+  const valid =
+    isSafeBranchName(branch) && (await git(repoRoot, ["check-ref-format", "--branch", branch]).then(() => true, () => false));
+  if (!valid) throw new PrJobError("invalid_branch", `"${String(branch).slice(0, 200)}" is not a valid branch name`);
+  if (fix.target === "new_branch" && (branch === subject.headRef || branch === subject.baseRef)) {
     throw new PrJobError("invalid_branch", `A new branch for the fix cannot be named ${branch} (it is the pull request's own head or base)`);
   }
   return branch;
 }
 
 /** new_branch: the branch must not exist on the remote yet (a plain push would otherwise move it). */
-export async function assertRemoteBranchAbsent(repoRoot: string, remote: string, branch: string): Promise<void> {
+export async function assertRemoteBranchAbsent(
+  repoRoot: string,
+  remote: string,
+  branch: string,
+  opts: SafeGitOptions = {},
+): Promise<void> {
   let out: GitResult;
   try {
-    out = await git(repoRoot, ["ls-remote", "--heads", remote, `refs/heads/${branch}`], 60_000);
+    out = await git(repoRoot, ["ls-remote", "--heads", remote, `refs/heads/${branch}`], { timeoutMs: 60_000, ...opts, auth: true });
   } catch (err) {
     throw new PrJobError("push_rejected", `Checking ${branch} on ${remote} failed: ${gitErrorMessage(err)}`);
   }
@@ -484,27 +667,184 @@ export async function assertRemoteBranchAbsent(repoRoot: string, remote: string,
   }
 }
 
+// ---- fix: change-set checks ----------------------------------------------------
+
+/** Plausibility caps of a fix change set (refused above them). */
+export const FIX_MAX_FILES = 100;
+export const FIX_MAX_LINES = 5000;
+/** At most this many files are listed in the completion summary. */
+export const FIX_SUMMARY_MAX_FILES = 40;
+/** …and at most this many characters. */
+export const FIX_SUMMARY_MAX_CHARS = 2000;
+
+/**
+ * Paths a fix may never touch: CI / workflow definitions and git config that
+ * runs on push or checkout. Matched case-insensitively against the
+ * repo-relative path (directories: any path under them).
+ */
+export const PROTECTED_PATH_PREFIXES = [
+  ".github/",
+  ".gitlab/",
+  ".circleci/",
+  ".buildkite/",
+  ".husky/",
+  ".azure-pipelines/",
+  ".woodpecker/",
+  ".forgejo/",
+  ".gitea/",
+  ".devcontainer/",
+] as const;
+export const PROTECTED_PATHS = [
+  ".gitlab-ci.yml",
+  ".travis.yml",
+  "azure-pipelines.yml",
+  "bitbucket-pipelines.yml",
+  "appveyor.yml",
+  ".appveyor.yml",
+  ".drone.yml",
+  ".woodpecker.yml",
+  "jenkinsfile",
+  "cloudbuild.yaml",
+  "cloudbuild.yml",
+  ".pre-commit-config.yaml",
+  ".gitmodules",
+  ".gitattributes",
+  ".lfsconfig",
+  ".gitconfig",
+] as const;
+
+export function isProtectedPath(rel: string): boolean {
+  const p = rel.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+  if (PROTECTED_PATH_PREFIXES.some((d) => p.startsWith(d))) return true;
+  const base = p.split("/").pop() ?? p;
+  // Root-level CI files; .gitattributes / .gitmodules anywhere.
+  return (PROTECTED_PATHS as readonly string[]).includes(p) || base === ".gitattributes" || base === ".gitmodules" || base === ".lfsconfig";
+}
+
+export interface FixFileChange {
+  path: string;
+  /** git status letter: A(dded), M(odified), D(eleted), T(ype change). */
+  status: string;
+  added: number;
+  deleted: number;
+  binary: boolean;
+}
+
+export interface FixChangeSet {
+  files: FixFileChange[];
+  added: number;
+  deleted: number;
+}
+
+/** Parse `git diff --raw -z` + `--numstat -z` (renames off) into a change set. */
+export function parseFixChanges(raw: string, numstat: string): FixChangeSet & { modes: Map<string, string> } {
+  const modes = new Map<string, string>();
+  const statusOf = new Map<string, string>();
+  const rawParts = raw.split("\0");
+  for (let i = 0; i + 1 < rawParts.length; i += 2) {
+    const meta = rawParts[i] ?? "";
+    const p = rawParts[i + 1] ?? "";
+    const m = /^:(\d{6}) (\d{6}) \S+ \S+ ([A-Z])/.exec(meta.trim());
+    if (!m || !p) continue;
+    modes.set(p, m[2] as string);
+    statusOf.set(p, m[3] as string);
+  }
+  const files: FixFileChange[] = [];
+  let added = 0;
+  let deleted = 0;
+  for (const rec of numstat.split("\0")) {
+    if (!rec) continue;
+    const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(rec);
+    if (!m) continue;
+    const p = m[3] as string;
+    const binary = m[1] === "-" || m[2] === "-";
+    const a = binary ? 0 : Number(m[1]);
+    const d = binary ? 0 : Number(m[2]);
+    added += a;
+    deleted += d;
+    files.push({ path: p, status: statusOf.get(p) ?? "M", added: a, deleted: d, binary });
+  }
+  return { files, added, deleted, modes };
+}
+
+/** Refuse implausible or dangerous fix change sets. Returns the reasons (empty = fine). */
+export function fixChangeProblems(set: FixChangeSet & { modes: Map<string, string> }): string[] {
+  const problems: string[] = [];
+  const list = (paths: string[]) => paths.slice(0, 10).join(", ") + (paths.length > 10 ? ` (+${paths.length - 10} more)` : "");
+  const outside = set.files.filter((f) => path.isAbsolute(f.path) || f.path.split("/").includes("..")).map((f) => f.path);
+  if (outside.length) problems.push(`paths outside the repository: ${list(outside)}`);
+  const protectedPaths = set.files.filter((f) => isProtectedPath(f.path)).map((f) => f.path);
+  if (protectedPaths.length) problems.push(`changes to protected CI / git config paths (refused): ${list(protectedPaths)}`);
+  const binaries = set.files.filter((f) => f.binary && f.status !== "D").map((f) => f.path);
+  if (binaries.length) problems.push(`binary files: ${list(binaries)}`);
+  const links = set.files.filter((f) => f.status !== "D" && ["120000", "160000"].includes(set.modes.get(f.path) ?? "")).map((f) => f.path);
+  if (links.length) problems.push(`symbolic links or submodules: ${list(links)}`);
+  if (set.files.length > FIX_MAX_FILES) problems.push(`${set.files.length} files changed (limit ${FIX_MAX_FILES})`);
+  if (set.added + set.deleted > FIX_MAX_LINES) problems.push(`${set.added + set.deleted} lines changed (limit ${FIX_MAX_LINES})`);
+  return problems;
+}
+
+/** Bounded human-readable list of a change set for the completion summary. */
+export function formatFixChanges(set: FixChangeSet): string {
+  const head = `Changed ${set.files.length} file(s), +${set.added} -${set.deleted}:`;
+  const out = [head];
+  let size = head.length;
+  let listed = 0;
+  for (const f of set.files) {
+    if (listed >= FIX_SUMMARY_MAX_FILES) break;
+    const line = `- ${f.path.slice(0, 160)} (${f.binary ? "binary" : `+${f.added} -${f.deleted}`}${f.status === "A" ? ", new" : f.status === "D" ? ", deleted" : ""})`;
+    if (size + line.length + 1 > FIX_SUMMARY_MAX_CHARS) break;
+    out.push(line);
+    size += line.length + 1;
+    listed++;
+  }
+  if (listed < set.files.length) out.push(`- … and ${set.files.length - listed} more file(s)`);
+  return out.join("\n");
+}
+
+// ---- fix: commit and push ----------------------------------------------------
+
 export interface PrFixResult {
   branch: string;
   commitSha: string;
   commitCount: number;
-  /** The runner committed changes the agent left uncommitted. */
+  /** The runner built the commit from the agent's working-tree changes (always true). */
   committedByRunner: boolean;
+  changes: FixChangeSet;
 }
 
 export interface FinishPrFixOptions {
   jobId: string;
-  /** Commit message used when the runner commits the agent's changes. */
+  /** Commit message of the fix commit. */
   commitMessage: string;
   pushTimeoutMs?: number;
+  /** Abort (cancel): stops before the push, or kills an in-flight push. */
+  signal?: AbortSignal;
+}
+
+const FALLBACK_IDENTITY = { name: "Flaio", email: "noreply@flaio.ai" };
+
+/** Fail unless the repo config still matches the checkout snapshot (security-relevant keys). */
+export async function assertRepoConfigUnchanged(checkout: PrCheckout): Promise<void> {
+  if (!checkout.repoConfig) return;
+  const now = await snapshotRepoConfig(checkout.repoRoot, checkout.gitDir ? { gitDir: checkout.gitDir } : {});
+  const changed = changedSensitiveKeys(checkout.repoConfig, now);
+  if (changed.length) {
+    throw new PrJobError(
+      "config_tampered",
+      `The repository's git config changed while the agent ran (${changed.slice(0, 10).join(", ")}); nothing was pushed.`,
+    );
+  }
 }
 
 /**
- * After a pr_fix agent finished: commit what it left uncommitted (never the
- * .flaio workspace), check there are new commits on top of the PR head and
- * that history was not rewritten, then push to the target branch WITHOUT
- * force. A rejected push fails with git's message; the commits are kept under
- * `refs/flaio/unpushed/<pr>` so they are not lost when the worktree goes.
+ * After a pr_fix agent finished: build exactly one commit on top of the PR
+ * head from what the agent changed in the working tree (a fresh index read
+ * from the head; never the agent's own commits, HEAD or index; never .flaio
+ * or neutralised symlinks), check the change set (caps, binaries, protected
+ * paths, links), then push it to the target branch WITHOUT force. A rejected
+ * push fails with git's message; the commit is kept under
+ * `refs/flaio/unpushed/<pr>` so it is not lost when the worktree goes.
  */
 export async function finishPrFix(
   checkout: PrCheckout,
@@ -515,69 +855,133 @@ export async function finishPrFix(
   checkFixTarget(subject, fix);
   const wt = checkout.worktreePath;
   const branch = await fixTargetBranch(checkout.repoRoot, subject, fix, opts.jobId);
+  const aborted = () => {
+    if (opts.signal?.aborted) throw new PrJobError("cancelled", "The fix was cancelled before pushing; nothing was pushed.", false);
+  };
+  aborted();
+  await assertRepoConfigUnchanged(checkout);
 
-  let committedByRunner = false;
-  const status = await git(wt, ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).flaio"]);
-  if (status.stdout.trim()) {
+  // Placeholders of neutralised symlinks must come back untouched.
+  for (const rel of checkout.neutralisedLinks ?? []) {
+    const abs = path.join(wt, rel);
+    const st = await fsp.lstat(abs).catch(() => null);
+    const content = st?.isFile() ? await fsp.readFile(abs, "utf-8").catch(() => null) : null;
+    if (!content?.startsWith("flaio: this path is a symbolic link")) {
+      throw new PrJobError("unsafe_changes", `The fix changed ${rel}, a symbolic link pointing outside the repository; nothing was pushed.`);
+    }
+  }
+
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "flaio-fix-"));
+  const index = path.join(tmp, "index");
+  const g = (args: string[], extra: Omit<SafeGitOptions, "gitDir" | "workTree" | "trusted"> = {}) =>
+    git(wt, args, wtGit(checkout, { ...extra, env: { GIT_INDEX_FILE: index, ...(extra.env ?? {}) } }));
+  let commitSha: string;
+  let changes: FixChangeSet;
+  try {
+    let parsed: ReturnType<typeof parseFixChanges>;
     try {
-      // Stage everything, then unstage .flaio (Flaio's workspace, and any
-      // .flaio the PR itself tracks, which checkoutPr removed from the tree).
-      await git(wt, ["add", "-A"]);
-      await git(wt, ["reset", "-q", "HEAD", "--", ".flaio"]);
-      await git(wt, ["commit", "--no-verify", "--no-gpg-sign", "-m", opts.commitMessage]);
-      committedByRunner = true;
+      await g(["read-tree", checkout.headSha]);
+      await g(["add", "-A"]);
+      // .flaio (Flaio's workspace; a .flaio the PR tracks was removed from the
+      // tree) and neutralised symlinks keep the head's version, whatever the
+      // PR's .gitignore says.
+      const keep = [":(literal).flaio", ...(checkout.neutralisedLinks ?? []).map((p) => `:(literal)${p}`)];
+      const specFile = path.join(tmp, "pathspec");
+      await fsp.writeFile(specFile, keep.join("\0") + "\0", { mode: 0o600 });
+      await g(["reset", "-q", checkout.headSha, `--pathspec-from-file=${specFile}`, "--pathspec-file-nul"]);
+      const raw = await g(["diff", "--cached", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", checkout.headSha]);
+      const numstat = await g(["diff", "--cached", "--numstat", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", checkout.headSha]);
+      parsed = parseFixChanges(raw.stdout, numstat.stdout);
+    } catch (err) {
+      throw new PrJobError("commit_failed", `Collecting the fix failed: ${gitErrorMessage(err)}`);
+    }
+    if (parsed.files.length === 0) throw new PrJobError("no_changes", "The agent finished without changing anything; nothing was pushed.");
+    const problems = fixChangeProblems(parsed);
+    if (problems.length) {
+      throw new PrJobError("unsafe_changes", `The fix was refused, nothing was pushed: ${problems.join("; ")}.\n\n${formatFixChanges(parsed)}`);
+    }
+    changes = { files: parsed.files, added: parsed.added, deleted: parsed.deleted };
+    try {
+      const tree = (await g(["write-tree"])).stdout.trim();
+      const hasIdentity = (checkout.trusted?.common ?? []).some((c) => c.startsWith("user.name=")) &&
+        (checkout.trusted?.common ?? []).some((c) => c.startsWith("user.email="));
+      const identityEnv: Record<string, string> = hasIdentity
+        ? {}
+        : {
+            GIT_AUTHOR_NAME: FALLBACK_IDENTITY.name,
+            GIT_AUTHOR_EMAIL: FALLBACK_IDENTITY.email,
+            GIT_COMMITTER_NAME: FALLBACK_IDENTITY.name,
+            GIT_COMMITTER_EMAIL: FALLBACK_IDENTITY.email,
+          };
+      const msgFile = path.join(tmp, "message");
+      await fsp.writeFile(msgFile, opts.commitMessage, { mode: 0o600 });
+      commitSha = (await g(["commit-tree", tree, "-p", checkout.headSha, "-F", msgFile], { env: identityEnv })).stdout.trim();
     } catch (err) {
       throw new PrJobError("commit_failed", `Committing the fix failed: ${gitErrorMessage(err)}`);
     }
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
   }
+  if (!SHA_RE.test(commitSha)) throw new PrJobError("commit_failed", "Committing the fix produced no commit");
 
-  const commitSha = (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
-  const isDescendant = await git(wt, ["merge-base", "--is-ancestor", checkout.headSha, "HEAD"]).then(
-    () => true,
-    () => false,
-  );
-  if (!isDescendant) {
-    throw new PrJobError("history_rewritten", "The fix rewrote the pull request's history (HEAD no longer contains the PR head); nothing was pushed.");
-  }
-  const commitCount = parseInt((await git(wt, ["rev-list", "--count", `${checkout.headSha}..HEAD`])).stdout.trim(), 10) || 0;
-  if (commitCount === 0) {
-    throw new PrJobError("no_changes", "The agent finished without changing anything; nothing was pushed.");
-  }
-
+  aborted();
   if (fix.target === "new_branch") {
     try {
-      await assertRemoteBranchAbsent(checkout.repoRoot, checkout.remote, branch);
+      await assertRemoteBranchAbsent(checkout.repoRoot, checkout.remote, branch, repoGit(checkout));
     } catch (err) {
-      const kept = await keepUnpushed(checkout, subject);
-      if (err instanceof PrJobError && kept) err.message += ` (commits kept locally at ${kept})`;
+      const kept = await keepUnpushed(checkout, subject, commitSha);
+      if (err instanceof PrJobError && kept) err.message += ` (commit kept locally at ${kept})`;
       throw err;
     }
   }
+  aborted();
 
-  // Same branch of a maintainer-editable fork: push to the fork, not the base repo.
-  let pushTo = checkout.remote;
-  if (forkSameBranchAllowed(subject, fix) && fix.headRepository) {
-    if (!checkout.remoteUrl) throw new PrJobError("push_rejected", "The base remote's URL is unknown; cannot push to the fork.");
-    pushTo = forkPushUrl(checkout.remoteUrl, fix.headRepository);
-  }
   try {
-    await git(wt, ["push", "--no-verify", "--porcelain", pushTo, `HEAD:refs/heads/${branch}`], opts.pushTimeoutMs ?? 180_000);
+    // Push the commit by sha (never HEAD, never "+": no force).
+    await git(
+      checkout.repoRoot,
+      ["push", "--no-verify", "--porcelain", "--no-recurse-submodules", checkout.remote, `${commitSha}:refs/heads/${branch}`],
+      repoGit(checkout, { auth: true, timeoutMs: opts.pushTimeoutMs ?? 180_000, signal: opts.signal }),
+    );
   } catch (err) {
-    const kept = await keepUnpushed(checkout, subject);
+    if (opts.signal?.aborted) {
+      const pushed = await remoteBranchAt(checkout, branch, commitSha);
+      throw new PrJobError(
+        "cancelled",
+        pushed === true
+          ? `Cancelled while pushing, but the push had already completed: ${branch} is at ${commitSha.slice(0, 12)}.`
+          : pushed === false
+            ? `Cancelled while pushing; the push was stopped and ${branch} was not updated.`
+            : `Cancelled while pushing; could not confirm whether ${branch} was updated.`,
+        pushed,
+      );
+    }
+    const kept = await keepUnpushed(checkout, subject, commitSha);
     throw new PrJobError(
       "push_rejected",
-      `Push to ${pushTo === checkout.remote ? checkout.remote : fix.headRepository} ${branch} was rejected: ${gitErrorMessage(err)}${kept ? ` (commits kept locally at ${kept})` : ""}`,
+      `Push to ${checkout.remote} ${branch} was rejected: ${gitErrorMessage(err)}${kept ? ` (commit kept locally at ${kept})` : ""}`,
     );
   }
-  debugLog(`pr-jobs: pushed ${commitCount} commit(s) ${commitSha} to ${pushTo === checkout.remote ? checkout.remote : fix.headRepository} ${branch}`);
-  return { branch, commitSha, commitCount, committedByRunner };
+  debugLog(`pr-jobs: pushed ${commitSha} to ${checkout.remote} ${branch}`);
+  return { branch, commitSha, commitCount: 1, committedByRunner: true, changes };
 }
 
-/** Keep unpushed fix commits under one ref per PR (overwritten by the next failure). */
-async function keepUnpushed(checkout: PrCheckout, subject: PrJobSubject): Promise<string | null> {
+/** Whether `branch` on the remote points at `sha` (null = could not tell). */
+async function remoteBranchAt(checkout: PrCheckout, branch: string, sha: string): Promise<boolean | null> {
+  try {
+    const out = await git(checkout.repoRoot, ["ls-remote", "--heads", checkout.remote, `refs/heads/${branch}`], repoGit(checkout, { auth: true, timeoutMs: 30_000 }));
+    const remoteSha = out.stdout.trim().split(/\s+/)[0] ?? "";
+    return remoteSha.toLowerCase() === sha.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/** Keep an unpushed fix commit under one ref per PR (overwritten by the next failure). */
+async function keepUnpushed(checkout: PrCheckout, subject: PrJobSubject, sha: string): Promise<string | null> {
   const ref = `refs/flaio/unpushed/${prCheckoutPrefix(subject).replace(/-$/, "")}`;
   try {
-    await git(checkout.worktreePath, ["update-ref", ref, "HEAD"]);
+    await git(checkout.repoRoot, ["update-ref", ref, sha], repoGit(checkout));
     return ref;
   } catch {
     return null;

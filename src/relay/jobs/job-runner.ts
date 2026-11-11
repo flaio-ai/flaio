@@ -19,7 +19,7 @@ import { stripAnsi } from "../../strip-ansi.js";
 import { isPrJobKind, type Job, type JobKind, type TicketAgentSession, type TicketEventPayloads } from "../../contracts/agent-loop.js";
 import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../../contracts/mcp-tools.js";
 import { ticketPhaseBus, type TicketPhaseBus, type TicketPhaseBusEvents } from "../../contracts/ticket-phase-bus.js";
-import type { AgentStatus, BaseDriver, TicketSpawnConfig, TicketSpawnOptions } from "../../agents/drivers/base-driver.js";
+import { isSafeAgentArg, type AgentStatus, type BaseDriver, type TicketSpawnConfig, type TicketSpawnOptions } from "../../agents/drivers/base-driver.js";
 import type { AgentSessionInfo } from "../../agents/agent-session.js";
 import {
   DEFAULT_DRIVER_NAME,
@@ -268,6 +268,21 @@ export class JobRunner {
     if (!options.legacy) {
       const duplicate = this.handleDuplicate(msg);
       if (duplicate !== undefined) return duplicate;
+    }
+
+    // Driver and model become agent CLI arguments: refuse anything that could
+    // be read as a flag before any setup (drivers check again when building argv).
+    const badArg =
+      (ticket.driverName && !isSafeAgentArg(ticket.driverName) && "driver") ||
+      (ticket.model && !isSafeAgentArg(ticket.model) && "model");
+    if (badArg) {
+      if (isPrJobKind(job.kind)) {
+        this.rememberFinished(job, false);
+        this.sendJobEnd(job, { type: "cli_job_failed", jobId: job.id, ticketId: ticket.id || job.ticketId, error: `The job names an invalid ${badArg}` });
+      } else {
+        this.reportStartFailure(job, options.legacy, `The job names an invalid ${badArg}`);
+      }
+      return null;
     }
 
     // Pull requests: pr_review / pr_fix run on their own path (PR checkout,

@@ -124,9 +124,22 @@ describe("OpenCodeDriver.buildTicketSpawnArgs (headless)", () => {
     expect(cfg.args.join(" ")).not.toMatch(/API_KEY|sk-/);
   });
 
-  it("guards prompts that look like flags", () => {
+  it("puts the prompt after -- so it can never be read as a flag", () => {
     const cfg = driver().buildTicketSpawnArgs({ cwd: repo, sessionId: null, resume: false, permissionMode: "plan", prompt: "--rm" });
-    expect(cfg.args.at(-1)).toBe(" --rm");
+    expect(cfg.args.slice(-2)).toEqual(["--", "--rm"]);
+  });
+
+  it("refuses a model that would be read as a flag", () => {
+    expect(() =>
+      new OpenCodeDriver({ headless: true }).buildTicketSpawnArgs({
+        cwd: repo,
+        sessionId: null,
+        resume: false,
+        permissionMode: "plan",
+        prompt: "p",
+        model: "--agent=build",
+      }),
+    ).toThrow(/invalid model/);
   });
 
   it("refuses repositories that ship their own OpenCode config", () => {
@@ -177,5 +190,79 @@ describe("OpenCodeDriver basics", () => {
     const d = new OpenCodeDriver({ headless: true });
     expect(d.detectStatus("", 1000)).toBe("running");
     expect(d.detectStatus("", 200_000)).toBe("idle");
+  });
+});
+
+describe("OpenCode untrusted workspace (pull request reviews)", () => {
+  const mcpConfig = () => {
+    const p = path.join(tmp, "mcp.json");
+    fs.writeFileSync(p, JSON.stringify({ mcpServers: { flaio: { command: "node", args: ["/flaio/mcp.js"], env: { FLAIO_X: "1" } } } }));
+    return p;
+  };
+  const review = (over: Record<string, unknown> = {}) =>
+    new OpenCodeDriver({ headless: true, provider: "openrouter" }).buildTicketSpawnArgs({
+      cwd: repo,
+      sessionId: null,
+      resume: false,
+      permissionMode: "default", // what PrJobRunner maps "plan" to (for Claude): must NOT select build
+      prompt: "review",
+      mcpConfigPath: mcpConfig(),
+      allowedTools: ["Read", "Glob", "Grep", "mcp__flaio__submit_review", "mcp__flaio__report_progress"],
+      untrustedWorkspace: true,
+      readOnly: true,
+      print: true,
+      ...over,
+    });
+
+  it("declares review-only isolation", () => {
+    const caps = new OpenCodeDriver().ticketCapabilities;
+    expect(caps.untrustedWorkspace).toBe(true);
+    expect(caps.untrustedWorkspaceEdits).toBe(false);
+  });
+
+  it("runs the plan agent with deny-all rules plus reads and the allowed Flaio tools, never build", () => {
+    const cfg = review();
+    expect(flagValue(cfg.args, "--agent")).toBe("plan");
+    expect(cfg.args).not.toContain("build");
+    const conf = readConfig(cfg.env) as unknown as { permissions: { action: string; effect: string }[] };
+    expect(conf.permissions[0]).toEqual({ action: "*", resource: "*", effect: "deny" });
+    const allowed = conf.permissions.filter((p) => p.effect === "allow").map((p) => p.action);
+    expect(allowed.sort()).toEqual(["flaio_report_progress", "flaio_submit_review", "glob", "grep", "read"]);
+    // Dangerous actions denied again after every allow.
+    const lastAllow = conf.permissions.map((p) => p.effect).lastIndexOf("allow");
+    const denied = conf.permissions.slice(lastAllow + 1).map((p) => p.action);
+    for (const a of ["shell", "edit", "webfetch", "websearch", "external_directory", "skill", "subagent"]) expect(denied).toContain(a);
+  });
+
+  it("disables project config / plugins and blanks config overrides from the user's env", () => {
+    fs.writeFileSync(path.join(repo, "opencode.json"), "{}");
+    fs.mkdirSync(path.join(repo, ".opencode"));
+    const cfg = review(); // does not refuse: project config is disabled outright
+    expect(cfg.env).toMatchObject({
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      OPENCODE_CONFIG_PROJECT_DISABLE: "true",
+      OPENCODE_CONFIG: "",
+      OPENCODE_CONFIG_DIR: "",
+      OPENCODE_CONFIG_CONTENT: "",
+    });
+    // The config lives outside the worktree and names only the Flaio MCP server.
+    const home = cfg.env?.[OPENCODE.configHomeEnv] ?? "";
+    expect(home.startsWith(repo)).toBe(false);
+    expect(Object.keys(readConfig(cfg.env).mcp.servers)).toEqual(["flaio"]);
+  });
+
+  it("refuses edit-capable or interactive runs on untrusted code", () => {
+    expect(() => review({ readOnly: false })).toThrow(/read-only/);
+    expect(() =>
+      new OpenCodeDriver().buildTicketSpawnArgs({
+        cwd: repo,
+        sessionId: null,
+        resume: false,
+        permissionMode: "plan",
+        prompt: "p",
+        untrustedWorkspace: true,
+        readOnly: true,
+      }),
+    ).toThrow(/interactively/);
   });
 });

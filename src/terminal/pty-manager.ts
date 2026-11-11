@@ -8,6 +8,12 @@ export interface PtySpawnOptions {
   env?: Record<string, string>;
   cols?: number;
   rows?: number;
+  /**
+   * Sensitive keys the child may inherit from this process's env (the user's
+   * own interactive session of a driver that needs its provider key). Never set
+   * for job agents on untrusted workspaces.
+   */
+  inheritSecretEnv?: readonly string[];
 }
 
 /** Env vars never passed to agent processes (inherited or explicit), unless allowed below. */
@@ -23,14 +29,21 @@ export const SENSITIVE_ENV_PATTERN =
  */
 export const ALLOW_SECRET_ENV_MARKER = "FLAIO_ALLOW_SECRET_ENV";
 
-/** The agent process env: scrubbed process env + explicit env (scrubbed except allowed keys). */
+/**
+ * The agent process env: scrubbed process env (except `inheritSecret` keys)
+ * + explicit env (scrubbed except allowed keys).
+ */
 export function buildChildEnv(
   parent: NodeJS.ProcessEnv,
   explicit: Record<string, string> | undefined,
+  inheritSecret: readonly string[] = [],
 ): Record<string, string> {
   const out: Record<string, string> = {};
+  const inherit = new Set(inheritSecret);
   for (const [k, v] of Object.entries(parent)) {
-    if (v !== undefined && !SENSITIVE_ENV_PATTERN.test(k) && k !== ALLOW_SECRET_ENV_MARKER) out[k] = v;
+    if (v === undefined || k === ALLOW_SECRET_ENV_MARKER) continue;
+    if (SENSITIVE_ENV_PATTERN.test(k) && !inherit.has(k)) continue;
+    out[k] = v;
   }
   if (!explicit) return out;
   const allowed = new Set(
@@ -69,7 +82,7 @@ export class PtyManager extends EventEmitter {
     const extraPaths = ["/opt/homebrew/bin", "/usr/local/bin"];
     const fullPath = [...extraPaths.filter(p => !currentPath.includes(p)), currentPath].join(":");
 
-    const childEnv = buildChildEnv(process.env, options.env);
+    const childEnv = buildChildEnv(process.env, options.env, options.inheritSecretEnv);
 
     this.pty = spawn(shell, args, {
       name: "xterm-256color",

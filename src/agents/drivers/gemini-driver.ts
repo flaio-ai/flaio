@@ -1,4 +1,5 @@
 import {
+  assertSafeAgentArg,
   BaseDriver,
   inlineSystemPrompt,
   type AgentStatus,
@@ -68,7 +69,7 @@ export class GeminiDriver extends BaseDriver {
   }): SpawnConfig {
     const args: string[] = [];
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
 
     if (options.mode === "print") {
@@ -112,7 +113,7 @@ export class GeminiDriver extends BaseDriver {
       args.push("--resume", options.sessionId);
     }
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
     args.push("--approval-mode", GEMINI_APPROVAL_MODES[options.permissionMode]);
     const prompt = inlineSystemPrompt(options.prompt, options.appendSystemPrompt);
