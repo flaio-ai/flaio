@@ -110,8 +110,11 @@ describe("TicketTracker persistence", () => {
     expect(t.getSessionForTicket("t1")).toBe("s2");
     t.clearSession("t1", "s2");
     expect(t.getSessionForTicket("t1")).toBeUndefined();
-    expect(t.nextPlanIteration("t1")).toBe(0);
+    // plan_submitted iterations count from 1.
     expect(t.nextPlanIteration("t1")).toBe(1);
+    expect(t.nextPlanIteration("t1")).toBe(2);
+    expect(t.get("t1")?.planIterations).toBe(2);
+    expect(t.nextPlanIteration("unknown")).toBe(1);
   });
 });
 

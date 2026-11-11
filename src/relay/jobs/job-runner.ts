@@ -1109,7 +1109,8 @@ export class JobRunner {
     };
     if (run) run.submittedPlan = plan;
     const counter = this.deps.tracker.nextPlanIteration(p.ticketId);
-    const iteration = run?.legacy ? run.legacy.iteration : counter;
+    // plan_submitted counts from 1; the legacy iteration (cli_plan_ready) counts from 0.
+    const iteration = run?.legacy ? run.legacy.iteration + 1 : counter;
     this.sendEvent(p.ticketId, run, p.jobId, "plan_submitted", { ...plan, iteration });
   }
 

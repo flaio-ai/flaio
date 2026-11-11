@@ -312,12 +312,12 @@ export class TicketTracker {
     this.touch(entry);
   }
 
-  /** Increment and return the plan iteration counter. */
+  /** Count a submitted plan and return its iteration: 1 for the ticket's first plan (plan_submitted is 1-based). */
   nextPlanIteration(ticketId: string): number {
     const entry = this.ticketMap.get(ticketId);
-    if (!entry) return 0;
-    const n = entry.planIterations ?? 0;
-    entry.planIterations = n + 1;
+    if (!entry) return 1;
+    const n = (entry.planIterations ?? 0) + 1;
+    entry.planIterations = n;
     this.touch(entry);
     return n;
   }

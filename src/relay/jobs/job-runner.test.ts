@@ -364,7 +364,7 @@ describe("TicketPhaseBus forwarding", () => {
       "progress_reported",
     ]);
     expect(events.every((e) => e.jobId === "job1" && e.ticketId === "t1")).toBe(true);
-    expect(events[0]?.event.payload).toEqual({ ...plan, iteration: 0 });
+    expect(events[0]?.event.payload).toEqual({ ...plan, iteration: 1 });
     expect(events[0]?.event.actor).toMatchObject({ type: "agent", id: UUIDS[0] });
     expect(events[1]?.event.payload).toEqual({ questionId: "q1", text: "Which DB?", blocking: false });
 
@@ -456,6 +456,15 @@ describe("TicketPhaseBus forwarding", () => {
     ]);
     expect(h.runner.activeJobIds()).toEqual([]);
     expect(h.tracker.get("t1")?.status).toBe("done");
+  });
+
+  it("the second plan of a ticket is iteration 2", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: "job1", plan });
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: "job1", plan: { ...plan, markdown: "# Plan v2" } });
+    const iterations = h.ofType("cli_ticket_event").map((e) => (e.event.payload as { iteration: number }).iteration);
+    expect(iterations).toEqual([1, 2]);
   });
 
   it("bus activity resets the idle clock", async () => {
@@ -1063,6 +1072,9 @@ describe("request_changes after the interactive plan completed", () => {
     const ready = h.ofType("cli_plan_ready");
     expect(ready.map((m) => m.plan)).toEqual(["# Plan v1", "# Plan v2"]);
     expect(ready[1]).toMatchObject({ feedback: "Add tests", iteration: 1, sessionId: agent.id });
+    // The legacy iteration counts from 0; the plan_submitted events count from 1.
+    const submitted = h.ofType("cli_ticket_event").filter((e) => e.event.kind === "plan_submitted");
+    expect(submitted.map((e) => (e.event.payload as { iteration: number }).iteration)).toEqual([1, 2]);
     expect(h.ofType("cli_ticket_status").at(-1)?.status).toBe("plan_ready");
     // Legacy runs never put internal ids on the wire.
     expect(h.ofType("cli_ticket_event").every((e) => e.jobId === null)).toBe(true);

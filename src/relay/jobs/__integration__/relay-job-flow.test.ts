@@ -308,7 +308,7 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
     expect(events[0]).toMatchObject({
       ticketId: "t-int",
       jobId: "job-plan",
-      event: { actor: { type: "agent", id: agentSessionId }, payload: { ...plan, iteration: 0 } },
+      event: { actor: { type: "agent", id: agentSessionId }, payload: { ...plan, iteration: 1 } },
     });
     expect(at(ofType("cli_phase_complete"), 0)).toEqual({
       type: "cli_phase_complete",
