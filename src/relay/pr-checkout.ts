@@ -240,6 +240,8 @@ export function prCheckoutName(
 export interface PrCheckout {
   repoRoot: string;
   remote: string;
+  /** URL of `remote` (a same-branch fix on a maintainer-editable fork pushes to the fork's URL built from it). */
+  remoteUrl?: string;
   /** Worktree / ref name (see prCheckoutName). */
   name: string;
   worktreePath: string;
@@ -364,7 +366,7 @@ export async function checkoutPr(match: PrRepoMatch, subject: PrJobSubject, opts
   await fsp.rm(path.join(worktreePath, ".flaio"), { recursive: true, force: true }).catch(() => undefined);
 
   debugLog(`pr-jobs: checked out ${subject.owner}/${subject.repo}#${subject.number} at ${headSha} in ${worktreePath}`);
-  return { repoRoot, remote, name, worktreePath, refBase, headSha, baseSha };
+  return { repoRoot, remote, remoteUrl: match.remoteUrl, name, worktreePath, refBase, headSha, baseSha };
 }
 
 /** Remove the job's worktree and private refs. Safe to call more than once. */
@@ -418,12 +420,41 @@ export function defaultFixBranchName(subject: Pick<PrJobSubject, "number">, jobI
   return `flaio/pr-${subject.number}-fixes-${segment(jobId, 8)}`;
 }
 
+const REPO_FULL_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * Whether a same-branch fix may push to the fork the PR comes from: the server
+ * checked the live PR allows edits by maintainers (`maintainerCanModify`) and
+ * named the fork (`headRepository`).
+ */
+export function forkSameBranchAllowed(subject: PrJobSubject, fix: PrFixInput): boolean {
+  return (
+    subject.isFork &&
+    fix.target === "same_branch" &&
+    fix.maintainerCanModify === true &&
+    typeof fix.headRepository === "string" &&
+    REPO_FULL_NAME_RE.test(fix.headRepository) &&
+    !fix.headRepository.includes("/.")
+  );
+}
+
+/**
+ * The fork's URL in the style of the base remote (ssh stays ssh, https stays
+ * https, same host): the last `owner/repo` of `remoteUrl` replaced by `headRepository`.
+ */
+export function forkPushUrl(remoteUrl: string, headRepository: string): string {
+  const url = remoteUrl.trim();
+  const replaced = url.replace(/([:/])[^/:]+\/[^/]+?(?:\.git)?\/?$/, `$1${headRepository}.git`);
+  if (replaced === url) throw new PrJobError("push_rejected", `Cannot derive the fork's URL from ${url}`);
+  return replaced;
+}
+
 /** Refuse fix targets the runner cannot push to (before any agent runs). */
 export function checkFixTarget(subject: PrJobSubject, fix: PrFixInput): void {
-  if (fix.target === "same_branch" && subject.isFork) {
+  if (fix.target === "same_branch" && subject.isFork && !forkSameBranchAllowed(subject, fix)) {
     throw new PrJobError(
       "fork_same_branch",
-      `Cannot push to the pull request's own branch: ${subject.headRef} lives in a fork. Use "fix in a new branch" instead.`,
+      `Cannot push to the pull request's own branch: ${subject.headRef} lives in a fork that does not allow edits by maintainers. Use "fix in a new branch" instead.`,
     );
   }
 }
@@ -523,16 +554,22 @@ export async function finishPrFix(
     }
   }
 
+  // Same branch of a maintainer-editable fork: push to the fork, not the base repo.
+  let pushTo = checkout.remote;
+  if (forkSameBranchAllowed(subject, fix) && fix.headRepository) {
+    if (!checkout.remoteUrl) throw new PrJobError("push_rejected", "The base remote's URL is unknown; cannot push to the fork.");
+    pushTo = forkPushUrl(checkout.remoteUrl, fix.headRepository);
+  }
   try {
-    await git(wt, ["push", "--no-verify", "--porcelain", checkout.remote, `HEAD:refs/heads/${branch}`], opts.pushTimeoutMs ?? 180_000);
+    await git(wt, ["push", "--no-verify", "--porcelain", pushTo, `HEAD:refs/heads/${branch}`], opts.pushTimeoutMs ?? 180_000);
   } catch (err) {
     const kept = await keepUnpushed(checkout, subject);
     throw new PrJobError(
       "push_rejected",
-      `Push to ${checkout.remote} ${branch} was rejected: ${gitErrorMessage(err)}${kept ? ` (commits kept locally at ${kept})` : ""}`,
+      `Push to ${pushTo === checkout.remote ? checkout.remote : fix.headRepository} ${branch} was rejected: ${gitErrorMessage(err)}${kept ? ` (commits kept locally at ${kept})` : ""}`,
     );
   }
-  debugLog(`pr-jobs: pushed ${commitCount} commit(s) ${commitSha} to ${checkout.remote} ${branch}`);
+  debugLog(`pr-jobs: pushed ${commitCount} commit(s) ${commitSha} to ${pushTo === checkout.remote ? checkout.remote : fix.headRepository} ${branch}`);
   return { branch, commitSha, commitCount, committedByRunner };
 }
 

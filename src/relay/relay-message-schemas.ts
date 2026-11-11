@@ -205,6 +205,8 @@ const PrFixInputSchema = z.object({
   findingIds: z.array(z.string()),
   target: z.enum(["same_branch", "new_branch"]),
   newBranchName: z.string().optional(),
+  maintainerCanModify: z.boolean().optional(),
+  headRepository: z.string().max(200).optional(),
 });
 
 const TicketAgentSessionSchema = z.object({

@@ -527,7 +527,7 @@ describe("pr_fix jobs", () => {
     await until(() => expect(h.ofType("cli_phase_complete")).toHaveLength(1));
     const done = h.ofType("cli_phase_complete")[0];
     expect(done?.gitContext).toEqual({ branch: "fix/a", headSha: g(bare, "rev-parse", "refs/heads/fix/a") });
-    expect(done?.summary).toMatch(/stacked pull request was not opened by the runner.*into feature/);
+    expect(done?.summary).toMatch(/Flaio opens the stacked pull request from fix\/a into feature/);
     expect(g(bare, "rev-parse", "refs/heads/feature")).toBe(headSha);
   });
 

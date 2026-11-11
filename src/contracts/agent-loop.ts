@@ -168,6 +168,17 @@ export interface Job {
   reviewId?: string | null;
   /** pr_fix only: which findings to apply and where to push. */
   fix?: PrFixInput | null;
+  /**
+   * pr_fix only, server-written when the runner reports success: the branch it
+   * pushed and the pushed commit (from `cli_phase_complete.gitContext`).
+   */
+  fixOutput?: PrFixOutput | null;
+}
+
+/** What a finished pr_fix pushed. */
+export interface PrFixOutput {
+  branch: string;
+  headSha: string;
 }
 
 /** Per-run overrides captured at enqueue time. */
@@ -220,6 +231,14 @@ export interface PrFixInput {
   target: PrFixTarget;
   /** new_branch only; the runner picks a name when absent. */
   newBranchName?: string;
+  /**
+   * The PR's head lives in a fork whose author allows edits by maintainers
+   * (GitHub `maintainer_can_modify`), checked by the server against the live
+   * PR. Only then may a `same_branch` fix push to a fork. Absent = false.
+   */
+  maintainerCanModify?: boolean;
+  /** `owner/repo` of the PR's head repository when it is a fork (where a same-branch fix pushes). */
+  headRepository?: string;
 }
 
 /** Exclusivity key of a pull request subject: `pr:<owner>/<repo>#<number>` (owner/repo lower-cased). */
