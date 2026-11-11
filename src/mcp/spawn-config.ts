@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { FLAIO_MCP_SERVER_NAME } from "../contracts/mcp-tools.js";
+import { FLAIO_MCP_SERVER_NAME, type FlaioMcpToolset } from "../contracts/mcp-tools.js";
 import { getHookSocketPath } from "../hooks/hook-server.js";
 import { registerMcpSession, revokeMcpSession } from "./session-registry.js";
 
@@ -45,6 +45,24 @@ export interface McpSpawnOptions {
   /** Override the node binary / CLI entry (tests). */
   nodePath?: string;
   cliEntry?: string;
+  /**
+   * Tools the session may call (FLAIO_MCP_TOOLSET for the MCP process, and
+   * enforced by the CLI per token). Default: the ticket tools.
+   */
+  toolset?: FlaioMcpToolset;
+  /**
+   * Agent permission rules written into the settings file (Claude Code
+   * `permissions.allow` / `permissions.deny`). Used by PR jobs.
+   */
+  permissions?: { allow: string[]; deny: string[] };
+  /** Add the ticket Stop hook to the settings file (default true; PR jobs have no handoff note). */
+  stopHook?: boolean;
+  /**
+   * Put the session token into the AGENT env too (default true, so a Flaio
+   * plugin MCP server is bridged to the same session). PR jobs keep it only in
+   * mcp.json: the agent itself never needs it.
+   */
+  tokenInAgentEnv?: boolean;
 }
 
 /** Return a `[command, ...args]` that runs a flaio source/dist module with node. */
@@ -98,7 +116,20 @@ export function buildMcpConfigJson(
   };
   if (jobId) env.FLAIO_JOB_ID = jobId;
   if (opts.worktreePath) env.FLAIO_TICKET_WORKTREE = opts.worktreePath;
+  if (opts.toolset && opts.toolset !== "ticket") env.FLAIO_MCP_TOOLSET = opts.toolset;
   return { mcpServers: { [FLAIO_MCP_SERVER_NAME]: { command, args: [...args, ...toolArgs], env } } };
+}
+
+/**
+ * Build the `--settings` JSON object: the ticket Stop hook (unless
+ * `stopHook: false`) and, when given, permission rules.
+ */
+export function buildAgentSettingsJson(opts: McpSpawnOptions = {}): Record<string, unknown> {
+  const settings: Record<string, unknown> = opts.stopHook === false ? {} : buildStopHookSettingsJson(opts);
+  if (opts.permissions) {
+    settings.permissions = { allow: [...opts.permissions.allow], deny: [...opts.permissions.deny] };
+  }
+  return settings;
 }
 
 /** Build the `--settings` JSON object adding the ticket Stop hook. */
@@ -125,7 +156,12 @@ export function buildStopHookSettingsJson(opts: McpSpawnOptions = {}): Record<st
  *   // on exit: disposeMcpSpawnConfig(cfg)
  */
 export function getMcpSpawnConfig(ticketId: string, jobId: string | null, opts: McpSpawnOptions = {}): McpSpawnConfig {
-  const token = registerMcpSession({ ticketId, jobId, worktreePath: opts.worktreePath ?? null });
+  const token = registerMcpSession({
+    ticketId,
+    jobId,
+    worktreePath: opts.worktreePath ?? null,
+    ...(opts.toolset && opts.toolset !== "ticket" ? { toolset: opts.toolset } : {}),
+  });
 
   const safeId = ticketId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `flaio-mcp-${safeId}-`));
@@ -137,13 +173,13 @@ export function getMcpSpawnConfig(ticketId: string, jobId: string | null, opts: 
   });
 
   const settingsPath = path.join(dir, "settings.json");
-  fs.writeFileSync(settingsPath, JSON.stringify(buildStopHookSettingsJson(opts), null, 2) + "\n", { mode: 0o600 });
+  fs.writeFileSync(settingsPath, JSON.stringify(buildAgentSettingsJson(opts), null, 2) + "\n", { mode: 0o600 });
 
-  const env: Record<string, string> = {
-    FLAIO_TICKET_ID: ticketId,
-    FLAIO_MCP_TOKEN: token,
-    FLAIO_HOOK_SOCKET: opts.socketPath ?? getHookSocketPath(),
-  };
+  const env: Record<string, string> = { FLAIO_TICKET_ID: ticketId };
+  if (opts.tokenInAgentEnv !== false) {
+    env.FLAIO_MCP_TOKEN = token;
+    env.FLAIO_HOOK_SOCKET = opts.socketPath ?? getHookSocketPath();
+  }
   if (jobId) env.FLAIO_JOB_ID = jobId;
   if (opts.worktreePath) env.FLAIO_TICKET_WORKTREE = opts.worktreePath;
 

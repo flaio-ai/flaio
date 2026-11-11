@@ -14,6 +14,7 @@ import type {
   RecordDecisionInput,
   ReportProgressInput,
   SubmitPlanInput,
+  SubmitReviewInput,
 } from "./mcp-tools.js";
 
 export interface TicketPhaseBusEvents {
@@ -22,6 +23,8 @@ export interface TicketPhaseBusEvents {
   decision: { ticketId: string; jobId: string | null; decision: z.infer<typeof RecordDecisionInput> };
   progress: { ticketId: string; jobId: string | null; progress: z.infer<typeof ReportProgressInput> };
   phase_complete: { ticketId: string; jobId: string | null; completion: z.infer<typeof CompletePhaseInput> };
+  /** pr_review: the agent called submit_review. `ticketId` is the review id (Job.ticketId of a PR job). */
+  review_submitted: { ticketId: string; jobId: string | null; review: z.infer<typeof SubmitReviewInput> };
 }
 
 export type TicketPhaseBusEvent = keyof TicketPhaseBusEvents;

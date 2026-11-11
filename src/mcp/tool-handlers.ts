@@ -11,7 +11,7 @@
 
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { FLAIO_MCP_TOOLS, type FlaioMcpToolName } from "../contracts/mcp-tools.js";
+import { FLAIO_MCP_TOOLS, toolsetAllows, type FlaioMcpToolName, type FlaioMcpToolset } from "../contracts/mcp-tools.js";
 import type { TicketPhaseBusEvent, TicketPhaseBusEvents } from "../contracts/ticket-phase-bus.js";
 import {
   appendDecision,
@@ -19,6 +19,7 @@ import {
   readWorkspace,
   recordQuestion,
   writePlan,
+  writeReview,
 } from "../workspace/ticket-workspace.js";
 
 export interface ToolContext {
@@ -26,6 +27,8 @@ export interface ToolContext {
   jobId: string | null;
   /** Ticket worktree holding .flaio/ticket/. */
   worktreePath: string;
+  /** Tools this session may call (absent = the ticket tools). */
+  toolset?: FlaioMcpToolset | null;
 }
 
 export type BusEmit = <E extends TicketPhaseBusEvent>(event: E, payload: TicketPhaseBusEvents[E]) => void;
@@ -46,6 +49,17 @@ export class ToolInputError extends Error {
   ) {
     super(`Invalid input for ${tool}: ${issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`);
     this.name = "ToolInputError";
+  }
+}
+
+/** The tool exists but is not part of the session's toolset (e.g. submit_review in a ticket job). */
+export class ToolNotAllowedError extends Error {
+  constructor(
+    readonly tool: string,
+    readonly toolset: FlaioMcpToolset,
+  ) {
+    super(`The ${tool} tool is not available in this Flaio session (${toolset} job)`);
+    this.name = "ToolNotAllowedError";
   }
 }
 
@@ -82,6 +96,7 @@ export async function handleToolCall<N extends FlaioMcpToolName>(
   const now = deps.now ?? Date.now;
   const emit: BusEmit = deps.emit ?? (() => {});
   const base = { ticketId: ctx.ticketId, jobId: ctx.jobId };
+  if (!toolsetAllows(ctx.toolset, name)) throw new ToolNotAllowedError(name, ctx.toolset ?? "ticket");
 
   switch (name) {
     case "get_ticket_context": {
@@ -130,6 +145,12 @@ export async function handleToolCall<N extends FlaioMcpToolName>(
         now(),
       );
       emit("phase_complete", { ...base, completion });
+      return checkOutput(name, { ok: true });
+    }
+    case "submit_review": {
+      const review = parseInput("submit_review", rawInput);
+      await writeReview(ctx.worktreePath, review);
+      emit("review_submitted", { ...base, review });
       return checkOutput(name, { ok: true });
     }
     default: {

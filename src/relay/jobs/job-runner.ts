@@ -38,6 +38,7 @@ import {
   type TicketWorkspaceWriter,
 } from "./job-seams.js";
 import { buildJobPrompt, isPlanKind } from "./job-prompts.js";
+import { PrJobRunner, type PrJobOptions } from "./pr-job-runner.js";
 import {
   isLegacyJobId,
   mapRequestChanges,
@@ -93,6 +94,8 @@ export interface JobRunnerDeps {
   resumeFailWindowMs?: number;
   now?: () => number;
   uuid?: () => string;
+  /** Pull request jobs (pr_review / pr_fix): where to find clones, timeouts, git seams. */
+  prJobs?: PrJobOptions;
 }
 
 interface RunContext {
@@ -168,6 +171,8 @@ export class JobRunner {
   private busDisposers: (() => void)[] = [];
   private readonly now: () => number;
   private readonly uuid: () => string;
+  /** pr_review / pr_fix jobs: their own runs, keyed by review id, never in the TicketTracker. */
+  private readonly prJobs: PrJobRunner;
 
   constructor(private readonly deps: JobRunnerDeps) {
     this.workspace = deps.workspace ?? defaultTicketWorkspace;
@@ -175,6 +180,23 @@ export class JobRunner {
     this.bus = deps.bus ?? ticketPhaseBus;
     this.now = deps.now ?? Date.now;
     this.uuid = deps.uuid ?? randomUUID;
+    this.prJobs = new PrJobRunner({
+      send: (msg) => deps.send(msg),
+      sendJobEnd: (job, msg) => this.sendJobEnd(job, msg),
+      rememberFinished: (job) => this.rememberFinished(job, false),
+      getDriver: (name) => deps.getDriver(name),
+      createSession: (driverName, cwd, opts) => deps.createSession(driverName, cwd, opts),
+      getSession: (id) => deps.getSession(id),
+      closeSession: (id) => deps.closeSession(id),
+      announceSession: (session, meta) => deps.announceSession(session, meta),
+      workspace: () => this.workspace,
+      mcpProvider: () => this.getMcpSpawnConfig,
+      runnerId: (job) => job.runnerId ?? deps.tracker.getRunnerId(),
+      candidateCwds: () => deps.prJobs?.candidateCwds?.() ?? deps.tracker.getTrackedProjectCwds(),
+      now: () => this.now(),
+      uuid: () => this.uuid(),
+      options: deps.prJobs,
+    });
     this.attachBus();
   }
 
@@ -199,9 +221,14 @@ export class JobRunner {
     return this.runs.get(ticketId)?.session.id ?? null;
   }
 
+  /** PTY session id of the active pull request run for a review id, if any. */
+  getActivePrSessionId(reviewId: string): string | null {
+    return this.prJobs.getActiveSessionId(reviewId);
+  }
+
   /** Jobs this process is working on (setting up or running) — for runner heartbeats. */
   activeJobCount(): number {
-    let n = this.pending.size;
+    let n = this.pending.size + this.prJobs.activeJobCount();
     for (const run of this.runs.values()) if (!run.finished) n++;
     return n;
   }
@@ -221,6 +248,7 @@ export class JobRunner {
     for (const run of this.runs.values()) {
       if (!run.finished && !run.legacy && !isLegacyJobId(run.job.id)) ids.add(run.job.id);
     }
+    for (const id of this.prJobs.activeJobIds()) ids.add(id);
     return [...ids];
   }
 
@@ -242,20 +270,9 @@ export class JobRunner {
       if (duplicate !== undefined) return duplicate;
     }
 
-    // Pull requests (Wave 0): pr_review / pr_fix are in the contract but NOT YET
-    // IMPLEMENTED here (stream F). Refuse them rather than run them as ticket jobs;
-    // ticket kinds are unaffected.
-    if (isPrJobKind(job.kind)) {
-      debugLog(`jobs: ${job.id} refused: job kind ${job.kind} not supported yet`);
-      this.rememberFinished(job, false);
-      this.sendJobEnd(job, {
-        type: "cli_job_failed",
-        jobId: job.id,
-        ticketId: job.ticketId,
-        error: `Job kind "${job.kind}" is not supported by this Flaio CLI yet`,
-      });
-      return null;
-    }
+    // Pull requests: pr_review / pr_fix run on their own path (PR checkout,
+    // headless agent, submit_review / push) and never touch ticket state.
+    if (isPrJobKind(job.kind)) return this.prJobs.run(msg);
 
     // A newer runJob (or a cancel) for the same ticket while this one is still
     // awaiting setup makes this one stale: it must not spawn a second agent.
@@ -351,6 +368,7 @@ export class JobRunner {
 
   /** relay_cancel_job: stop the agent for that job. */
   cancelJob(msg: RelayCancelJobMsg): boolean {
+    if (this.prJobs.cancel(msg)) return true;
     const pending = this.pending.get(msg.ticketId);
     if (pending && pending.jobId === msg.jobId) {
       // Still setting up: drop it so it never spawns.
@@ -418,6 +436,7 @@ export class JobRunner {
   dispose(): void {
     for (const d of this.busDisposers) d();
     this.busDisposers = [];
+    this.prJobs.dispose();
     for (const run of this.runs.values()) {
       this.endRun(run);
       // Agents keep running; still revoke their MCP session once they exit.
@@ -439,11 +458,14 @@ export class JobRunner {
   private handleDuplicate(msg: RelayRunJobMsg): string | null | undefined {
     const { job, ticket } = msg;
     const key = jobAttemptKey(job);
-    if (this.pending.get(ticket.id)?.attemptKey === key) {
+    if (isPrJobKind(job.kind)) {
+      const pr = this.prJobs.duplicate(msg);
+      if (pr !== undefined) return pr;
+    } else if (this.pending.get(ticket.id)?.attemptKey === key) {
       debugLog(`jobs: duplicate relay_run_job ${job.id} (still setting up) — ignored`);
       return null;
     }
-    const run = this.runs.get(ticket.id);
+    const run = isPrJobKind(job.kind) ? undefined : this.runs.get(ticket.id);
     if (run && !run.finished && jobAttemptKey(run.job) === key) {
       debugLog(`jobs: duplicate relay_run_job ${job.id} (running) — re-sending cli_job_claimed`);
       this.deps.send({
@@ -1067,11 +1089,14 @@ export class JobRunner {
       this.bus.onEvent(event, listener);
       this.busDisposers.push(() => this.bus.offEvent(event, listener));
     };
-    on("plan_submitted", (p) => this.onPlanSubmitted(p));
-    on("question", (p) => this.onQuestion(p));
-    on("decision", (p) => this.onDecision(p));
-    on("progress", (p) => this.onProgress(p));
-    on("phase_complete", (p) => this.onPhaseComplete(p));
+    // Events of PR jobs (keyed by review id) go to the PR runner, never down the ticket path.
+    const pr = this.prJobs;
+    on("plan_submitted", (p) => (pr.owns(p.ticketId) ? undefined : this.onPlanSubmitted(p)));
+    on("question", (p) => (pr.owns(p.ticketId) ? undefined : this.onQuestion(p)));
+    on("decision", (p) => (pr.owns(p.ticketId) ? undefined : this.onDecision(p)));
+    on("progress", (p) => (pr.owns(p.ticketId) ? pr.onProgress(p) : this.onProgress(p)));
+    on("phase_complete", (p) => (pr.owns(p.ticketId) ? pr.onPhaseComplete(p) : this.onPhaseComplete(p)));
+    on("review_submitted", (p) => pr.onReviewSubmitted(p));
   }
 
   /** The active run an MCP event belongs to (null when stale or unknown). */

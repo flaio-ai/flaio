@@ -67,7 +67,13 @@ export const flaioTicketWorkspace: TicketWorkspaceWriter = {
  * --mcp-config / --settings files. dispose() revokes the token and removes them.
  */
 export const flaioMcpSpawnConfigProvider: McpSpawnConfigProvider = (ticketId, jobId, ctx) => {
-  const cfg = getMcpSpawnConfig(ticketId, jobId, { worktreePath: ctx.worktreePath });
+  const cfg = getMcpSpawnConfig(ticketId, jobId, {
+    worktreePath: ctx.worktreePath,
+    ...(ctx.toolset ? { toolset: ctx.toolset } : {}),
+    ...(ctx.permissions ? { permissions: ctx.permissions } : {}),
+    ...(ctx.stopHook === false ? { stopHook: false } : {}),
+    ...(ctx.tokenInAgentEnv === false ? { tokenInAgentEnv: false } : {}),
+  });
   return {
     mcpConfigPath: cfg.mcpConfigPath,
     settingsPath: cfg.settingsPath,
