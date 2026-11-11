@@ -74,6 +74,8 @@ const AgentsSchema = z.object({
   models: z.record(z.string(), z.array(ModelInfoSchema)).default({}),
   /** Ticket jobs: how long an agent may sit idle (waiting for input) before the job is reported stuck. */
   ticketIdleTimeoutMs: z.number().default(DEFAULTS.agents.ticketIdleTimeoutMs),
+  maxConcurrentJobs: z.number().int().min(1).default(DEFAULTS.agents.maxConcurrentJobs),
+  ticketRetentionDays: z.number().min(0).default(DEFAULTS.agents.ticketRetentionDays),
 });
 
 const AppConfigSchema = z.object({

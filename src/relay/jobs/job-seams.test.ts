@@ -22,17 +22,17 @@ afterEach(async () => {
 
 describe("defaultTicketWorkspace.writeBrief", () => {
   it("writes .flaio/ticket/brief.md inside the worktree", async () => {
-    const file = await defaultTicketWorkspace.writeBrief(worktree, "t1", "# B");
+    const file = await defaultTicketWorkspace.writeBrief(worktree, "# B", { ticketId: "t1", jobId: "j1" });
     expect(file).toBe(path.join(worktree, ".flaio/ticket/brief.md"));
     expect(await fs.readFile(file, "utf-8")).toBe("# B\n");
     // Overwrites on the next run.
-    await defaultTicketWorkspace.writeBrief(worktree, "t1", "# C\n");
+    await defaultTicketWorkspace.writeBrief(worktree, "# C\n", { ticketId: "t1", jobId: "j2" });
     expect(await fs.readFile(file, "utf-8")).toBe("# C\n");
   });
 
   it("refuses a .flaio symlink pointing outside the worktree", async () => {
     await fs.symlink(outside, path.join(worktree, ".flaio"));
-    await expect(defaultTicketWorkspace.writeBrief(worktree, "t1", "# B")).rejects.toThrow(/not a plain directory/);
+    await expect(defaultTicketWorkspace.writeBrief(worktree, "# B", { ticketId: "t1", jobId: null })).rejects.toThrow(/not a plain directory/);
     expect(await fs.readdir(outside)).toEqual([]);
   });
 
@@ -41,7 +41,7 @@ describe("defaultTicketWorkspace.writeBrief", () => {
     await fs.writeFile(victim, "keep me");
     await fs.mkdir(path.join(worktree, ".flaio/ticket"), { recursive: true });
     await fs.symlink(victim, path.join(worktree, ".flaio/ticket/brief.md"));
-    await expect(defaultTicketWorkspace.writeBrief(worktree, "t1", "# B")).rejects.toThrow();
+    await expect(defaultTicketWorkspace.writeBrief(worktree, "# B", { ticketId: "t1", jobId: null })).rejects.toThrow();
     expect(await fs.readFile(victim, "utf-8")).toBe("keep me");
   });
 });

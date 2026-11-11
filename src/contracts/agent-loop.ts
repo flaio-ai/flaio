@@ -57,7 +57,8 @@ export type TicketEventKind =
   | "pr_review_comment"
   | "ci_failed"
   | "jev_decision"
-  | "human_action";
+  | "human_action"
+  | "job_failed";
 
 export type TicketEventActorType = "agent" | "user" | "system" | "integration";
 
@@ -91,6 +92,7 @@ export interface TicketEventPayloads {
   pr_review_comment: { prUrl: string; author: string; body: string; path?: string; line?: number; url?: string };
   ci_failed: { checkName: string; url?: string; logExcerpt: string };
   jev_decision: DecisionLogEntry;
+  job_failed: { jobId: string; kind: JobKind; error: string; stuck: boolean; willRetry: boolean };
   human_action: { action: "approve_plan" | "request_changes" | "reset" | "assign_agent" | "unassign_agent" | "answer"; note?: string };
 }
 
@@ -140,6 +142,27 @@ export interface Job {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  /** epoch ms; a queued job is not dispatched before this (retry backoff). null/absent = now. */
+  availableAt?: number | null;
+  /** Per-run overrides captured at enqueue time (browser or integration). */
+  runOptions?: JobRunOptions | null;
+  /** Phase result reported when the job finished. */
+  result?: PhaseResult | null;
+}
+
+/** Per-run overrides captured at enqueue time. */
+export interface JobRunOptions {
+  cwd?: string;
+  driverName?: string;
+  model?: string;
+  useWorktree?: boolean;
+  /** Instruction contents (already resolved). Org instructions are added at dispatch. */
+  systemInstructions?: string[];
+  teamId?: string | null;
+  /** Flaio PTY session id the browser referred to (legacy request_changes). */
+  sessionId?: string;
+  /** Plan iteration number for plan / revise_plan. */
+  iteration?: number;
 }
 
 export const JOBS_COLLECTION = "jobs";
@@ -183,7 +206,7 @@ export const DECISIONS = {
 export type DecisionId = keyof typeof DECISIONS;
 export type DecisionAnswer<D extends DecisionId> = (typeof DECISIONS)[D][number];
 
-export type DecisionProviderName = "jev" | "llm" | "human" | "rule";
+export type DecisionProviderName = "jev" | "llm" | "human" | "rule" | "chain";
 
 export interface DecisionRequest<D extends DecisionId = DecisionId> {
   decision: D;
@@ -192,6 +215,10 @@ export interface DecisionRequest<D extends DecisionId = DecisionId> {
   context: string;
   /** Minimum probability to accept without escalating. */
   threshold: number;
+  /** Structured inputs (ticket, diff stats, touched paths, tool call, ...) for rule providers and context builders. */
+  inputs?: object;
+  /** Items to judge one by one (criteria_check: acceptance criteria). */
+  items?: string[];
 }
 
 export interface DecisionResult<D extends DecisionId = DecisionId> {
@@ -218,4 +245,25 @@ export interface DecisionLogEntry {
   provider: DecisionProviderName;
   escalated: boolean;
   threshold: number;
+}
+
+// ---- Agent assignment config (per integration) ----------------------------
+
+/**
+ * Optional fields on Jira / Linear / ClickUp integration configs that hand
+ * issues to the Flaio agent. Off unless an admin enables it.
+ */
+export interface AgentAssignmentConfig {
+  /** Master switch. When false/absent, assignee and label never create agent tickets. */
+  agentAssignmentEnabled?: boolean;
+  /** Provider user id of the Flaio agent identity (Jira accountId / Linear userId / ClickUp userId). */
+  agentAssignee?: string;
+  /** Label that hands an issue to the agent. Default "flaio" (only when enabled). */
+  agentLabel?: string;
+  /**
+   * Who may resume the agent with comments (answers, new instructions).
+   * "org_members" (default): only commenters mapped to members of the Flaio org.
+   * "anyone": any commenter on the synced issue.
+   */
+  agentCommentTrust?: "org_members" | "anyone";
 }

@@ -45,6 +45,8 @@ export interface TrackedTicket {
   lastJobKind?: JobKind;
   /** Number of plans submitted for this ticket (plan_submitted iteration). */
   planIterations?: number;
+  /** epoch ms the ticket's last job ended (completed, failed, cancelled). Drives cleanup. */
+  lastJobFinishedAt?: number;
   updatedAt?: number;
 }
 
@@ -71,6 +73,7 @@ const TrackedTicketSchema = z.object({
   agentCwd: z.string().nullable().optional(),
   lastJobKind: z.enum(["plan", "implement", "revise_plan", "review_fixes", "ci_fix", "answer_resume"]).optional(),
   planIterations: z.number().optional(),
+  lastJobFinishedAt: z.number().optional(),
   updatedAt: z.number().optional(),
 });
 
@@ -301,12 +304,20 @@ export class TicketTracker {
     entry.activeJob = job;
   }
 
-  /** Increment and return the plan iteration counter. */
+  /** Record that the ticket's current job ended (retention clock for cleanup). */
+  markJobFinished(ticketId: string, at: number = Date.now()): void {
+    const entry = this.ticketMap.get(ticketId);
+    if (!entry) return;
+    entry.lastJobFinishedAt = at;
+    this.touch(entry);
+  }
+
+  /** Count a submitted plan and return its iteration: 1 for the ticket's first plan (plan_submitted is 1-based). */
   nextPlanIteration(ticketId: string): number {
     const entry = this.ticketMap.get(ticketId);
-    if (!entry) return 0;
-    const n = entry.planIterations ?? 0;
-    entry.planIterations = n + 1;
+    if (!entry) return 1;
+    const n = (entry.planIterations ?? 0) + 1;
+    entry.planIterations = n;
     this.touch(entry);
     return n;
   }

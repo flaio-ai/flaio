@@ -2,9 +2,10 @@
 // Integration seams for the job runner (WS-A1 ⇄ WS-A2)
 //
 // WS-A2 owns src/workspace (ticket workspace files) and src/mcp (Flaio MCP
-// server). Until those land, the job runner uses the minimal defaults below.
-// At integration, A2 replaces them via JobRunner.setTicketWorkspace() /
-// JobRunner.setMcpSpawnConfigProvider() (or RelayClient's pass-throughs).
+// server). The job runner falls back to the minimal defaults below (tests,
+// no MCP); the app wires A2's real implementations at startup via
+// RelayClient.setTicketWorkspace() / setMcpSpawnConfigProvider() — see
+// ticket-integration.ts.
 // ---------------------------------------------------------------------------
 
 import fs from "node:fs";
@@ -16,17 +17,26 @@ import { ensureFlaioExcluded } from "../worktree-manager.js";
 /** Writes ticket workspace files into a worktree. */
 export interface TicketWorkspaceWriter {
   /**
-   * Write the brief to `<worktree>/.flaio/ticket/brief.md`.
-   * Returns the absolute path written.
+   * Write the brief to `<worktree>/.flaio/ticket/brief.md`. Called before
+   * every start/resume: it also starts the phase the Stop hook checks.
    */
-  writeBrief(worktreePath: string, ticketId: string, markdown: string): Promise<string>;
+  writeBrief(worktreePath: string, markdown: string, phase: { ticketId: string; jobId: string | null }): Promise<unknown>;
   /** Ensure `.flaio/` is excluded from commits (`.git/info/exclude`). */
-  ensureExcluded(worktreePath: string): Promise<void>;
+  ensureExcluded(worktreePath: string): Promise<unknown>;
+  /**
+   * answer_resume: record the human answer in questions.md. `questionId` when
+   * the job names one; otherwise the writer matches it to an open question.
+   * Returns the question id the answer was recorded under.
+   */
+  recordAnswer?(
+    worktreePath: string,
+    answer: { text: string; jobId: string; questionId?: string | null },
+  ): Promise<string | null>;
 }
 
 /** Default writer: plain file write + info/exclude entry. */
-export const defaultTicketWorkspace: TicketWorkspaceWriter = {
-  async writeBrief(worktreePath, _ticketId, markdown) {
+export const defaultTicketWorkspace = {
+  async writeBrief(worktreePath: string, markdown: string, _phase?: { ticketId: string; jobId: string | null }): Promise<string> {
     const dir = await ensureRealDir(worktreePath, TICKET_WORKSPACE_DIR);
     const file = path.join(dir, TICKET_WORKSPACE_FILES.brief);
     // O_NOFOLLOW: a brief.md symlink in the repo must not redirect the write.
@@ -40,10 +50,10 @@ export const defaultTicketWorkspace: TicketWorkspaceWriter = {
     }
     return file;
   },
-  async ensureExcluded(worktreePath) {
+  async ensureExcluded(worktreePath: string): Promise<void> {
     await ensureFlaioExcluded(worktreePath);
   },
-};
+} satisfies TicketWorkspaceWriter;
 
 /**
  * Create `<root>/<rel>` one segment at a time, refusing any segment that is a
@@ -72,15 +82,30 @@ async function ensureRealDir(root: string, rel: string): Promise<string> {
 
 /** What the agent needs to attach the Flaio MCP server for a ticket job. */
 export interface McpSpawnConfig {
-  /** Path to an MCP config JSON passed to the agent (`claude --mcp-config <path>`). */
+  /** Path to an MCP config JSON passed to the agent (`claude --mcp-config=<path>`). */
   mcpConfigPath?: string;
-  /** Extra env for the agent process (inherited by stdio MCP servers). */
+  /** Path to an agent settings file adding the ticket Stop hook (`claude --settings <path>`). */
+  settingsPath?: string;
+  /** Extra env for the agent process (inherited by stdio MCP servers and hooks). */
   env?: Record<string, string>;
+  /**
+   * Revoke the session token and remove temp files. Called once the agent
+   * process is gone (exit, close, cancel, supersede, start failure).
+   */
+  dispose?: () => void;
+  /** Re-bind the session token to another job id (a reopened run). */
+  rebindJob?: (jobId: string) => void;
+}
+
+export interface McpSpawnContext {
+  /** Directory the agent runs in (ticket worktree, or the project dir). */
+  worktreePath: string;
 }
 
 export type McpSpawnConfigProvider = (
   ticketId: string,
   jobId: string,
+  ctx: McpSpawnContext,
 ) => McpSpawnConfig | undefined | Promise<McpSpawnConfig | undefined>;
 
 /** Stub until WS-A2's getMcpSpawnConfig lands: no MCP server attached. */

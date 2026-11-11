@@ -9,7 +9,7 @@ import { ClaudeDriver } from "../../agents/drivers/claude-driver.js";
 import type { AgentStatus, BaseDriver, TicketSpawnConfig, TicketSpawnOptions } from "../../agents/drivers/base-driver.js";
 import type { CliToRelayMsg, RelayRunJobMsg } from "../relay-protocol.js";
 import { TicketTracker } from "../ticket-tracker.js";
-import { JobRunner, type JobAgentSession } from "./job-runner.js";
+import { FINISHED_OUTCOMES_MAX, JobRunner, type JobAgentSession } from "./job-runner.js";
 import {
   mapRequestChanges,
   mapStartImplementation,
@@ -27,6 +27,7 @@ class FakeSession extends EventEmitter implements JobAgentSession {
     null;
   written: string[] = [];
   closed = false;
+  failStart = false;
 
   constructor(
     readonly id: string,
@@ -37,6 +38,7 @@ class FakeSession extends EventEmitter implements JobAgentSession {
   }
 
   async startTicket(options: Omit<TicketSpawnOptions, "cwd">, env?: Record<string, string>) {
+    if (this.failStart) throw new Error("spawn failed");
     const config = this.driver.buildTicketSpawnArgs({ ...options, cwd: this.cwd });
     this.spawned = { options, env, config };
     this.setStatus("running");
@@ -75,6 +77,8 @@ interface Harness {
   bus: TicketPhaseBus;
   clock: { now: number };
   mcpCalls: [string, string][];
+  /** One entry per getMcpSpawnConfig call: worktree + dispose/rebind spies. */
+  mcpConfigs: { worktreePath: string; disposed: number; rebound: string[] }[];
   ofType<T extends CliToRelayMsg["type"]>(type: T): Extract<CliToRelayMsg, { type: T }>[];
   last(): FakeSession;
 }
@@ -82,7 +86,7 @@ interface Harness {
 let tmp: string;
 let harness: Harness;
 
-function makeHarness(opts: { mcpPath?: string } = {}): Harness {
+function makeHarness(opts: { mcpPath?: string; failStart?: boolean } = {}): Harness {
   const driver = new ClaudeDriver();
   const sent: CliToRelayMsg[] = [];
   const sessions: FakeSession[] = [];
@@ -90,6 +94,7 @@ function makeHarness(opts: { mcpPath?: string } = {}): Harness {
   const bus = new TicketPhaseBus();
   const clock = { now: 1_000_000 };
   const mcpCalls: [string, string][] = [];
+  const mcpConfigs: Harness["mcpConfigs"] = [];
   let uuidIdx = 0;
   let sessionIdx = 0;
 
@@ -100,6 +105,7 @@ function makeHarness(opts: { mcpPath?: string } = {}): Harness {
     getDriver: (name) => (name === "claude" ? driver : undefined),
     createSession: (_driverName, cwd) => {
       const s = new FakeSession(`session-${++sessionIdx}`, driver, cwd);
+      s.failStart = !!opts.failStart;
       sessions.push(s);
       return s;
     },
@@ -117,9 +123,22 @@ function makeHarness(opts: { mcpPath?: string } = {}): Harness {
     announceSession: () => undefined,
     tracker,
     bus,
-    getMcpSpawnConfig: (ticketId, jobId) => {
+    getMcpSpawnConfig: (ticketId, jobId, ctx) => {
       mcpCalls.push([ticketId, jobId]);
-      return opts.mcpPath ? { mcpConfigPath: opts.mcpPath, env: { FLAIO_MCP: "1" } } : undefined;
+      if (!opts.mcpPath) return undefined;
+      const rec = { worktreePath: ctx.worktreePath, disposed: 0, rebound: [] as string[] };
+      mcpConfigs.push(rec);
+      return {
+        mcpConfigPath: opts.mcpPath,
+        settingsPath: "/tmp/flaio-settings.json",
+        env: { FLAIO_MCP: "1" },
+        dispose: () => {
+          rec.disposed++;
+        },
+        rebindJob: (id: string) => {
+          rec.rebound.push(id);
+        },
+      };
     },
     idleTimeoutMs: () => 60_000,
     idleCheckIntervalMs: 1_000,
@@ -135,6 +154,7 @@ function makeHarness(opts: { mcpPath?: string } = {}): Harness {
     bus,
     clock,
     mcpCalls,
+    mcpConfigs,
     ofType: (type) => sent.filter((m) => m.type === type) as never,
     last: () => sessions[sessions.length - 1] as FakeSession,
   };
@@ -206,7 +226,9 @@ describe("JobRunner.runJob", () => {
     expect(flag(args, "--session-id")).toBe(UUIDS[0]);
     expect(args).not.toContain("--resume");
     expect(flag(args, "--permission-mode")).toBe("plan");
-    expect(flag(args, "--mcp-config")).toBe("/tmp/flaio-mcp.json");
+    expect(args).toContain("--mcp-config=/tmp/flaio-mcp.json");
+    expect(flag(args, "--settings")).toBe("/tmp/flaio-settings.json");
+    expect(h.mcpConfigs[0]?.worktreePath).toBe(tmp);
     expect(flag(args, "--append-system-prompt")).toBe("Use pnpm.");
     expect(args.at(-1)).toContain(".flaio/ticket/brief.md");
     expect(args.at(-1)).toContain("submit_plan");
@@ -342,7 +364,7 @@ describe("TicketPhaseBus forwarding", () => {
       "progress_reported",
     ]);
     expect(events.every((e) => e.jobId === "job1" && e.ticketId === "t1")).toBe(true);
-    expect(events[0]?.event.payload).toEqual({ ...plan, iteration: 0 });
+    expect(events[0]?.event.payload).toEqual({ ...plan, iteration: 1 });
     expect(events[0]?.event.actor).toMatchObject({ type: "agent", id: UUIDS[0] });
     expect(events[1]?.event.payload).toEqual({ questionId: "q1", text: "Which DB?", blocking: false });
 
@@ -364,7 +386,8 @@ describe("TicketPhaseBus forwarding", () => {
         gitContext: { branch: "ticket/t1" },
       },
     ]);
-    expect(h.ofType("cli_ticket_event").at(-1)?.event.kind).toBe("phase_completed");
+    // complete_phase travels only as cli_phase_complete (never a phase_completed ticket event).
+    expect(h.ofType("cli_ticket_event").map((e) => e.event.kind)).not.toContain("phase_completed");
 
     // Completion is final: a later exit is not a failure.
     h.last().exit(0);
@@ -410,6 +433,38 @@ describe("TicketPhaseBus forwarding", () => {
     expect(h.ofType("cli_phase_complete")).toEqual([]);
     expect(h.ofType("cli_implementation_done")).toEqual([]);
     expect(h.tracker.get("t1")?.status).toBe("stuck");
+  });
+
+  it("a job reported stuck is still alive: it stays listed and its later complete_phase is sent", async () => {
+    vi.useFakeTimers();
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    h.last().setStatus("waiting_input");
+    h.clock.now += 61_000;
+    vi.advanceTimersByTime(1_000);
+    expect(h.ofType("cli_job_failed")).toEqual([expect.objectContaining({ jobId: "job1", stuck: true })]);
+    expect(h.last().closed).toBe(false);
+    expect(h.runner.activeJobIds()).toEqual(["job1"]);
+
+    h.bus.emitEvent("phase_complete", {
+      ticketId: "t1",
+      jobId: "job1",
+      completion: { result: "success", summary: "Done after all", testsRun: [] },
+    });
+    expect(h.ofType("cli_phase_complete")).toEqual([
+      expect.objectContaining({ jobId: "job1", phase: "implement", result: "success", summary: "Done after all" }),
+    ]);
+    expect(h.runner.activeJobIds()).toEqual([]);
+    expect(h.tracker.get("t1")?.status).toBe("done");
+  });
+
+  it("the second plan of a ticket is iteration 2", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: "job1", plan });
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: "job1", plan: { ...plan, markdown: "# Plan v2" } });
+    const iterations = h.ofType("cli_ticket_event").map((e) => (e.event.payload as { iteration: number }).iteration);
+    expect(iterations).toEqual([1, 2]);
   });
 
   it("bus activity resets the idle clock", async () => {
@@ -727,5 +782,316 @@ describe("JobRunner session closed without an exit event", () => {
     expect(h.ofType("cli_plan_ready")).toEqual([]);
     expect(h.ofType("cli_ticket_status").at(-1)).toMatchObject({ status: "error", message: expect.stringContaining("timed out") });
     expect(h.runner.getActiveSessionId("t1")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 2 integration: MCP lifecycle, duplicates, answers, reopened runs
+// ---------------------------------------------------------------------------
+
+describe("MCP spawn config lifecycle", () => {
+  const disposed = (h: Harness) => h.mcpConfigs.map((c) => c.disposed);
+
+  it("is disposed when the agent exits before completing", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    expect(disposed(h)).toEqual([0]);
+    h.last().exit(0);
+    expect(disposed(h)).toEqual([1]);
+  });
+
+  it("stays valid after complete_phase and is disposed when the agent exits", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: "job1", completion: { result: "success", summary: "ok", testsRun: [] } });
+    expect(disposed(h)).toEqual([0]);
+    h.last().exit(0);
+    expect(disposed(h)).toEqual([1]);
+  });
+
+  it("is disposed on cancel, supersede and user close", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job1", ticketId: "t1", reason: "user" });
+    expect(disposed(h)).toEqual([1]);
+
+    await h.runner.runJob(runJobMsg(job("plan", "job2", "plan"), null));
+    await h.runner.runJob(runJobMsg(job("implement", "job3", "acceptEdits"), null));
+    expect(disposed(h)).toEqual([1, 1, 0]);
+
+    userCloses(h.last());
+    await tick();
+    expect(disposed(h)).toEqual([1, 1, 1]);
+  });
+
+  it("is disposed when the agent fails to start", async () => {
+    const h = makeHarness({ mcpPath: "/tmp/flaio-mcp.json", failStart: true });
+    harness.runner.dispose();
+    harness = h;
+    expect(await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null))).toBeNull();
+    expect(disposed(h)).toEqual([1]);
+    expect(h.ofType("cli_job_failed")[0]).toMatchObject({ jobId: "job1", error: expect.stringContaining("spawn failed") });
+  });
+
+  it("a fast-failing resume keeps the session for the fresh retry, then disposes once", async () => {
+    const h = harness;
+    const prev: TicketAgentSession = { id: UUIDS[2] as string, driver: "claude", runnerId: "runner-a", resumeCount: 0 };
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), prev));
+    h.clock.now += 1_000;
+    h.last().exit(1);
+    await vi.waitFor(() => expect(h.sessions).toHaveLength(2));
+    expect(h.mcpCalls).toHaveLength(1);
+    expect(disposed(h)).toEqual([0]);
+    expect(argsOf(h.last())).toContain("--mcp-config=/tmp/flaio-mcp.json");
+    h.clock.now += 60_000;
+    h.last().exit(0);
+    expect(disposed(h)).toEqual([1]);
+  });
+});
+
+describe("duplicate relay_run_job", () => {
+  it("re-claims a running job instead of spawning a second agent", async () => {
+    const h = harness;
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    const first = await h.runner.runJob(msg);
+    expect(await h.runner.runJob(structuredClone(msg))).toBe(first);
+    expect(h.sessions).toHaveLength(1);
+    expect(h.sessions[0]?.closed).toBe(false);
+    expect(h.ofType("cli_job_claimed")).toHaveLength(2);
+    expect(h.mcpCalls).toHaveLength(1);
+  });
+
+  it("ignores a duplicate that arrives while the first is still setting up", async () => {
+    const h = harness;
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    const [a, b] = await Promise.all([h.runner.runJob(msg), h.runner.runJob(structuredClone(msg))]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+    expect(h.sessions).toHaveLength(1);
+    expect(h.ofType("cli_job_claimed")).toHaveLength(1);
+  });
+
+  it("re-sends the failure of a finished attempt instead of running it again, but runs a retry (attempts + 1)", async () => {
+    const h = harness;
+    const j = job("plan", "job1", "plan");
+    await h.runner.runJob(runJobMsg(j, null));
+    h.clock.now += 60_000;
+    h.last().exit(0); // failed attempt 1
+    expect(h.ofType("cli_job_failed")).toHaveLength(1);
+
+    // Same id#attempts again (the relay released the claim): it never saw the failure.
+    expect(await h.runner.runJob(runJobMsg(j, null))).toBeNull();
+    expect(h.sessions).toHaveLength(1);
+    const failed = h.ofType("cli_job_failed");
+    expect(failed).toHaveLength(2);
+    expect(failed[1]).toEqual(failed[0]);
+    expect(failed[1]).toMatchObject({ jobId: "job1", ticketId: "t1" });
+
+    await h.runner.runJob(runJobMsg({ ...j, attempts: 2 }, null));
+    expect(h.sessions).toHaveLength(2);
+    expect(h.ofType("cli_job_failed")).toHaveLength(2);
+  });
+
+  it("re-sends cli_phase_complete (with the plan) for a re-delivered job that already completed", async () => {
+    const h = harness;
+    const plan = { steps: ["a"], risks: [], files: ["src/x.ts"], markdown: "# Plan" };
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    await h.runner.runJob(msg);
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: "job1", plan });
+    h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: "job1", completion: { result: "success", summary: "ok", testsRun: [] } });
+    expect(h.ofType("cli_phase_complete")).toHaveLength(1);
+
+    expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
+    expect(h.sessions).toHaveLength(1);
+    expect(h.sessions[0]?.closed).toBe(false);
+    const complete = h.ofType("cli_phase_complete");
+    expect(complete).toHaveLength(2);
+    expect(complete[1]).toEqual(complete[0]);
+    expect(complete[1]).toMatchObject({ jobId: "job1", phase: "plan", result: "success", summary: "ok", plan });
+    // Only the outcome is repeated.
+    expect(h.ofType("cli_ticket_event")).toHaveLength(1);
+    expect(h.ofType("cli_job_claimed")).toHaveLength(1);
+  });
+
+  it("re-sends a start failure for a duplicate of the attempt that could not start", async () => {
+    const h = makeHarness({ failStart: true });
+    harness.runner.dispose();
+    harness = h;
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    expect(await h.runner.runJob(msg)).toBeNull();
+    expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
+    const failed = h.ofType("cli_job_failed");
+    expect(failed).toHaveLength(2);
+    expect(failed[1]).toEqual(failed[0]);
+    expect(failed[0]?.error).toContain("Agent failed to start");
+    expect(h.sessions).toHaveLength(1);
+  });
+
+  it("stays silent for a finished attempt that reported no outcome (cancelled by the relay)", async () => {
+    const h = harness;
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    await h.runner.runJob(msg);
+    h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job1", ticketId: "t1", reason: "reset" });
+    const sentBefore = h.sent.length;
+    expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
+    expect(h.sent).toHaveLength(sentBefore);
+    expect(h.sessions).toHaveLength(1);
+  });
+
+  it("keeps outcomes for a bounded number of recent attempts; older duplicates are still not run again", async () => {
+    const h = harness;
+    const failing = (i: number): RelayRunJobMsg => {
+      const msg = runJobMsg(job("plan", `job-${i}`, "plan"), null);
+      return { ...msg, ticket: { ...msg.ticket, driverName: "no-such-driver" } };
+    };
+    for (let i = 0; i <= FINISHED_OUTCOMES_MAX; i++) await h.runner.runJob(failing(i));
+    expect(h.ofType("cli_job_failed")).toHaveLength(FINISHED_OUTCOMES_MAX + 1);
+
+    // The newest outcome is repeated, the oldest one has been dropped.
+    await h.runner.runJob(failing(FINISHED_OUTCOMES_MAX));
+    expect(h.ofType("cli_job_failed")).toHaveLength(FINISHED_OUTCOMES_MAX + 2);
+    expect(h.ofType("cli_job_failed").at(-1)).toMatchObject({ jobId: `job-${FINISHED_OUTCOMES_MAX}` });
+    expect(await h.runner.runJob(failing(0))).toBeNull();
+    expect(h.ofType("cli_job_failed")).toHaveLength(FINISHED_OUTCOMES_MAX + 2);
+    expect(h.sessions).toHaveLength(0);
+  });
+});
+
+describe("activeJobIds (runner register / heartbeat)", () => {
+  it("lists a job while it is setting up and running, not once it completed", async () => {
+    const h = harness;
+    expect(h.runner.activeJobIds()).toEqual([]);
+    const started = h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    expect(h.runner.activeJobIds()).toEqual(["job1"]); // still setting up
+    await started;
+    expect(h.runner.activeJobIds()).toEqual(["job1"]);
+
+    h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: "job1", completion: { result: "success", summary: "ok", testsRun: [] } });
+    // The agent stays open after completing, but the job is over.
+    expect(h.last().closed).toBe(false);
+    expect(h.runner.activeJobIds()).toEqual([]);
+  });
+
+  it("drops a job that failed or was cancelled", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    h.clock.now += 60_000;
+    h.last().exit(1);
+    expect(h.runner.activeJobIds()).toEqual([]);
+
+    await h.runner.runJob(runJobMsg(job("plan", "job2", "plan"), null));
+    expect(h.runner.activeJobIds()).toEqual(["job2"]);
+    h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job2", ticketId: "t1", reason: "reset" });
+    expect(h.runner.activeJobIds()).toEqual([]);
+  });
+
+  it("never lists the synthetic job of a legacy run", async () => {
+    const h = harness;
+    const p = mapStartInteractivePlanning(
+      { type: "relay_start_interactive_planning", ticketId: "t1", ticketTitle: "T", ticketDescription: "D", systemInstructions: [], cwd: tmp },
+      undefined,
+      [],
+      1,
+    );
+    const started = h.runner.runJob(p.msg, p.options);
+    expect(h.runner.activeJobIds()).toEqual([]);
+    await started;
+    expect(h.runner.activeJobCount()).toBe(1);
+    expect(h.runner.activeJobIds()).toEqual([]);
+  });
+});
+
+describe("answer_resume", () => {
+  it("records the answer in the workspace before resuming", async () => {
+    const h = harness;
+    const recorded: { worktreePath: string; text: string; jobId: string }[] = [];
+    h.runner.setTicketWorkspace({
+      writeBrief: async () => undefined,
+      ensureExcluded: async () => undefined,
+      recordAnswer: async (worktreePath, a) => {
+        recorded.push({ worktreePath, text: a.text, jobId: a.jobId });
+        return "q_1";
+      },
+    });
+    const prev: TicketAgentSession = { id: UUIDS[2] as string, driver: "claude", runnerId: "runner-a", resumeCount: 0 };
+    await h.runner.runJob(runJobMsg(job("answer_resume", "job9", "plan", "  Use Postgres.  "), prev));
+    expect(recorded).toEqual([{ worktreePath: tmp, text: "Use Postgres.", jobId: "job9" }]);
+    expect(flag(argsOf(h.last()), "--resume")).toBe(UUIDS[2]);
+  });
+
+  it("does not record anything for other job kinds", async () => {
+    const h = harness;
+    let calls = 0;
+    h.runner.setTicketWorkspace({
+      writeBrief: async () => undefined,
+      ensureExcluded: async () => undefined,
+      recordAnswer: async () => {
+        calls++;
+        return null;
+      },
+    });
+    await h.runner.runJob(runJobMsg(job("review_fixes", "job9", "acceptEdits", "Rename"), null));
+    expect(calls).toBe(0);
+  });
+});
+
+describe("request_changes after the interactive plan completed", () => {
+  const ipMsg = {
+    type: "relay_start_interactive_planning" as const,
+    ticketId: "t1",
+    ticketTitle: "Fix login",
+    ticketDescription: "Users cannot log in",
+    systemInstructions: [],
+    cwd: "",
+  };
+  const plan = (markdown: string) => ({ steps: ["a"], risks: [], files: [], markdown });
+
+  it("reopens the run so the revised plan produces a second cli_plan_ready", async () => {
+    const h = harness;
+    const ip = mapStartInteractivePlanning({ ...ipMsg, cwd: tmp }, undefined, [], 1);
+    await h.runner.runJob(ip.msg, ip.options);
+    const agent = h.last();
+    const firstJobId = ip.msg.job.id;
+
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: firstJobId, plan: plan("# Plan v1") });
+    h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: firstJobId, completion: { result: "success", summary: "v1", testsRun: [] } });
+    expect(h.ofType("cli_plan_ready").map((m) => m.plan)).toEqual(["# Plan v1"]);
+
+    expect(await h.runner.requestChanges({ type: "relay_request_changes", ticketId: "t1", sessionId: agent.id, feedback: "Add tests" })).toBe("written");
+    expect(agent.written).toEqual(["Add tests\n"]);
+    expect(h.sessions).toHaveLength(1);
+    expect(h.ofType("cli_ticket_status").at(-1)?.status).toBe("planning");
+    // The MCP session is re-bound to the revision's internal job id.
+    const rebound = h.mcpConfigs[0]?.rebound ?? [];
+    expect(rebound).toHaveLength(1);
+    expect(rebound[0]).not.toBe(firstJobId);
+    expect(await fs.readFile(path.join(tmp, ".flaio/ticket/brief.md"), "utf-8")).toContain("Add tests");
+
+    // Tool calls may carry either the re-bound id or the original one.
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: firstJobId, plan: plan("# Plan v2") });
+    h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: rebound[0] ?? null, completion: { result: "success", summary: "v2", testsRun: [] } });
+    const ready = h.ofType("cli_plan_ready");
+    expect(ready.map((m) => m.plan)).toEqual(["# Plan v1", "# Plan v2"]);
+    expect(ready[1]).toMatchObject({ feedback: "Add tests", iteration: 1, sessionId: agent.id });
+    // The legacy iteration counts from 0; the plan_submitted events count from 1.
+    const submitted = h.ofType("cli_ticket_event").filter((e) => e.event.kind === "plan_submitted");
+    expect(submitted.map((e) => (e.event.payload as { iteration: number }).iteration)).toEqual([1, 2]);
+    expect(h.ofType("cli_ticket_status").at(-1)?.status).toBe("plan_ready");
+    // Legacy runs never put internal ids on the wire.
+    expect(h.ofType("cli_ticket_event").every((e) => e.jobId === null)).toBe(true);
+    expect(h.ofType("cli_phase_complete")).toEqual([]);
+
+    // The reopened run still ends cleanly: exit after completion is not a failure.
+    agent.exit(0);
+    expect(h.ofType("cli_ticket_status").at(-1)?.status).toBe("plan_ready");
+    expect(h.mcpConfigs[0]?.disposed).toBe(1);
+  });
+
+  it("feedback while the phase is still running just types into the agent", async () => {
+    const h = harness;
+    const ip = mapStartInteractivePlanning({ ...ipMsg, cwd: tmp }, undefined, [], 1);
+    await h.runner.runJob(ip.msg, ip.options);
+    expect(await h.runner.requestChanges({ type: "relay_request_changes", ticketId: "t1", sessionId: h.last().id, feedback: "Also X" })).toBe("written");
+    expect(h.mcpConfigs[0]?.rebound).toEqual([]);
+    expect(h.ofType("cli_ticket_status").map((m) => m.status)).toEqual(["planning"]);
   });
 });

@@ -68,12 +68,16 @@ describe("ClaudeDriver.buildTicketSpawnArgs", () => {
       resume: false,
       model: "claude-opus-4-6",
       mcpConfigPath: "/tmp/flaio-mcp.json",
+      settingsPath: "/tmp/flaio-settings.json",
       appendSystemPrompt: "  Be careful.  ",
       allowedTools: ["Read", "Grep"],
       print: true,
     });
     expect(flagValue(cfg.args, "--model")).toBe("claude-opus-4-6");
-    expect(flagValue(cfg.args, "--mcp-config")).toBe("/tmp/flaio-mcp.json");
+    // `=` form: the variadic --mcp-config must not take the next argument as another config.
+    expect(cfg.args).toContain("--mcp-config=/tmp/flaio-mcp.json");
+    expect(cfg.args).not.toContain("--mcp-config");
+    expect(flagValue(cfg.args, "--settings")).toBe("/tmp/flaio-settings.json");
     expect(flagValue(cfg.args, "--append-system-prompt")).toBe("Be careful.");
     expect(flagValue(cfg.args, "--allowedTools")).toBe("Read,Grep");
     expect(cfg.args).toContain("-p");
@@ -83,9 +87,10 @@ describe("ClaudeDriver.buildTicketSpawnArgs", () => {
 
   it("omits optional flags when not given", () => {
     const cfg = driver.buildTicketSpawnArgs({ ...base, sessionId: null, resume: false });
-    for (const flag of ["--session-id", "--resume", "--mcp-config", "--append-system-prompt", "--model", "-p"]) {
+    for (const flag of ["--session-id", "--resume", "--settings", "--append-system-prompt", "--model", "-p"]) {
       expect(cfg.args).not.toContain(flag);
     }
+    expect(cfg.args.some((a) => a.startsWith("--mcp-config"))).toBe(false);
     expect(cfg.agentSessionId).toBeNull();
   });
 });
@@ -102,10 +107,12 @@ describe("GeminiDriver.buildTicketSpawnArgs (best effort)", () => {
       prompt: "go",
       appendSystemPrompt: "SYS",
       mcpConfigPath: "/tmp/x.json",
+      settingsPath: "/tmp/s.json",
     });
     expect(cfg.agentSessionId).toBeNull();
     expect(cfg.args).not.toContain("--resume");
-    expect(cfg.args).not.toContain("/tmp/x.json");
+    expect(cfg.args.join(" ")).not.toContain("/tmp/x.json");
+    expect(cfg.args.join(" ")).not.toContain("/tmp/s.json");
     expect(flagValue(cfg.args, "--approval-mode")).toBe("auto_edit");
     expect(flagValue(cfg.args, "-i")).toMatch(/^SYS[\s\S]*go$/);
   });

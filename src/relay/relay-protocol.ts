@@ -230,12 +230,21 @@ export interface CliSetUserSettingsMsg {
 export interface CliRunnerRegisterMsg {
   type: "cli_runner_register";
   runner: Omit<Runner, "ownerUid" | "online" | "lastHeartbeatAt" | "activeJobs">;
+  /**
+   * Ids of the jobs the runner is working on right now (setting up or running).
+   * When present, the relay keeps only these jobs' leases and fails (retryable)
+   * any other job it still has in flight for the runner, e.g. after a CLI
+   * restart. Absent on older CLIs: every in-flight job of the runner is kept.
+   */
+  activeJobIds?: string[];
 }
 
 export interface CliRunnerHeartbeatMsg {
   type: "cli_runner_heartbeat";
   runnerId: string;
   activeJobs: number;
+  /** Same as on cli_runner_register. */
+  activeJobIds?: string[];
 }
 
 /** Runner accepted a dispatched job. */

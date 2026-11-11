@@ -98,10 +98,12 @@ export class ClaudeDriver extends BaseDriver {
    *   later runs: --resume <uuid>
    *   fork:       --resume <uuid> --fork-session [--session-id <new uuid>]
    *               (--session-id together with --resume is only accepted with --fork-session)
-   *   --permission-mode <mode>, --mcp-config <path>, --append-system-prompt <text>,
-   *   --model <id>, --allowedTools <list>, -p (print mode)
-   * `--mcp-config` and `--allowedTools` are variadic, so the prompt always
+   *   --permission-mode <mode>, --mcp-config=<path>, --settings <path>,
+   *   --append-system-prompt <text>, --model <id>, --allowedTools <list>, -p (print mode)
+   * `--mcp-config` and `--allowedTools` are variadic: `--mcp-config` uses the
+   * `=` form so it never swallows the next argument, and the prompt always
    * follows a `--` terminator (also protects prompts that start with "-").
+   * `--settings` adds the ticket Stop hook on top of the user's own settings.
    */
   override buildTicketSpawnArgs(options: TicketSpawnOptions): TicketSpawnConfig {
     const args: string[] = [];
@@ -133,7 +135,10 @@ export class ClaudeDriver extends BaseDriver {
       args.push("--append-system-prompt", options.appendSystemPrompt.trim());
     }
     if (options.mcpConfigPath) {
-      args.push("--mcp-config", options.mcpConfigPath);
+      args.push(`--mcp-config=${options.mcpConfigPath}`);
+    }
+    if (options.settingsPath) {
+      args.push("--settings", options.settingsPath);
     }
     if (options.allowedTools?.length) {
       args.push("--allowedTools", options.allowedTools.join(","));
