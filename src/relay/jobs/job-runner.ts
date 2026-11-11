@@ -199,6 +199,24 @@ export class JobRunner {
     return n;
   }
 
+  /**
+   * Ids of the relay jobs this process is working on (setting up or running),
+   * sent with the runner registration and heartbeats: the relay fails a job it
+   * holds for this runner that is not listed (CLI restarted, result lost). A
+   * job reported stuck stays listed while its agent is alive. Legacy runs have
+   * no relay job.
+   */
+  activeJobIds(): string[] {
+    const ids = new Set<string>();
+    for (const p of this.pending.values()) {
+      if (!isLegacyJobId(p.jobId)) ids.add(p.jobId);
+    }
+    for (const run of this.runs.values()) {
+      if (!run.finished && !run.legacy && !isLegacyJobId(run.job.id)) ids.add(run.job.id);
+    }
+    return [...ids];
+  }
+
   /** True while a job for the ticket is setting up or its agent is still attached. */
   isTicketBusy(ticketId: string): boolean {
     return this.pending.has(ticketId) || this.runs.has(ticketId);

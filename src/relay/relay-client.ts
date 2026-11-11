@@ -749,7 +749,8 @@ export class RelayClient extends EventEmitter {
     }
     // The connection changed while gathering: the new one registers itself.
     if (!ws || this.ws !== ws) return;
-    this.send(msg);
+    // Read the job list only now: it must match what is running when the message leaves.
+    this.send({ ...msg, activeJobIds: this.jobRunner.activeJobIds() });
     debugLog(`relay: registered runner ${msg.runner.id} (drivers: ${msg.runner.drivers.join(", ") || "none"})`);
 
     const runnerId = msg.runner.id;
@@ -758,7 +759,12 @@ export class RelayClient extends EventEmitter {
         this.clearRunnerHeartbeat();
         return;
       }
-      this.send({ type: "cli_runner_heartbeat", runnerId, activeJobs: this.jobRunner.activeJobCount() });
+      this.send({
+        type: "cli_runner_heartbeat",
+        runnerId,
+        activeJobs: this.jobRunner.activeJobCount(),
+        activeJobIds: this.jobRunner.activeJobIds(),
+      });
     }, this.runnerHeartbeatMs);
     this.runnerHeartbeatTimer.unref?.();
   }

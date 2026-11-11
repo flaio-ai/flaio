@@ -435,6 +435,29 @@ describe("TicketPhaseBus forwarding", () => {
     expect(h.tracker.get("t1")?.status).toBe("stuck");
   });
 
+  it("a job reported stuck is still alive: it stays listed and its later complete_phase is sent", async () => {
+    vi.useFakeTimers();
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("implement", "job1", "acceptEdits"), null));
+    h.last().setStatus("waiting_input");
+    h.clock.now += 61_000;
+    vi.advanceTimersByTime(1_000);
+    expect(h.ofType("cli_job_failed")).toEqual([expect.objectContaining({ jobId: "job1", stuck: true })]);
+    expect(h.last().closed).toBe(false);
+    expect(h.runner.activeJobIds()).toEqual(["job1"]);
+
+    h.bus.emitEvent("phase_complete", {
+      ticketId: "t1",
+      jobId: "job1",
+      completion: { result: "success", summary: "Done after all", testsRun: [] },
+    });
+    expect(h.ofType("cli_phase_complete")).toEqual([
+      expect.objectContaining({ jobId: "job1", phase: "implement", result: "success", summary: "Done after all" }),
+    ]);
+    expect(h.runner.activeJobIds()).toEqual([]);
+    expect(h.tracker.get("t1")?.status).toBe("done");
+  });
+
   it("bus activity resets the idle clock", async () => {
     vi.useFakeTimers();
     const h = harness;
@@ -859,6 +882,50 @@ describe("duplicate relay_run_job", () => {
     expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
     expect(h.sessions).toHaveLength(1);
     expect(h.sessions[0]?.closed).toBe(false);
+  });
+});
+
+describe("activeJobIds (runner register / heartbeat)", () => {
+  it("lists a job while it is setting up and running, not once it completed", async () => {
+    const h = harness;
+    expect(h.runner.activeJobIds()).toEqual([]);
+    const started = h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    expect(h.runner.activeJobIds()).toEqual(["job1"]); // still setting up
+    await started;
+    expect(h.runner.activeJobIds()).toEqual(["job1"]);
+
+    h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: "job1", completion: { result: "success", summary: "ok", testsRun: [] } });
+    // The agent stays open after completing, but the job is over.
+    expect(h.last().closed).toBe(false);
+    expect(h.runner.activeJobIds()).toEqual([]);
+  });
+
+  it("drops a job that failed or was cancelled", async () => {
+    const h = harness;
+    await h.runner.runJob(runJobMsg(job("plan", "job1", "plan"), null));
+    h.clock.now += 60_000;
+    h.last().exit(1);
+    expect(h.runner.activeJobIds()).toEqual([]);
+
+    await h.runner.runJob(runJobMsg(job("plan", "job2", "plan"), null));
+    expect(h.runner.activeJobIds()).toEqual(["job2"]);
+    h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job2", ticketId: "t1", reason: "reset" });
+    expect(h.runner.activeJobIds()).toEqual([]);
+  });
+
+  it("never lists the synthetic job of a legacy run", async () => {
+    const h = harness;
+    const p = mapStartInteractivePlanning(
+      { type: "relay_start_interactive_planning", ticketId: "t1", ticketTitle: "T", ticketDescription: "D", systemInstructions: [], cwd: tmp },
+      undefined,
+      [],
+      1,
+    );
+    const started = h.runner.runJob(p.msg, p.options);
+    expect(h.runner.activeJobIds()).toEqual([]);
+    await started;
+    expect(h.runner.activeJobCount()).toBe(1);
+    expect(h.runner.activeJobIds()).toEqual([]);
   });
 });
 

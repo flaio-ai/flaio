@@ -226,7 +226,8 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
 
   it("registers the runner after auth and heartbeats", async () => {
     await vi.waitFor(() => expect(ofType("cli_runner_register")).toHaveLength(1), { timeout: 5000 });
-    const { runner } = at(ofType("cli_runner_register"), 0);
+    const { runner, activeJobIds } = at(ofType("cli_runner_register"), 0);
+    expect(activeJobIds).toEqual([]);
     expect(runner).toMatchObject({
       orgId: null,
       kind: "local",
@@ -239,7 +240,12 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
     expect(runner.cliVersion).toMatch(/^\d+\.\d+\.\d+/);
 
     await vi.waitFor(() => expect(ofType("cli_runner_heartbeat").length).toBeGreaterThanOrEqual(2), { timeout: 5000 });
-    expect(ofType("cli_runner_heartbeat")[0]).toEqual({ type: "cli_runner_heartbeat", runnerId: runner.id, activeJobs: 0 });
+    expect(ofType("cli_runner_heartbeat")[0]).toEqual({
+      type: "cli_runner_heartbeat",
+      runnerId: runner.id,
+      activeJobs: 0,
+      activeJobIds: [],
+    });
   });
 
   it("plan job: spawns claude with a preset session, plan mode, MCP config and Stop-hook settings", async () => {
@@ -282,7 +288,7 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
     expect(ws.state).toMatchObject({ ticketId: "t-int", jobId: "job-plan" });
 
     await vi.waitFor(() =>
-      expect(ofType("cli_runner_heartbeat").at(-1)).toMatchObject({ activeJobs: 1 }),
+      expect(ofType("cli_runner_heartbeat").at(-1)).toMatchObject({ activeJobs: 1, activeJobIds: ["job-plan"] }),
     );
   });
 
@@ -318,6 +324,10 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
     // Completed: the agent stays open, its MCP session stays valid until it exits.
     expect(pty(0).killed).toBe(false);
     expect(app.resolveMcpSession(firstToken)).not.toBeNull();
+    // Completed: no longer reported as an active job.
+    await vi.waitFor(() =>
+      expect(ofType("cli_runner_heartbeat").at(-1)).toMatchObject({ activeJobs: 0, activeJobIds: [] }),
+    );
   });
 
   it("implement job resumes the SAME agent session in acceptEdits and disposes the planning MCP session", async () => {
@@ -372,5 +382,6 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
     await vi.waitFor(() => expect(ofType("cli_runner_register").length).toBe(registers + 1), { timeout: 8000 });
     const again = at(ofType("cli_runner_register"), -1);
     expect(again.runner.id).toBe(at(ofType("cli_runner_register"), 0).runner.id);
+    expect(again.activeJobIds).toEqual([]);
   }, 10_000);
 });
