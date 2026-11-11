@@ -540,9 +540,10 @@ export class PrJobRunner {
       return;
     }
     this.systemProgress(run, "Pushing fixes", "done", `${result.branch} @ ${result.commitSha.slice(0, 12)}`);
+    // The runner has no GitHub credentials: Flaio opens the stacked PR as the user once it has the branch.
     const stacked =
       fix.target === "new_branch"
-        ? ` The stacked pull request was not opened by the runner (the CLI has no GitHub credentials); open it from ${result.branch} into ${run.subject.isFork ? run.subject.baseRef : run.subject.headRef}.`
+        ? ` Flaio opens the stacked pull request from ${result.branch} into ${run.subject.isFork ? run.subject.baseRef : run.subject.headRef}.`
         : "";
     const summary = clip(
       `Pushed ${result.commitCount} commit(s) to ${result.branch} (${result.commitSha}).${stacked}${agentSummary ? `\n\n${agentSummary}` : ""}`,

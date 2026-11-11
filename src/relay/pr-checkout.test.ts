@@ -7,6 +7,7 @@ import type { PrJobSubject } from "../contracts/agent-loop.js";
 import {
   checkFixTarget,
   checkoutPr,
+  forkPushUrl,
   cleanupPrCheckout,
   finishPrFix,
   PrJobError,
@@ -307,8 +308,40 @@ describe("finishPrFix", () => {
     await cleanupPrCheckout(co);
   });
 
-  it("refuses same_branch for a fork head", () => {
-    expect(() => checkFixTarget({ ...fx.subject, isFork: true }, { findingIds: [], target: "same_branch" })).toThrow(/fork/);
-    expect(() => checkFixTarget({ ...fx.subject, isFork: true }, { findingIds: [], target: "new_branch" })).not.toThrow();
+  it("refuses same_branch for a fork head unless the server says maintainers may edit it", () => {
+    const fork = { ...fx.subject, isFork: true };
+    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch" })).toThrow(/fork/);
+    expect(() => checkFixTarget(fork, { findingIds: [], target: "new_branch" })).not.toThrow();
+    // The flag alone is not enough: the fork's repository must be named, and valid.
+    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: true })).toThrow(/fork/);
+    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: true, headRepository: "../x" })).toThrow(/fork/);
+    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: false, headRepository: "contrib/widgets" })).toThrow(/fork/);
+    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: true, headRepository: "contrib/widgets" })).not.toThrow();
+  });
+
+  it("derives the fork's push URL in the base remote's style", () => {
+    expect(forkPushUrl("git@github.com:acme/widgets.git", "contrib/widgets")).toBe("git@github.com:contrib/widgets.git");
+    expect(forkPushUrl("https://github.com/acme/widgets", "contrib/widgets")).toBe("https://github.com/contrib/widgets.git");
+    expect(forkPushUrl("ssh://git@github.com/acme/widgets.git/", "contrib/w")).toBe("ssh://git@github.com/contrib/w.git");
+    expect(forkPushUrl("/srv/git/acme/widgets.git", "contrib/widgets")).toBe("/srv/git/contrib/widgets.git");
+  });
+
+  it("same_branch on a maintainer-editable fork pushes to the fork's branch, never the base repo", async () => {
+    // The contributor's fork: a second bare repo next to the base one, holding the PR branch.
+    const forkBare = path.join(fx.tmp, "remotes", "contrib", "widgets.git");
+    fs.mkdirSync(forkBare, { recursive: true });
+    g(forkBare, "init", "--bare", "-b", "main");
+    g(fx.seed, "push", forkBare, "feature:refs/heads/feature");
+    g(fx.bare, "update-ref", "-d", "refs/heads/feature"); // the base repo has only refs/pull/7/head
+    const subject = { ...fx.subject, isFork: true };
+    const fix = { findingIds: ["f1"], target: "same_branch" as const, maintainerCanModify: true, headRepository: "contrib/widgets" };
+    const { match } = await resolvePrRepo(subject, [fx.clone]);
+    const co = await checkoutPr(match, subject, opts());
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 10;\n");
+    const res = await finishPrFix(co, subject, fix, { jobId: "job1", commitMessage: "Fix" });
+    expect(res.branch).toBe("feature");
+    expect(g(forkBare, "rev-parse", "refs/heads/feature")).toBe(res.commitSha);
+    expect(() => g(fx.bare, "rev-parse", "--verify", "refs/heads/feature")).toThrow();
+    await cleanupPrCheckout(co);
   });
 });

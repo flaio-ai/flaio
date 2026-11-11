@@ -44,6 +44,21 @@ describe("Stage 0 contracts", () => {
     expect(RelayToCliMsgSchema.safeParse(resumed).success).toBe(true);
   });
 
+  it("keeps the PR fix input fields (the parsed message is what the runner uses)", () => {
+    const fix = { findingIds: ["f1"], target: "same_branch", maintainerCanModify: true, headRepository: "contrib/widgets" };
+    const subject = { type: "pr", owner: "acme", repo: "widgets", number: 7, headSha: "a".repeat(40), headRef: "feature", baseRef: "main", isFork: true };
+    const msg = {
+      type: "relay_run_job",
+      job: { ...job, kind: "pr_fix", permissionMode: "acceptEdits", subject, reviewId: "rev1", fix },
+      ticket: { id: "rev1", title: "T", cwd: "", useWorktree: true, driverName: "claude", model: null, agentSession: null },
+      briefMarkdown: "# T",
+      systemInstructions: [],
+    };
+    const parsed = RelayToCliMsgSchema.safeParse(msg);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.type === "relay_run_job" && parsed.data.job.fix).toEqual(fix);
+  });
+
   it("rejects an unknown job kind", () => {
     const bad = { type: "relay_run_job", job: { ...job, kind: "deploy" }, ticket: {}, briefMarkdown: "", systemInstructions: [] };
     expect(RelayToCliMsgSchema.safeParse(bad).success).toBe(false);
