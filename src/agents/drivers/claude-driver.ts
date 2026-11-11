@@ -74,13 +74,15 @@ export class ClaudeDriver extends BaseDriver {
       return "waiting_input";
     }
 
-    // Various activity indicators (spinners)
-    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(raw)) {
+    // Only check for spinner in the last ~80 chars (current line area)
+    // to avoid matching stale spinner chars from earlier output
+    const tail = raw.slice(-80);
+    if (/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(tail)) {
       return "running";
     }
 
-    // No output for 3+ seconds likely means waiting for input
-    if (idleMs > 3000) {
+    // No output for 5+ seconds likely means waiting for input
+    if (idleMs > 5000) {
       return "waiting_input";
     }
 

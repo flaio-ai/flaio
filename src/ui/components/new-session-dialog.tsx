@@ -60,7 +60,7 @@ export function NewSessionDialog({
   // Snap selectedIndex to nearest installed driver when results come in
   useEffect(() => {
     if (installedIndices.length > 0 && !installedIndices.includes(selectedIndex)) {
-      setSelectedIndex(installedIndices[0]!);
+      setSelectedIndex(installedIndices[0] ?? 0);
     }
   }, [installedIndices, selectedIndex]);
 

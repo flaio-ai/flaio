@@ -108,7 +108,8 @@ export function PathInput({
       highlightIndex >= 0 &&
       highlightIndex < suggestions.length
     ) {
-      const selected = suggestions[highlightIndex]!;
+      const selected = suggestions[highlightIndex];
+      if (selected === undefined) return;
       setValue(selected + "/");
       setCursorOffset(0);
       setInSuggestions(false);
@@ -123,7 +124,8 @@ export function PathInput({
         highlightIndex >= 0 &&
         highlightIndex < suggestions.length
       ) {
-        const selected = suggestions[highlightIndex]!;
+        const selected = suggestions[highlightIndex];
+        if (selected === undefined) return;
         setValue(selected + "/");
         setCursorOffset(0);
         setInSuggestions(false);

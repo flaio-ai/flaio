@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type * as Sentry from "@sentry/node";
 import { PtyManager } from "../terminal/pty-manager.js";
 import { XtermBridge } from "../terminal/xterm-bridge.js";
 import { ScreenBuffer, type ScreenContent } from "../terminal/screen-buffer.js";
@@ -7,6 +8,7 @@ import { SidebandReceiver } from "./sideband/sideband-receiver.js";
 import {
   resolveFromClaudeHook,
   resolveFromGeminiHook,
+  resolveFromCopilotHook,
   resolveFromGeminiOscTitle,
   extractOscTitle,
   type DetailedStatus,
@@ -14,6 +16,13 @@ import {
   type HookEvent,
 } from "./sideband/status-resolver.js";
 import { sessionMetadataStore, type SessionMetadata } from "./session-metadata.js";
+import { trackCliEvent, startSpanAsync, startTransaction } from "../analytics/index.js";
+
+const HOOK_RESOLVERS: Record<string, (event: HookEvent) => ResolvedStatus> = {
+  claude: resolveFromClaudeHook,
+  gemini: resolveFromGeminiHook,
+  copilot: resolveFromCopilotHook,
+};
 
 /** Map a basic AgentStatus to a DetailedStatus for PTY polling fallback. */
 function statusToDetailed(status: AgentStatus): DetailedStatus {
@@ -49,10 +58,16 @@ export class AgentSession extends EventEmitter {
   private sidebandActive = false;
   /** Timestamp of the last hook event received. */
   private lastHookTime = 0;
+  /** Timestamp of the last status change — used for hysteresis in PTY polling. */
+  private lastStatusChangeTime = 0;
+
+  // Analytics
+  private sessionSpan: Sentry.Span | null = null;
+  private sessionStartTime: number | null = null;
 
   constructor(
     private driver: BaseDriver,
-    options: { cwd: string; cols?: number; rows?: number },
+    options: { cwd: string; cols?: number; rows?: number; scrollback?: number },
   ) {
     super();
     this.id = `session-${nextId++}`;
@@ -63,7 +78,7 @@ export class AgentSession extends EventEmitter {
     const rows = options.rows ?? 40;
 
     this.pty = new PtyManager();
-    this.xterm = new XtermBridge(cols, rows);
+    this.xterm = new XtermBridge(cols, rows, options.scrollback);
     this.screenBuffer = new ScreenBuffer(30);
     this.sideband = new SidebandReceiver(this.id);
 
@@ -97,6 +112,15 @@ export class AgentSession extends EventEmitter {
 
     this.pty.on("exit", (code) => {
       this.stopStatusChecking();
+
+      // End session span and track exit
+      this.sessionSpan?.end();
+      trackCliEvent("cli_session_exited", {
+        driver: this.driverName,
+        exitCode: code,
+        durationMs: this.sessionStartTime ? Date.now() - this.sessionStartTime : undefined,
+      });
+
       this.setStatus("exited");
       this._detailedStatus = { state: "exited" };
       this._currentTool = undefined;
@@ -111,13 +135,22 @@ export class AgentSession extends EventEmitter {
 
     // Wire sideband hook events (priority 1)
     this.sideband.on("hook", (event: HookEvent) => {
+      const prevStatus = this._status;
       this.sidebandActive = true;
       this.lastHookTime = Date.now();
-      const resolver = this.driverName === "gemini"
-        ? resolveFromGeminiHook
-        : resolveFromClaudeHook;
+      const resolver = HOOK_RESOLVERS[this.driverName] ?? resolveFromClaudeHook;
       const resolved = resolver(event);
       this.applyResolvedStatus(resolved);
+
+      if (resolved.agentStatus !== prevStatus) {
+        trackCliEvent("cli_status_transition", {
+          driver: this.driverName,
+          from: prevStatus,
+          to: resolved.agentStatus,
+          source: "sideband_hook",
+          toolName: resolved.toolName,
+        });
+      }
     });
 
     // Wire sideband metadata events
@@ -154,6 +187,7 @@ export class AgentSession extends EventEmitter {
   private setStatus(status: AgentStatus): void {
     if (this._status === status) return;
     this._status = status;
+    this.lastStatusChangeTime = Date.now();
     this.emit("status", status);
   }
 
@@ -173,10 +207,12 @@ export class AgentSession extends EventEmitter {
     allowedTools?: string[];
     model?: string;
   }): Promise<void> {
+    this.sessionSpan = startTransaction("agent-session", "session.lifecycle");
+    this.sessionStartTime = Date.now();
     this.setStatus("starting");
 
     // Start sideband before spawning so the temp dir is ready
-    await this.sideband.start();
+    await startSpanAsync("sideband.start", "session.setup", () => this.sideband.start());
 
     const config = this.driver.buildSpawnArgs({
       cwd: this.cwd,
@@ -198,6 +234,12 @@ export class AgentSession extends EventEmitter {
     this.screenBuffer.start(() => this.xterm.extractGrid());
     this.startStatusChecking();
     this.setStatus("running");
+
+    trackCliEvent("cli_session_spawned", {
+      driver: this.driverName,
+      mode: options?.mode ?? "interactive",
+      model: options?.model,
+    });
   }
 
   async resume(sessionId: string, prompt?: string): Promise<void> {
@@ -269,8 +311,10 @@ export class AgentSession extends EventEmitter {
   kill(): void {
     this.stopStatusChecking();
     this.screenBuffer.stop();
+    this.pty.removeAllListeners();
     this.pty.kill();
     this.xterm.dispose();
+    this.sideband.removeAllListeners();
     this.sideband.stop();
     sessionMetadataStore.remove(this.id);
     this.setStatus("exited");
@@ -279,6 +323,14 @@ export class AgentSession extends EventEmitter {
 
   getContent(): ScreenContent {
     return this.screenBuffer.getContent();
+  }
+
+  pauseScreenBuffer(): void {
+    this.screenBuffer.pause();
+  }
+
+  resumeScreenBuffer(): void {
+    this.screenBuffer.resume();
   }
 
   getPlainText(maxLines?: number): string[] {
@@ -301,7 +353,27 @@ export class AgentSession extends EventEmitter {
       // When hooks are active and recent (within 10s), trust them over PTY polling
       if (this.sidebandActive && (Date.now() - this.lastHookTime) < 10_000) return;
       const idleMs = this.lastOutputTime > 0 ? Date.now() - this.lastOutputTime : 0;
+      const prevStatus = this._status;
       const detected = this.driver.detectStatus(this.recentOutput, idleMs);
+
+      // Hysteresis: require 2s stability before transitioning from waiting_input
+      // back to running via PTY poll. This prevents the orange→green→orange flicker
+      // caused by brief output bursts (cursor blink, status redraws) resetting the
+      // idle timer while the agent is actually idle.
+      if (prevStatus === "waiting_input" && detected === "running") {
+        if (Date.now() - this.lastStatusChangeTime < 2000) return;
+      }
+
+      if (detected !== prevStatus) {
+        trackCliEvent("cli_status_transition", {
+          driver: this.driverName,
+          from: prevStatus,
+          to: detected,
+          idleMs,
+          source: "pty_poll",
+        });
+      }
+
       // Update both status AND detailedStatus to keep them in sync
       const detailed = statusToDetailed(detected);
       this.applyResolvedStatus({ agentStatus: detected, detailed });

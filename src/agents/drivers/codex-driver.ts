@@ -1,13 +1,16 @@
 import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
 import { execSync } from "node:child_process";
 
+// Match the `codex` CLI but not the desktop app, its app-server, or the VS Code extension host.
+const CODEX_PROCESS_PATTERN = /\bcodex\b(?!.*(?:app-server|Codex\.app|\.vscode))/;
+
 export class CodexDriver extends BaseDriver {
   readonly name = "codex";
   readonly displayName = "Codex CLI";
   readonly command = "codex";
 
   processMatchPattern(): RegExp {
-    return /\bcodex\b(?!.*(?:app-server|Codex\.app|\.vscode))/;
+    return CODEX_PROCESS_PATTERN;
   }
 
   async checkInstalled(): Promise<boolean> {
@@ -21,11 +24,10 @@ export class CodexDriver extends BaseDriver {
 
   listModels(): ModelInfo[] {
     return [
-      { id: "o4-mini", displayName: "o4-mini" },
-      { id: "o3", displayName: "o3" },
-      { id: "gpt-4.1", displayName: "GPT-4.1" },
-      { id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex" },
-      { id: "gpt-5.4", displayName: "GPT-5.4" },
+      { id: "gpt-6-astra", displayName: "GPT-6 Astra" },
+      { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },
+      { id: "gpt-6.1-terra", displayName: "GPT-6.1 Terra" },
+      { id: "gpt-6-luna", displayName: "GPT-6 Luna" },
     ];
   }
 
@@ -36,16 +38,13 @@ export class CodexDriver extends BaseDriver {
     allowedTools?: string[];
     model?: string;
   }): SpawnConfig {
-    const args: string[] = [];
+    // Non-interactive runs use the `exec` subcommand: `codex exec [OPTIONS] [PROMPT]`
+    const args: string[] = options.mode === "print" ? ["exec"] : [];
     if (options.model) {
       args.push("--model", options.model);
     }
     if (options.prompt) {
-      if (options.mode === "print") {
-        args.push("-q", options.prompt);
-      } else {
-        args.push(options.prompt);
-      }
+      args.push(options.prompt);
     }
     return { command: this.resolveCommand(), args };
   }
@@ -55,16 +54,13 @@ export class CodexDriver extends BaseDriver {
     sessionId: string;
     prompt?: string;
   }): SpawnConfig {
-    // Codex CLI doesn't support session resume — start fresh
-    const args: string[] = [];
-    if (options.prompt) {
-      args.push(options.prompt);
-    }
-    return { command: this.resolveCommand(), args };
+    // `codex resume <SESSION_ID>` — interactive resume takes no follow-up prompt
+    return { command: this.resolveCommand(), args: ["resume", options.sessionId] };
   }
 
   buildContinueArgs(_options: { cwd: string }): SpawnConfig {
-    return { command: this.resolveCommand(), args: [] };
+    // Most recent session in the current directory
+    return { command: this.resolveCommand(), args: ["resume", "--last"] };
   }
 
   detectStatus(recentOutput: string, idleMs: number): AgentStatus {

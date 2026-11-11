@@ -1,3 +1,5 @@
+import path from "node:path";
+import os from "node:os";
 import { createStore } from "zustand/vanilla";
 import { ConnectorManager } from "../connectors/connector-manager.js";
 import { SlackAdapter, type SlackConfig } from "../connectors/adapters/slack-adapter.js";
@@ -5,15 +7,50 @@ import type { ConnectorStatus } from "../connectors/connector-interface.js";
 import { HookServer, type HookResponse } from "../hooks/hook-server.js";
 import { PortalServer } from "../portal/portal-server.js";
 import { RelayClient } from "../relay/relay-client.js";
-import { setRelayLoggedIn } from "../relay/relay-store.js";
+import { setRelayLoggedIn, clearSessionState } from "../relay/relay-store.js";
 import { installHooks } from "../hooks/install.js";
+import {
+  installHookScripts,
+  getClaudeHooksConfig,
+  getClaudeStatusLineConfig,
+  mergeSettingsFile,
+} from "../agents/sideband/hook-scripts.js";
 import { appStore, getSessionInstance, setPermissionPending, clearPermissionPending } from "./app-store.js";
 import { settingsStore } from "./settings-store.js";
 import type { AgentStatus } from "../agents/drivers/base-driver.js";
 
+import { trackCliEvent } from "../analytics/index.js";
 import { makeDebugLog } from "../connectors/debug.js";
 
 const debugLog = makeDebugLog("connector");
+
+// ---------------------------------------------------------------------------
+// Pre-compiled regex patterns for extractFromLines (compiled once at module load)
+// ---------------------------------------------------------------------------
+const RE_PROMPT_LINE = /^[❯$]\s+\S/;
+const RE_DIVIDER = /^[─━═\-]+$/; // eslint-disable-line no-useless-escape -- \- is intentional for clarity
+const RE_BOX_START = /^[╭╰╮╯│┌└┐┘├┤┬┴┼]/;
+const RE_BOX_END = /[╭╰╮╯│┌└┐┘├┤┬┴┼]$/;
+const RE_EMPTY_PROMPT = /^[❯$]\s*$/;
+const RE_HOOK_OUTPUT = /^\s*⏺\s+(Ran|Running|Read|Edit|Write|Bash|Glob|Grep|Task)\b/;
+const RE_HOOK_CONT = /^\s*[⎿]\s/;
+const RE_HOOK_ERROR = /hook error/i;
+const RE_SHORTCUTS = /\?\s+for shortcuts/i;
+const RE_IDE = /\/ide\s+for\s/i;
+const RE_HELP = /\/help/i;
+const RE_HELP_DETAIL = /shortcuts|commands/i;
+const RE_UPDATE = /update available/i;
+const RE_NPM_INSTALL = /npm install -g/i;
+const RE_NPM_UPDATE = /npm update/i;
+const RE_COST = /^\s*\$[\d.]+\s+(cost|total)/i;
+const RE_TOKENS = /tokens?[:\s]+[\d,]+/i;
+const RE_TOKENS_DETAIL = /cost|input|output/i;
+const RE_MODEL = /^\s*claude-/i;
+const RE_PRESS = /^\s*(Press|Esc\s)/i;
+const RE_TIP = /^\s*tip:/i;
+const RE_RUN_UPDATE = /^\s*Run\s.*to update/i;
+const RE_SPINNER = /^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s/;
+import { stripAnsi } from "../strip-ansi.js";
 
 // ---------------------------------------------------------------------------
 // Connector status store — reactive state for the UI
@@ -23,6 +60,7 @@ export interface ConnectorBadge {
   name: string;
   displayName: string;
   status: ConnectorStatus;
+  error?: string;
 }
 
 interface ConnectorStatusState {
@@ -34,11 +72,17 @@ export const connectorStatusStore = createStore<ConnectorStatusState>(() => ({
 }));
 
 function publishConnectorStatuses(): void {
-  const badges: ConnectorBadge[] = connectorManager.getAll().map((c) => ({
-    name: c.name,
-    displayName: c.displayName,
-    status: c.status,
-  }));
+  const badges: ConnectorBadge[] = connectorManager.getAll().map((c) => {
+    const badge: ConnectorBadge = {
+      name: c.name,
+      displayName: c.displayName,
+      status: c.status,
+    };
+    if (c.status === "error") {
+      badge.error = connectorErrors.get(c.name);
+    }
+    return badge;
+  });
   connectorStatusStore.setState({ connectors: badges });
 }
 
@@ -48,11 +92,14 @@ function publishConnectorStatuses(): void {
 const connectorManager = new ConnectorManager();
 const hookServer = new HookServer();
 const portalServer = new PortalServer();
-const relayClient = new RelayClient();
+export const relayClient = new RelayClient();
 
 let started = false;
 let unsubSettings: (() => void) | null = null;
 let unsubSessions: (() => void) | null = null;
+
+// Connector error messages — populated when adapter.connect() fails
+const connectorErrors = new Map<string, string>();
 
 // Session status tracking for notification transitions
 const prevStatuses = new Map<string, AgentStatus>();
@@ -61,6 +108,11 @@ const lastPostedResponse = new Map<string, string>();
 // Track last post time per session to debounce rapid transitions
 const lastPostTime = new Map<string, number>();
 const DEDUP_WINDOW_MS = 3000;
+
+/** Normalize response text for dedup comparison — collapse whitespace, trim, truncate */
+function normalizeForDedup(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 500);
+}
 
 // Debounce + mutex state for config reactivity
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -80,8 +132,19 @@ export async function startConnectors(): Promise<void> {
     settingsStore.getState().load();
   }
 
-  // Install/upgrade hooks in ~/.claude/settings.json (replaces legacy hooks)
+  // Install/upgrade IPC hooks (PermissionRequest, PostToolUse, Notification)
   installHooks({ silent: true });
+
+  // Install sideband hooks for all Claude Code events (status detection)
+  try {
+    const { hookPath, statusLinePath } = await installHookScripts();
+    const claudeSettingsPath = path.join(os.homedir(), ".claude", "settings.json");
+    const hooksCfg = getClaudeHooksConfig(hookPath);
+    const statusLineCfg = getClaudeStatusLineConfig(statusLinePath);
+    await mergeSettingsFile(claudeSettingsPath, { ...hooksCfg, ...statusLineCfg });
+  } catch {
+    // Best effort — sideband hooks are optional, PTY polling is the fallback
+  }
 
   await hookServer.start();
   await portalServer.start();
@@ -132,6 +195,7 @@ export async function stopConnectors(): Promise<void> {
   prevStatuses.clear();
   lastPostedResponse.clear();
   lastPostTime.clear();
+  connectorErrors.clear();
   lastSlackFields = null;
 
   await relayClient.stop();
@@ -145,6 +209,11 @@ export async function stopConnectors(): Promise<void> {
 // Internal wiring
 // ---------------------------------------------------------------------------
 
+/** Normalize a path for comparison — resolve trailing slashes and /private prefix on macOS */
+function normalizeCwd(cwd: string): string {
+  return cwd.replace(/\/+$/, "").replace(/^\/private\//, "/");
+}
+
 /**
  * Resolve a hook-originated session ID (Claude Code's session_id) to our
  * internal AgentSession.id by matching on cwd.  Falls back to the hook
@@ -152,7 +221,8 @@ export async function stopConnectors(): Promise<void> {
  */
 function resolveInternalSessionId(hookSessionId: string, cwd: string): string {
   if (!cwd) return hookSessionId;
-  const match = appStore.getState().sessions.find((s) => s.cwd === cwd);
+  const normalized = normalizeCwd(cwd);
+  const match = appStore.getState().sessions.find((s) => normalizeCwd(s.cwd) === normalized);
   return match ? match.id : hookSessionId;
 }
 
@@ -163,7 +233,8 @@ function resolveInternalSessionId(hookSessionId: string, cwd: string): string {
  */
 function isInternalSession(cwd: string): boolean {
   if (!cwd) return false;
-  return appStore.getState().sessions.some((s) => s.cwd === cwd);
+  const normalized = normalizeCwd(cwd);
+  return appStore.getState().sessions.some((s) => normalizeCwd(s.cwd) === normalized);
 }
 
 /**
@@ -201,10 +272,11 @@ function wireHookBridge(): void {
       setPermissionPending(sessionId);
 
       (async () => {
+        const toolName = String(payload.toolName ?? "");
         try {
           const result = await connectorManager.requestPermission({
             sessionId,
-            toolName: String(payload.toolName ?? ""),
+            toolName,
             toolInput: (payload.toolInput as Record<string, unknown>) ?? {},
             cwd,
           });
@@ -212,16 +284,43 @@ function wireHookBridge(): void {
             type: "permission_reply",
             payload: { allowed: result.allowed, message: result.message },
           });
-        } catch {
+          if (!result.allowed) {
+            connectorManager
+              .postNotification({
+                sessionId,
+                type: "response",
+                message: `⚠️ Permission denied for tool: ${toolName}`,
+                cwd,
+              })
+              .catch((err) => {
+                debugLog(`permission denied notification failed for ${sessionId}:`, String(err));
+              });
+          }
+        } catch (err) {
           reply({
             type: "permission_reply",
             payload: { allowed: false, message: "Connector error" },
           });
+          connectorManager
+            .postNotification({
+              sessionId,
+              type: "response",
+              message: `⚠️ Permission request failed for tool: ${toolName} — connector error`,
+              cwd,
+            })
+            .catch((notifErr) => {
+              debugLog(`permission error notification failed for ${sessionId}:`, String(notifErr));
+            });
         } finally {
           clearPermissionPending(sessionId);
-          appStore.getState().updateSessionStatus(sessionId, "running");
+          // Don't force status to "running" — let sideband hooks or PTY polling
+          // determine the correct status. The guard is cleared, so the next
+          // status update will go through naturally.
         }
-      })();
+      })().catch((err) => {
+        debugLog(`permission handler unexpected error for ${sessionId}:`, String(err));
+        clearPermissionPending(sessionId);
+      });
     },
   );
 
@@ -244,8 +343,9 @@ function wireHookBridge(): void {
     const lower = message.toLowerCase();
     if (lower.includes("waiting for") || lower.includes("needs input") || lower.includes("needs your input")) return;
 
-    // Dedup: skip if we just posted this exact content via wireSessionNotifications
-    if (message === lastPostedResponse.get(sessionId)) {
+    // Dedup: skip if we just posted this content via wireSessionNotifications
+    const normalizedMsg = normalizeForDedup(message);
+    if (normalizedMsg === lastPostedResponse.get(sessionId)) {
       const lastTime = lastPostTime.get(sessionId) ?? 0;
       if (Date.now() - lastTime < DEDUP_WINDOW_MS) {
         debugLog(`dedup: skipping hook notification for ${sessionId} (same as recent post)`);
@@ -253,7 +353,7 @@ function wireHookBridge(): void {
       }
     }
 
-    lastPostedResponse.set(sessionId, message);
+    lastPostedResponse.set(sessionId, normalizedMsg);
     lastPostTime.set(sessionId, Date.now());
 
     connectorManager
@@ -268,24 +368,8 @@ function wireHookBridge(): void {
       });
   });
 
-  // stop: session stopped notification (only for managed agents)
-  hookServer.on("stop", (payload: Record<string, unknown>) => {
-    const cwd = String(payload.cwd ?? "");
-    if (!isInternalSession(cwd)) return;
-
-    const sessionId = resolveInternalSessionId(String(payload.sessionId ?? ""), cwd);
-
-    connectorManager
-      .postNotification({
-        sessionId,
-        type: "stopped",
-        message: `Session exited (code ${payload.exitCode ?? "?"})`,
-        cwd,
-      })
-      .catch((err) => {
-        debugLog(`stop notification failed for ${sessionId}:`, String(err));
-      });
-  });
+  // stop: handled by wireSessionNotifications (exited transition) — no duplicate here
+  hookServer.on("stop", () => {});
 }
 
 /**
@@ -302,8 +386,9 @@ function wirePromptBridge(): void {
     if (session) {
       // Write text first, then send Enter as a separate event after a short
       // delay so the agent's input handler can commit the text before submission.
-      session.write(text);
-      setTimeout(() => session!.write("\r"), 100);
+      const s = session;
+      s.write(text);
+      setTimeout(() => s.write("\r"), 100);
     }
   });
 }
@@ -344,7 +429,7 @@ function extractFromLines(allLines: string[]): string | null {
   for (let i = allLines.length - 1; i >= 0; i--) {
     const l = allLines[i];
     // Match "❯ sometext" or "$ sometext" but not bare prompts
-    if (/^[❯$]\s+\S/.test(l)) {
+    if (RE_PROMPT_LINE.test(l)) {
       promptIdx = i;
       break;
     }
@@ -359,38 +444,38 @@ function extractFromLines(allLines: string[]): string | null {
   const cleaned = after.filter((l) => {
     if (!l) return false;
     // Dividers (solid lines of dashes, equals, etc.)
-    if (/^[─━═\-]+$/.test(l)) return false;
+    if (RE_DIVIDER.test(l)) return false;
     // Box drawing borders
-    if (/^[╭╰╮╯│┌└┐┘├┤┬┴┼]/.test(l)) return false;
-    if (/[╭╰╮╯│┌└┐┘├┤┬┴┼]$/.test(l.trimEnd())) return false;
+    if (RE_BOX_START.test(l)) return false;
+    if (RE_BOX_END.test(l.trimEnd())) return false;
     // Empty prompt line (excludes ">" — see prompt-detection note above)
-    if (/^[❯$]\s*$/.test(l)) return false;
+    if (RE_EMPTY_PROMPT.test(l)) return false;
     // Hook output lines
-    if (/^\s*⏺\s+(Ran|Running|Read|Edit|Write|Bash|Glob|Grep|Task)\b/.test(l)) return false;
-    if (/^\s*[⎿]\s/.test(l)) return false;
-    if (/hook error/i.test(l)) return false;
+    if (RE_HOOK_OUTPUT.test(l)) return false;
+    if (RE_HOOK_CONT.test(l)) return false;
+    if (RE_HOOK_ERROR.test(l)) return false;
     // Claude Code status/chrome lines
-    if (/\?\s+for shortcuts/i.test(l)) return false;
-    if (/\/ide\s+for\s/i.test(l)) return false;
-    if (/\/help/i.test(l) && /shortcuts|commands/i.test(l)) return false;
+    if (RE_SHORTCUTS.test(l)) return false;
+    if (RE_IDE.test(l)) return false;
+    if (RE_HELP.test(l) && RE_HELP_DETAIL.test(l)) return false;
     // Update/install notices
-    if (/update available/i.test(l)) return false;
-    if (/npm install -g/i.test(l)) return false;
-    if (/npm update/i.test(l)) return false;
+    if (RE_UPDATE.test(l)) return false;
+    if (RE_NPM_INSTALL.test(l)) return false;
+    if (RE_NPM_UPDATE.test(l)) return false;
     // Cost / token stats bar
-    if (/^\s*\$[\d.]+\s+(cost|total)/i.test(l)) return false;
-    if (/tokens?[:\s]+[\d,]+/i.test(l) && /cost|input|output/i.test(l)) return false;
+    if (RE_COST.test(l)) return false;
+    if (RE_TOKENS.test(l) && RE_TOKENS_DETAIL.test(l)) return false;
     // Model name on its own line
-    if (/^\s*claude-/i.test(l) && l.trim().length < 80) return false;
+    if (RE_MODEL.test(l) && l.trim().length < 80) return false;
     // "Press Enter" / "Esc to cancel" prompts
-    if (/^\s*(Press|Esc\s)/i.test(l)) return false;
+    if (RE_PRESS.test(l)) return false;
     // Compact mode tip, auto-update notice
-    if (/^\s*tip:/i.test(l)) return false;
-    if (/^\s*Run\s.*to update/i.test(l)) return false;
+    if (RE_TIP.test(l)) return false;
+    if (RE_RUN_UPDATE.test(l)) return false;
     // Progress bars / spinners
-    if (/^\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s/.test(l)) return false;
+    if (RE_SPINNER.test(l)) return false;
     // ANSI escape-only lines (after stripping — but these appear as empty)
-    if (l.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "").trim() === "") return false;
+    if (stripAnsi(l).trim() === "") return false;
     return true;
   });
 
@@ -408,7 +493,15 @@ function wireSessionNotifications(): void {
     prevStatuses.set(s.id, s.status);
   }
 
+  // Track last sessions reference to skip processing when sessions haven't changed
+  let lastSessionsRef = appStore.getState().sessions;
+
   unsubSessions = appStore.subscribe((state) => {
+    // Skip processing when sessions array reference hasn't changed —
+    // avoids running on every unrelated state update.
+    if (state.sessions === lastSessionsRef) return;
+    lastSessionsRef = state.sessions;
+
     const currentIds = new Set<string>();
 
     for (const s of state.sessions) {
@@ -417,6 +510,7 @@ function wireSessionNotifications(): void {
 
       if (prev !== s.status) {
         prevStatuses.set(s.id, s.status);
+        const transitionTime = Date.now();
 
         // Detect meaningful transitions
         if (prev === "starting" && s.status === "running") {
@@ -426,6 +520,14 @@ function wireSessionNotifications(): void {
               type: "started",
               message: `Session started (${s.displayName})`,
               cwd: s.cwd,
+            })
+            .then(() => {
+              trackCliEvent("cli_notification_sent", {
+                connector: "all",
+                transition: `${prev} → ${s.status}`,
+                sessionId: s.id,
+                durationMs: Date.now() - transitionTime,
+              });
             })
             .catch((err) => {
               debugLog(`started notification failed for ${s.id}:`, String(err));
@@ -457,12 +559,13 @@ function wireSessionNotifications(): void {
             const response = extractLatestResponse(sessionId);
             if (response) {
               // Dedup: skip if same content posted recently (hook or prior transition)
+              const normalizedResp = normalizeForDedup(response);
               const lastContent = lastPostedResponse.get(sessionId);
               const lastTime = lastPostTime.get(sessionId) ?? 0;
-              if (response === lastContent && Date.now() - lastTime < DEDUP_WINDOW_MS) {
+              if (normalizedResp === lastContent && Date.now() - lastTime < DEDUP_WINDOW_MS) {
                 debugLog(`dedup: skipping status-transition post for ${sessionId}`);
               } else {
-                lastPostedResponse.set(sessionId, response);
+                lastPostedResponse.set(sessionId, normalizedResp);
                 lastPostTime.set(sessionId, Date.now());
                 connectorManager
                   .postNotification({
@@ -470,6 +573,14 @@ function wireSessionNotifications(): void {
                     type: "response",
                     message: response,
                     cwd,
+                  })
+                  .then(() => {
+                    trackCliEvent("cli_notification_sent", {
+                      connector: "all",
+                      transition: `${prev} → ${isExited ? "exited" : "waiting_input"}`,
+                      sessionId,
+                      durationMs: Date.now() - transitionTime,
+                    });
                   })
                   .catch((err) => {
                     debugLog(`response post failed for ${sessionId}:`, String(err));
@@ -502,6 +613,13 @@ function wireSessionNotifications(): void {
         prevStatuses.delete(id);
         lastPostedResponse.delete(id);
         lastPostTime.delete(id);
+        clearSessionState(id);
+
+        // Clean up Slack adapter per-session state
+        const slack = connectorManager.get("slack");
+        if (slack && "cleanupSession" in slack) {
+          (slack as any).cleanupSession(id);
+        }
       }
     }
   });
@@ -540,8 +658,10 @@ async function syncSlackFromConfig(): Promise<void> {
 
     try {
       await adapter.connect();
-    } catch {
-      // Error status is set inside the adapter
+      connectorErrors.delete(adapter.name);
+    } catch (err) {
+      // Error status is set inside the adapter; store the message for the status bar
+      connectorErrors.set(adapter.name, err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -602,6 +722,7 @@ async function syncRelayFromConfig(): Promise<void> {
   // Start if auto-connect is on
   if (relay.autoConnect) {
     await relayClient.start();
+    trackCliEvent("cli_session_connected");
   }
 }
 

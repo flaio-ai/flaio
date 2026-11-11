@@ -184,7 +184,8 @@ export function PortalPicker({
             </Box>
           );
         }
-        const session = sortedSessions.find((s) => s.id === item)!;
+        const session = sortedSessions.find((s) => s.id === item);
+        if (!session) return null;
         const icon = AGENT_ICONS[session.driverName] ?? DEFAULT_ICON;
         const iconColor = AGENT_COLORS[session.driverName] ?? "white";
         const statusColor = STATUS_COLORS[session.status] ?? "gray";

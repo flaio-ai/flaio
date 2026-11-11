@@ -80,6 +80,7 @@ const RelayBrowseFilesSchema = z.object({
 
 const RelayStartPlanningSchema = z.object({
   type: z.literal("relay_start_planning"),
+  sessionId: z.string().optional(),
   ticketId: z.string(),
   ticketTitle: z.string(),
   ticketDescription: z.string(),
@@ -95,6 +96,7 @@ const RelayStartPlanningSchema = z.object({
 
 const RelayStartInteractivePlanningSchema = z.object({
   type: z.literal("relay_start_interactive_planning"),
+  sessionId: z.string().optional(),
   ticketId: z.string(),
   ticketTitle: z.string(),
   ticketDescription: z.string(),
@@ -107,6 +109,7 @@ const RelayStartInteractivePlanningSchema = z.object({
 
 const RelayStartImplementationSchema = z.object({
   type: z.literal("relay_start_implementation"),
+  sessionId: z.string().optional(),
   ticketId: z.string(),
   plan: z.string(),
   systemInstructions: z.array(z.string()),
@@ -140,6 +143,39 @@ const RelayListDriversSchema = z.object({
   viewerId: z.string(),
 });
 
+const RelayRepoDetectedSchema = z.object({
+  type: z.literal("relay_repo_detected"),
+  sessionId: z.string(),
+  orgId: z.string(),
+  orgName: z.string(),
+  repoId: z.string(),
+  repoName: z.string(),
+  repoFullName: z.string(),
+  settings: z.object({
+    agent: z.string().nullish(),
+    model: z.string().nullish(),
+    worktree: z.boolean().optional(),
+    systemInstructions: z.array(z.object({
+      label: z.string(),
+      content: z.string(),
+    })).optional(),
+  }),
+  enforced: z.object({
+    agent: z.boolean().optional(),
+    model: z.boolean().optional(),
+    worktree: z.boolean().optional(),
+  }),
+});
+
+const RelayUserSettingsSchema = z.object({
+  type: z.literal("relay_user_settings"),
+  worktreeDefaults: z.object({
+    planning: z.boolean(),
+    interactivePlanning: z.boolean(),
+    implementation: z.boolean(),
+  }),
+});
+
 export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayAuthOkSchema,
   RelayAuthFailSchema,
@@ -160,4 +196,6 @@ export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayCloseSessionSchema,
   RelayRequestGitInfoSchema,
   RelayListDriversSchema,
+  RelayRepoDetectedSchema,
+  RelayUserSettingsSchema,
 ]);

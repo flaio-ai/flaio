@@ -14,15 +14,23 @@ const HOOK_DIR = path.join(os.homedir(), ".config", "flaio", "hooks");
 
 /**
  * Shell script that appends hook JSON from stdin to the sideband events file.
+ * Accepts the hook event name as $1 and injects it into the JSON.
  * No-op when FLAIO_SIDEBAND_DIR is not set (safe for normal CLI usage).
  */
+/* eslint-disable no-useless-escape -- \$ prevents template literal interpolation in shell scripts */
 const RELAY_HOOK_SH = `#!/bin/sh
 # Support both new and legacy env var names
-dir="\${FLAIO_SIDEBAND_DIR:-$CODE_RELAY_SIDEBAND_DIR}"
+dir="\${FLAIO_SIDEBAND_DIR:-\$CODE_RELAY_SIDEBAND_DIR}"
 [ -z "$dir" ] && exit 0
-cat >> "$dir/events.jsonl"
-printf '\\n' >> "$dir/events.jsonl"
+hook="\$1"
+[ -z "$hook" ] && exit 0
+input=$(cat)
+[ -z "$input" ] && exit 0
+# Inject the hook event name at the start of the JSON object.
+# Uses printf instead of sed to avoid shell injection via $hook.
+printf '{"hook":"%s",%s\\n' "$hook" "\${input#\\{}" >> "$dir/events.jsonl"
 `;
+/* eslint-enable no-useless-escape */
 
 /**
  * Shell script for Claude Code status line. Reads JSON from stdin,
@@ -90,7 +98,7 @@ export function getClaudeHooksConfig(hookPath: string): Record<string, unknown> 
       hooks: [
         {
           type: "command",
-          command: hookPath,
+          command: `${hookPath} ${event}`,
         },
       ],
     };
@@ -237,6 +245,36 @@ function extractCommand(entry: Record<string, unknown>): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Copilot CLI settings hooks config
+// ---------------------------------------------------------------------------
+
+/** Copilot CLI hook event names we want to intercept (camelCase). */
+const COPILOT_HOOK_EVENTS = [
+  "sessionStart",
+  "sessionEnd",
+  "userPromptSubmitted",
+  "preToolUse",
+  "postToolUse",
+  "errorOccurred",
+] as const;
+
+/**
+ * Returns hooks config to merge into ~/.copilot/settings.json.
+ */
+export function getCopilotHooksConfig(hookPath: string): Record<string, unknown> {
+  const hooks: Record<string, unknown[]> = {};
+  for (const event of COPILOT_HOOK_EVENTS) {
+    hooks[event] = [
+      {
+        type: "command",
+        command: `${hookPath} ${event}`,
+      },
+    ];
+  }
+  return { hooks };
+}
+
+// ---------------------------------------------------------------------------
 // Check if hooks are already configured
 // ---------------------------------------------------------------------------
 
@@ -265,6 +303,26 @@ export async function areClaudeHooksConfigured(): Promise<boolean> {
       // Legacy format: { type, command }
       return (entry as Record<string, unknown>).command === hookPath;
     });
+  } catch {
+    return false;
+  }
+}
+
+export async function areCopilotHooksConfigured(): Promise<boolean> {
+  try {
+    const settingsPath = path.join(os.homedir(), ".copilot", "settings.json");
+    const text = await fs.readFile(settingsPath, "utf-8");
+    const settings = JSON.parse(text);
+    const hooks = settings?.hooks;
+    if (!hooks || typeof hooks !== "object") return false;
+
+    const sessionStartHooks = hooks.sessionStart;
+    if (!Array.isArray(sessionStartHooks)) return false;
+
+    const hookPath = path.join(HOOK_DIR, "relay-hook.sh");
+    return sessionStartHooks.some(
+      (h: unknown) => isObj(h) && (h as Record<string, unknown>).command === `${hookPath} sessionStart`,
+    );
   } catch {
     return false;
   }

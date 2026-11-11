@@ -31,6 +31,8 @@ export interface SessionState {
   totalLinesAdded?: number;
   /** Lines removed this session */
   totalLinesRemoved?: number;
+  /** Process exit code (0 = clean, non-zero = error/crash) */
+  exitCode?: number;
 }
 
 export interface AppState {
@@ -40,7 +42,7 @@ export interface AppState {
   detectedAgents: DetectedAgent[];
 
   // Actions
-  createSession: (driverName: string, cwd: string, cols?: number, rows?: number) => AgentSession | null;
+  createSession: (driverName: string, cwd: string, cols?: number, rows?: number, scrollback?: number) => AgentSession | null;
   closeSession: (sessionId: string) => void;
   switchSession: (sessionId: string) => void;
   nextSession: () => void;
@@ -80,11 +82,11 @@ export const appStore = createStore<AppState>((set, get) => ({
   sidebarVisible: true,
   detectedAgents: [],
 
-  createSession: (driverName: string, cwd: string, cols?: number, rows?: number): AgentSession | null => {
+  createSession: (driverName: string, cwd: string, cols?: number, rows?: number, scrollback?: number): AgentSession | null => {
     const driver = getDriver(driverName);
     if (!driver) return null;
 
-    const session = new AgentSession(driver, { cwd, cols, rows });
+    const session = new AgentSession(driver, { cwd, cols, rows, scrollback });
     sessionInstances.set(session.id, session);
 
     session.on("status", (status) => {
@@ -106,7 +108,13 @@ export const appStore = createStore<AppState>((set, get) => ({
       });
     });
 
-    session.on("exit", () => {
+    session.on("exit", (code?: number) => {
+      // Store the exit code before closing
+      set((prev) => ({
+        sessions: prev.sessions.map((s) =>
+          s.id === session.id ? { ...s, exitCode: code } : s,
+        ),
+      }));
       get().closeSession(session.id);
     });
 
@@ -117,6 +125,12 @@ export const appStore = createStore<AppState>((set, get) => ({
       cwd,
       status: "idle",
     };
+
+    const prevActiveId = get().activeSessionId;
+    if (prevActiveId) {
+      const prevInstance = sessionInstances.get(prevActiveId);
+      prevInstance?.pauseScreenBuffer();
+    }
 
     set((prev) => ({
       sessions: [...prev.sessions, state],
@@ -129,8 +143,11 @@ export const appStore = createStore<AppState>((set, get) => ({
   closeSession: (sessionId: string) => {
     const instance = sessionInstances.get(sessionId);
     if (instance) {
-      instance.kill();
-      sessionInstances.delete(sessionId);
+      try {
+        instance.kill();
+      } finally {
+        sessionInstances.delete(sessionId);
+      }
     }
     permissionPending.delete(sessionId);
 
@@ -138,13 +155,27 @@ export const appStore = createStore<AppState>((set, get) => ({
       const sessions = prev.sessions.filter((s) => s.id !== sessionId);
       let activeSessionId = prev.activeSessionId;
       if (activeSessionId === sessionId) {
-        activeSessionId = sessions.length > 0 ? sessions[0]!.id : null;
+        activeSessionId = sessions[0]?.id ?? null;
       }
       return { sessions, activeSessionId };
     });
+
+    // Resume screen buffer for the new active session after closing
+    const newActiveId = get().activeSessionId;
+    if (newActiveId) {
+      const newActiveInstance = sessionInstances.get(newActiveId);
+      newActiveInstance?.resumeScreenBuffer();
+    }
   },
 
   switchSession: (sessionId: string) => {
+    const prevActiveId = get().activeSessionId;
+    if (prevActiveId && prevActiveId !== sessionId) {
+      const prevInstance = sessionInstances.get(prevActiveId);
+      prevInstance?.pauseScreenBuffer();
+    }
+    const nextInstance = sessionInstances.get(sessionId);
+    nextInstance?.resumeScreenBuffer();
     set({ activeSessionId: sessionId });
   },
 
@@ -153,7 +184,8 @@ export const appStore = createStore<AppState>((set, get) => ({
     if (sessions.length === 0) return;
     const idx = sessions.findIndex((s) => s.id === activeSessionId);
     const next = (idx + 1) % sessions.length;
-    set({ activeSessionId: sessions[next]!.id });
+    const nextSession = sessions[next];
+    if (nextSession) set({ activeSessionId: nextSession.id });
   },
 
   prevSession: () => {
@@ -161,7 +193,8 @@ export const appStore = createStore<AppState>((set, get) => ({
     if (sessions.length === 0) return;
     const idx = sessions.findIndex((s) => s.id === activeSessionId);
     const prev = (idx - 1 + sessions.length) % sessions.length;
-    set({ activeSessionId: sessions[prev]!.id });
+    const prevSession = sessions[prev];
+    if (prevSession) set({ activeSessionId: prevSession.id });
   },
 
   toggleSidebar: () => {
@@ -184,13 +217,23 @@ export const appStore = createStore<AppState>((set, get) => ({
 
   updateSessionDetailed: (sessionId: string, detailed: DetailedStatus, toolName?: string) => {
     // When sideband reports a state other than waiting_permission,
-    // clear the permission guard so updateSessionStatus isn't blocked
-    if (detailed.state !== "waiting_permission" && permissionPending.has(sessionId)) {
+    // clear the permission guard and also sync the status field.
+    // This is necessary because the connector-store sets status directly
+    // in the store without updating AgentSession._status, so the
+    // change-detection in setStatus() may have suppressed the event.
+    const guardCleared = detailed.state !== "waiting_permission" && permissionPending.has(sessionId);
+    if (guardCleared) {
       permissionPending.delete(sessionId);
     }
+    const current = get().sessions.find((s) => s.id === sessionId);
+    // Skip no-op updates (unless we need to sync status after clearing guard)
+    const statusNeedsSync = guardCleared && current?.status !== detailed.state;
+    if (!statusNeedsSync && current?.detailedStatus?.state === detailed.state && current?.currentTool === toolName) return;
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
-        s.id === sessionId ? { ...s, detailedStatus: detailed, currentTool: toolName } : s,
+        s.id === sessionId
+          ? { ...s, detailedStatus: detailed, currentTool: toolName, ...(statusNeedsSync ? { status: detailed.state as AgentStatus } : {}) }
+          : s,
       ),
     }));
   },
@@ -212,6 +255,9 @@ export const appStore = createStore<AppState>((set, get) => ({
       if (status === "running") return;
       permissionPending.delete(sessionId);
     }
+    // Skip no-op updates to avoid unnecessary state churn + subscriber callbacks
+    const current = get().sessions.find((s) => s.id === sessionId);
+    if (current?.status === status) return;
     set((prev) => ({
       sessions: prev.sessions.map((s) =>
         s.id === sessionId ? { ...s, status } : s,
@@ -266,9 +312,17 @@ export const appStore = createStore<AppState>((set, get) => ({
       });
     });
 
-    // Don't auto-close adopted sessions — keep tab so user can see errors
-    session.on("exit", () => {
+    // Auto-close adopted sessions after a brief delay so user can see final output
+    session.on("exit", (code?: number) => {
+      set((prev) => ({
+        sessions: prev.sessions.map((s) =>
+          s.id === session.id ? { ...s, exitCode: code } : s,
+        ),
+      }));
       get().updateSessionStatus(session.id, "exited");
+      setTimeout(() => {
+        get().closeSession(session.id);
+      }, 3000);
     });
 
     const state: SessionState = {
@@ -278,6 +332,12 @@ export const appStore = createStore<AppState>((set, get) => ({
       cwd,
       status: "starting",
     };
+
+    const prevActiveId = get().activeSessionId;
+    if (prevActiveId) {
+      const prevInstance = sessionInstances.get(prevActiveId);
+      prevInstance?.pauseScreenBuffer();
+    }
 
     set((prev) => ({
       sessions: [...prev.sessions, state],

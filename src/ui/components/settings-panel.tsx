@@ -1,15 +1,16 @@
-import React, { useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Box, Text, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import { settingsStore } from "../../store/settings-store.js";
 import { AgentsSettingsContent } from "./agents-settings-content.js";
 import { login, logout, isLoggedIn } from "../../relay/relay-auth.js";
+import { relayClient } from "../../store/connector-store.js";
 
 interface SettingsPanelProps {
   onClose: () => void;
 }
 
-type Section = "connectors" | "ui" | "agents" | "relay";
+type Section = "connectors" | "ui" | "agents" | "relay" | "worktree";
 
 interface FieldDef {
   label: string;
@@ -73,6 +74,40 @@ function getRelayFields(): FieldDef[] {
   ];
 }
 
+function getWorktreeFields(): FieldDef[] {
+  const store = () => settingsStore.getState();
+  const cfg = () => store().config;
+  return [
+    {
+      label: "Planning",
+      type: "boolean",
+      getValue: () => cfg().worktree.planning,
+      setValue: (v) => {
+        store().update({ worktree: { ...cfg().worktree, planning: v as boolean } });
+        relayClient.sendUserSettings({ planning: v as boolean });
+      },
+    },
+    {
+      label: "Interactive Planning",
+      type: "boolean",
+      getValue: () => cfg().worktree.interactivePlanning,
+      setValue: (v) => {
+        store().update({ worktree: { ...cfg().worktree, interactivePlanning: v as boolean } });
+        relayClient.sendUserSettings({ interactivePlanning: v as boolean });
+      },
+    },
+    {
+      label: "Implementation",
+      type: "boolean",
+      getValue: () => cfg().worktree.implementation,
+      setValue: (v) => {
+        store().update({ worktree: { ...cfg().worktree, implementation: v as boolean } });
+        relayClient.sendUserSettings({ implementation: v as boolean });
+      },
+    },
+  ];
+}
+
 function displayValue(field: FieldDef): string {
   const val = field.getValue();
   if (field.type === "boolean") return val ? "yes" : "no";
@@ -126,6 +161,46 @@ function FieldRow({
   );
 }
 
+function useTimedMessage(durationMs = 3000): [string | null, "success" | "error" | null, (msg: string, kind: "success" | "error") => void] {
+  const [message, setMessage] = useState<string | null>(null);
+  const [kind, setKind] = useState<"success" | "error" | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const show = useCallback((msg: string, k: "success" | "error") => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setMessage(msg);
+    setKind(k);
+    timerRef.current = setTimeout(() => {
+      setMessage(null);
+      setKind(null);
+    }, durationMs);
+  }, [durationMs]);
+
+  useEffect(() => {
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, []);
+
+  return [message, kind, show];
+}
+
+function validateField(field: FieldDef, value: string): string | null {
+  if (field.type === "number") {
+    if (isNaN(Number(value)) || value.trim() === "") return "Invalid number";
+    return null;
+  }
+  const label = field.label.toLowerCase();
+  if (label.includes("bot token") && label.includes("slack")) {
+    if (value && !value.startsWith("xoxb-")) return "Slack bot token should start with \"xoxb-\"";
+  }
+  if (label.includes("app token") && label.includes("slack")) {
+    if (value && !value.startsWith("xapp-")) return "Slack app token should start with \"xapp-\"";
+  }
+  if (label.includes("relay") && label.includes("url")) {
+    if (value && !value.startsWith("ws://") && !value.startsWith("wss://")) return "URL must start with ws:// or wss://";
+  }
+  return null;
+}
+
 export function SettingsPanel({
   onClose,
 }: SettingsPanelProps): React.ReactElement {
@@ -135,8 +210,9 @@ export function SettingsPanel({
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [editingField, setEditingField] = useState<number | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [feedbackMsg, feedbackKind, showFeedback] = useTimedMessage(3000);
 
-  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : section === "relay" ? getRelayFields() : getUiFields();
+  const fields = section === "agents" ? [] : section === "connectors" ? getConnectorFields() : section === "relay" ? getRelayFields() : section === "worktree" ? getWorktreeFields() : getUiFields();
 
   useInput((input, key) => {
     if (editingField !== null) {
@@ -153,7 +229,7 @@ export function SettingsPanel({
     }
 
     if (key.tab) {
-      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : s === "agents" ? "relay" : "connectors");
+      setSection((s) => s === "connectors" ? "ui" : s === "ui" ? "agents" : s === "agents" ? "relay" : s === "relay" ? "worktree" : "connectors");
       setFocusedIndex(0);
       return;
     }
@@ -162,8 +238,10 @@ export function SettingsPanel({
       if (isLoggedIn()) {
         logout();
         settingsStore.getState().updateRelay({ enabled: false });
+        showFeedback("Logged out successfully", "success");
       } else {
         login();
+        showFeedback("Opening browser for login...", "success");
       }
       return;
     }
@@ -194,14 +272,22 @@ export function SettingsPanel({
   });
 
   const handleEditSubmit = (value: string) => {
-    const field = fields[editingField!];
+    if (editingField == null) return;
+    const field = fields[editingField];
     if (field) {
+      const error = validateField(field, value);
+      if (error) {
+        showFeedback(error, "error");
+        setEditingField(null);
+        setEditValue("");
+        return;
+      }
       if (field.type === "number") {
-        const num = Number(value);
-        if (!isNaN(num)) field.setValue(num);
+        field.setValue(Number(value));
       } else {
         field.setValue(value);
       }
+      showFeedback(`${field.label} saved`, "success");
     }
     setEditingField(null);
     setEditValue("");
@@ -252,6 +338,14 @@ export function SettingsPanel({
         >
           Remote
         </Text>
+        <Text> | </Text>
+        <Text
+          bold={section === "worktree"}
+          underline={section === "worktree"}
+          color={section === "worktree" ? "cyan" : undefined}
+        >
+          Worktree
+        </Text>
       </Box>
 
       <Box flexDirection="column">
@@ -272,8 +366,14 @@ export function SettingsPanel({
         )}
       </Box>
 
-      <Box marginTop={1}>
-        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : section === "relay" ? "Tab: section | Up/Down: navigate | Enter: edit | l: login/logout | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
+      {feedbackMsg && (
+        <Box marginTop={1}>
+          <Text color={feedbackKind === "error" ? "red" : "green"}>{feedbackMsg}</Text>
+        </Box>
+      )}
+
+      <Box marginTop={feedbackMsg ? 0 : 1}>
+        <Text dimColor>{section === "agents" ? "Tab: section | \u2190\u2192: agent | m: method | h: hooks | Enter: action | Esc: close" : section === "relay" ? "Tab: section | Up/Down: navigate | Enter: edit | l: login/logout | Esc: close" : section === "worktree" ? "Tab: section | Up/Down: navigate | Enter: edit | Esc: close" : "Tab: section | Up/Down: navigate | Enter: edit | Esc: close"}</Text>
       </Box>
     </Box>
   );

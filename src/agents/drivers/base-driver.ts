@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { stripAnsi } from "../../strip-ansi.js";
 
 export type AgentStatus = "idle" | "starting" | "running" | "waiting_input" | "waiting_permission" | "exited";
 
@@ -18,13 +19,15 @@ export abstract class BaseDriver {
   abstract readonly displayName: string;
   abstract readonly command: string;
 
+  private processPattern?: RegExp;
+
   /**
-   * Optional regex to match this agent's CLI process in `ps aux` output.
-   * Override this to avoid matching unrelated processes (e.g. desktop apps)
-   * that share the same command name.
+   * Regex matching this agent's CLI process in a line of `ps aux` output.
+   * Override to avoid matching unrelated processes (e.g. desktop apps)
+   * that share the command name. Called per ps line, so return a cached instance.
    */
   processMatchPattern(): RegExp {
-    return new RegExp(`\\b${this.command}\\b`);
+    return (this.processPattern ??= new RegExp(`\\b${this.command}\\b`));
   }
 
   /** Resolve the full path of the command binary */
@@ -66,7 +69,6 @@ export abstract class BaseDriver {
 
   /** Strip ANSI escape sequences from text for pattern matching */
   protected stripAnsi(text: string): string {
-    // eslint-disable-next-line no-control-regex
-    return text.replace(/\x1B(?:\[[0-9;]*[a-zA-Z]|\].*?(?:\x07|\x1B\\)|\[[0-9;]*m)/g, "");
+    return stripAnsi(text);
   }
 }

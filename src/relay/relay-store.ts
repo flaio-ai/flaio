@@ -13,11 +13,38 @@ export type RelayConnectionStatus =
 
 export type SessionEncryptionStatus = "none" | "key-exchange" | "active" | "failed";
 
+export interface OrgRepoSettings {
+  orgId: string;
+  orgName: string;
+  repoId: string;
+  repoName: string;
+  repoFullName: string;
+  settings: {
+    agent?: string | null;
+    model?: string | null;
+    worktree?: boolean;
+    systemInstructions?: Array<{ label: string; content: string }>;
+  };
+  enforced: {
+    agent?: boolean;
+    model?: boolean;
+    worktree?: boolean;
+  };
+}
+
+export interface WorktreeDefaults {
+  planning: boolean;
+  interactivePlanning: boolean;
+  implementation: boolean;
+}
+
 export interface RelayState {
   /** Current WebSocket connection status */
   connectionStatus: RelayConnectionStatus;
   /** Error message if connectionStatus is "error" */
   errorMessage: string | null;
+  /** Current reconnection attempt (0 when connected) */
+  reconnectAttempt: number;
   /** Number of browser viewers currently connected across all sessions */
   totalViewerCount: number;
   /** Per-session viewer counts */
@@ -26,24 +53,32 @@ export interface RelayState {
   isLoggedIn: boolean;
   /** Per-session E2E encryption status */
   sessionEncryptionStatus: Map<string, SessionEncryptionStatus>;
+  /** Per-session detected org/repo settings from relay */
+  sessionOrgSettings: Map<string, OrgRepoSettings>;
+  worktreeDefaults: WorktreeDefaults | null;
 }
 
 export const relayStore = createStore<RelayState>(() => ({
   connectionStatus: "disconnected",
   errorMessage: null,
+  reconnectAttempt: 0,
   totalViewerCount: 0,
   sessionViewerCounts: new Map(),
   isLoggedIn: false,
   sessionEncryptionStatus: new Map(),
+  sessionOrgSettings: new Map(),
+  worktreeDefaults: null,
 }));
 
 export function setRelayConnectionStatus(
   status: RelayConnectionStatus,
   errorMessage?: string,
+  reconnectAttempt?: number,
 ): void {
   relayStore.setState({
     connectionStatus: status,
     errorMessage: errorMessage ?? null,
+    ...(reconnectAttempt != null ? { reconnectAttempt } : {}),
   });
 }
 
@@ -93,4 +128,51 @@ export function setSessionEncryptionStatus(
 
 export function setRelayLoggedIn(loggedIn: boolean): void {
   relayStore.setState({ isLoggedIn: loggedIn });
+}
+
+export function setSessionOrgSettings(
+  sessionId: string,
+  settings: OrgRepoSettings,
+): void {
+  const map = new Map(relayStore.getState().sessionOrgSettings);
+  map.set(sessionId, settings);
+  relayStore.setState({ sessionOrgSettings: map });
+}
+
+export function getSessionOrgSettings(
+  sessionId: string,
+): OrgRepoSettings | undefined {
+  return relayStore.getState().sessionOrgSettings.get(sessionId);
+}
+
+export function clearSessionOrgSettings(sessionId: string): void {
+  const map = new Map(relayStore.getState().sessionOrgSettings);
+  map.delete(sessionId);
+  relayStore.setState({ sessionOrgSettings: map });
+}
+
+export function clearSessionState(sessionId: string): void {
+  const state = relayStore.getState();
+
+  const counts = new Map(state.sessionViewerCounts);
+  counts.delete(sessionId);
+  let total = 0;
+  for (const c of counts.values()) total += c;
+
+  const encryption = new Map(state.sessionEncryptionStatus);
+  encryption.delete(sessionId);
+
+  const orgSettings = new Map(state.sessionOrgSettings);
+  orgSettings.delete(sessionId);
+
+  relayStore.setState({
+    sessionViewerCounts: counts,
+    totalViewerCount: total,
+    sessionEncryptionStatus: encryption,
+    sessionOrgSettings: orgSettings,
+  });
+}
+
+export function setWorktreeDefaults(defaults: WorktreeDefaults): void {
+  relayStore.setState({ worktreeDefaults: defaults });
 }

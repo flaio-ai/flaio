@@ -38,6 +38,7 @@ function TopTabs({
           status={session.status}
           isActive={session.id === activeSessionId}
           index={i}
+          exitCode={session.exitCode}
         />
       ))}
     </Box>

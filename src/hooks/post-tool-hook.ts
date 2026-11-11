@@ -16,20 +16,22 @@ async function main(): Promise<void> {
     input = fs.readFileSync(0, "utf-8");
   } catch {
     process.exit(0);
+    return;
   }
 
   let data: Record<string, unknown>;
   try {
-    data = JSON.parse(input!);
+    data = JSON.parse(input);
   } catch {
     process.exit(0);
+    return;
   }
 
-  const toolName = data!.tool_name as string;
-  const toolInput = data!.tool_input as Record<string, unknown>;
-  const toolResult = data!.tool_result;
-  const sessionId = data!.session_id as string;
-  const cwd = data!.cwd as string;
+  const toolName = data.tool_name as string;
+  const toolInput = data.tool_input as Record<string, unknown>;
+  const toolResult = data.tool_result;
+  const sessionId = data.session_id as string;
+  const cwd = data.cwd as string;
 
   await sendToHookServer({
     type: "post_tool_use",

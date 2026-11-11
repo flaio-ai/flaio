@@ -17,11 +17,12 @@ export function useGitInfo(cwd: string | null): GitInfo | null {
       return;
     }
 
+    const resolvedCwd = cwd;
     function poll() {
       execFile(
         "git",
         ["status", "--porcelain=v1", "-b"],
-        { cwd: cwd!, timeout: 3000 },
+        { cwd: resolvedCwd, timeout: 3000 },
         (err, stdout) => {
           if (err) {
             setInfo((prev) => (prev === null ? prev : null));
@@ -78,8 +79,8 @@ function parseGitStatus(output: string): GitInfo | null {
     const info = rest.slice(bracketIndex);
     const aheadMatch = info.match(/ahead (\d+)/);
     const behindMatch = info.match(/behind (\d+)/);
-    if (aheadMatch) ahead = parseInt(aheadMatch[1]!, 10);
-    if (behindMatch) behind = parseInt(behindMatch[1]!, 10);
+    if (aheadMatch) ahead = parseInt(aheadMatch[1] ?? "0", 10);
+    if (behindMatch) behind = parseInt(behindMatch[1] ?? "0", 10);
   }
 
   // Count changed files (non-empty, non-branch lines)

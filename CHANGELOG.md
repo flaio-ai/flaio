@@ -1,5 +1,89 @@
 # flaio
 
+## 1.1.3-beta.0
+
+### Patch Changes
+
+- Fix CLI crash after ~20h: memory leak fixes, OOM crash recovery with heartbeat monitoring, and sustained heap growth detection. Update all dependencies to latest versions (xterm 6, commander 14, zod 4, vitest 4, typescript 5.9).
+
+## 1.1.2
+
+### Patch Changes
+
+- Fix worktree race conditions, crash resilience, and memory issues
+
+## 1.1.1
+
+### Patch Changes
+
+- Fix token refresh: add proactive refresh before expiry and fix reconnect race condition
+
+## 1.1.0
+
+### Minor Changes
+
+- fc16aee: Migrate CLI token refresh from Firebase Auth to custom endpoint with rotating refresh tokens
+
+## 1.1.0-beta.0
+
+### Minor Changes
+
+- Migrate CLI token refresh from Firebase Auth to custom endpoint with rotating refresh tokens
+
+## 1.0.15
+
+### Patch Changes
+
+- Reduce memory pressure and fix resource leaks across CLI
+
+## 1.0.14
+
+### Patch Changes
+
+- Fix memory leaks and performance bottlenecks in CLI
+
+## 1.0.13
+
+### Patch Changes
+
+- Expand CLI analytics with Sentry tracing, profiling, and PostHog instrumentation
+
+## 1.0.12
+
+### Patch Changes
+
+- Fix Slack duplicate/ghost messages, performance bottlenecks, and UX improvements
+
+## 1.0.11
+
+### Patch Changes
+
+- Patch version bump
+
+## 1.0.10
+
+### Patch Changes
+
+- 8e62eab: Reduce memory usage: skip no-op Zustand state updates, cap planning session buffers at 2MB, release ScreenBuffer resources on cleanup, and reduce xterm scrollback for non-interactive sessions
+
+## 1.0.9
+
+### Patch Changes
+
+- b237a79: Fix planning session not starting by making sessionId optional in Zod validation schemas
+
+## 1.0.8
+
+### Patch Changes
+
+- Add missing sessionId to planning and implementation message types
+
+## 1.0.7
+
+### Patch Changes
+
+- a9c9963: Patch version bump
+
 ## 1.0.6
 
 ### Patch Changes

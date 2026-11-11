@@ -94,7 +94,8 @@ export function useKeybindings(actions: KeybindingActions): void {
       const index = parseInt(input) - 1;
       const sessions = store.sessions;
       if (index < sessions.length) {
-        store.switchSession(sessions[index]!.id);
+        const session = sessions[index];
+        if (session) store.switchSession(session.id);
       }
       return;
     }
@@ -105,7 +106,8 @@ export function useKeybindings(actions: KeybindingActions): void {
       const index = macDigit - 1;
       const sessions = store.sessions;
       if (index < sessions.length) {
-        store.switchSession(sessions[index]!.id);
+        const session = sessions[index];
+        if (session) store.switchSession(session.id);
       }
       return;
     }

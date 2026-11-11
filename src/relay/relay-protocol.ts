@@ -217,6 +217,11 @@ export interface CliDriversResultMsg {
 /** Default driver name used when none is specified in relay messages */
 export const DEFAULT_DRIVER_NAME = "claude";
 
+export interface CliSetUserSettingsMsg {
+  type: "cli_set_user_settings";
+  worktreeDefaults?: Partial<{ planning: boolean; interactivePlanning: boolean; implementation: boolean }>;
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -234,7 +239,8 @@ export type CliToRelayMsg =
   | CliImplementationDoneMsg
   | CliTicketStatusMsg
   | CliGitInfoResultMsg
-  | CliDriversResultMsg;
+  | CliDriversResultMsg
+  | CliSetUserSettingsMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -407,6 +413,7 @@ export interface RelayListDriversMsg {
 
 export interface RelayStartPlanningMsg {
   type: "relay_start_planning";
+  sessionId?: string;
   ticketId: string;
   ticketTitle: string;
   ticketDescription: string;
@@ -422,6 +429,7 @@ export interface RelayStartPlanningMsg {
 
 export interface RelayStartInteractivePlanningMsg {
   type: "relay_start_interactive_planning";
+  sessionId?: string;
   ticketId: string;
   ticketTitle: string;
   ticketDescription: string;
@@ -434,6 +442,7 @@ export interface RelayStartInteractivePlanningMsg {
 
 export interface RelayStartImplementationMsg {
   type: "relay_start_implementation";
+  sessionId?: string;
   ticketId: string;
   plan: string;
   systemInstructions: string[];
@@ -462,6 +471,32 @@ export interface RelayRequestGitInfoMsg {
   cwd: string;
 }
 
+export interface RelayRepoDetectedMsg {
+  type: "relay_repo_detected";
+  sessionId: string;
+  orgId: string;
+  orgName: string;
+  repoId: string;
+  repoName: string;
+  repoFullName: string;
+  settings: {
+    agent?: string | null;
+    model?: string | null;
+    worktree?: boolean;
+    systemInstructions?: Array<{ label: string; content: string }>;
+  };
+  enforced: {
+    agent?: boolean;
+    model?: boolean;
+    worktree?: boolean;
+  };
+}
+
+export interface RelayUserSettingsMsg {
+  type: "relay_user_settings";
+  worktreeDefaults: { planning: boolean; interactivePlanning: boolean; implementation: boolean };
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -481,7 +516,9 @@ export type RelayToCliMsg =
   | RelayRequestChangesMsg
   | RelayCloseSessionMsg
   | RelayRequestGitInfoMsg
-  | RelayListDriversMsg;
+  | RelayListDriversMsg
+  | RelayRepoDetectedMsg
+  | RelayUserSettingsMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

@@ -1,6 +1,6 @@
 {
   "name": "flaio-cli",
-  "version": "1.0.6",
+  "version": "1.1.3-beta.0",
   "description": "Terminal UI for managing multiple AI CLI agents with tabbed sessions",
   "license": "MIT",
   "type": "module",
@@ -40,31 +40,44 @@
     "dev": "tsx src/cli.tsx",
     "dev:local": "RELAY_URL=ws://localhost:8080 AUTH_URL=http://localhost:5173/auth/cli tsx src/cli.tsx",
     "build": "tsc",
-    "start": "node dist/cli.js",
+    "start": "node --max-old-space-size=2048 --heapsnapshot-near-heap-limit=3 dist/cli.js",
     "test": "vitest --passWithNoTests",
+    "lint": "eslint src/",
+    "type-check": "tsc --noEmit",
     "prepublishOnly": "npm run build",
     "install-hooks": "tsx src/hooks/install.ts install",
     "uninstall-hooks": "tsx src/hooks/install.ts uninstall",
-    "changeset": "changeset"
+    "changeset": "changeset",
+    "dev:debug-gc": "node --expose-gc --trace-gc dist/cli.js",
+    "dev:debug-heap": "node --max-old-space-size=512 --heapsnapshot-near-heap-limit=3 dist/cli.js"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
-    "@slack/socket-mode": "^2.0.5",
-    "@slack/web-api": "^7.14.1",
-    "@xterm/headless": "^5.5.0",
-    "commander": "^13.1.0",
+    "@sentry/node": "^10.43.0",
+    "@sentry/profiling-node": "^10.43.0",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.0",
+    "@xterm/headless": "^6.0.0",
+    "commander": "^14.0.3",
     "ink": "^6.8.0",
     "node-pty": "^1.2.0-beta.11",
+    "posthog-node": "^5.28.2",
     "react": "^19.2.4",
-    "zod": "^3.24.0",
-    "zustand": "^5.0.5"
+    "zod": "^4.3.6",
+    "zustand": "^5.0.11"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.4",
-    "@types/node": "^25.2.3",
+    "@changesets/cli": "^2.30.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.3",
-    "vitest": "^3.1.0"
+    "eslint": "^10.1.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "^3.8.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.2",
+    "vitest": "^4.1.0"
   }
 }

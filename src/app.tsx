@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useSyncExternalStore } from "react";
-import { Box } from "ink";
+import { Box, Text } from "ink";
 import { Shell } from "./ui/layout/shell.js";
 import { NewSessionDialog } from "./ui/components/new-session-dialog.js";
 import { SettingsPanel } from "./ui/components/settings-panel.js";
@@ -26,6 +26,8 @@ export function App(): React.ReactElement {
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showAdoptDialog, setShowAdoptDialog] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [sessionStartError, setSessionStartError] = useState<string | null>(null);
   const { columns, rows: rawRows } = useTerminalSize();
   // Reserve 1 row: Ink appends a trailing newline after the last line,
   // which scrolls the alt-screen buffer and pushes the first row off-screen.
@@ -41,7 +43,9 @@ export function App(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    startConnectors().catch(() => {});
+    startConnectors().catch((err) => {
+      setErrorMessage(`Connector initialization failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     return () => { stopConnectors().catch(() => {}); };
   }, []);
 
@@ -57,6 +61,13 @@ export function App(): React.ReactElement {
   const portalConnected = usePortalConnected(activeSessionId);
 
   const toggleHelp = useCallback(() => setShowHelp((v) => !v), []);
+
+  // Auto-dismiss the connector error banner after 5 seconds
+  useEffect(() => {
+    if (!errorMessage) return;
+    const timer = setTimeout(() => setErrorMessage(null), 5000);
+    return () => clearTimeout(timer);
+  }, [errorMessage]);
 
   useKeybindings({
     onNewSession: useCallback(() => setShowNewSession(true), []),
@@ -91,15 +102,28 @@ export function App(): React.ReactElement {
   }, [paneWidth, paneRows, activeSessionId]);
 
   const handleNewSession = useCallback((driverName: string, cwd: string) => {
+    setSessionStartError(null);
     const session = appStore.getState().createSession(driverName, cwd, paneWidth, paneRows);
     if (session) {
-      session.start().catch(() => {});
+      session.start()
+        .then(() => {
+          setShowNewSession(false);
+          setSessionStartError(null);
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          setSessionStartError(`Failed to start session: ${msg}`);
+          // Clean up the failed session so it doesn't linger as a dead tab
+          appStore.getState().closeSession(session.id);
+        });
+    } else {
+      setSessionStartError("Failed to create session: driver not found");
     }
-    setShowNewSession(false);
   }, [paneWidth, paneRows]);
 
   const handleCancelNewSession = useCallback(() => {
     setShowNewSession(false);
+    setSessionStartError(null);
   }, []);
 
   const handleAdoptAgent = useCallback((agent: DetectedAgent) => {
@@ -129,6 +153,11 @@ export function App(): React.ReactElement {
             onSubmit={handleNewSession}
             onCancel={handleCancelNewSession}
           />
+          {sessionStartError && (
+            <Box marginTop={1}>
+              <Text color="red">{sessionStartError}</Text>
+            </Box>
+          )}
         </Box>
       ) : showSettings ? (
         <Box
@@ -141,6 +170,12 @@ export function App(): React.ReactElement {
           <SettingsPanel onClose={() => setShowSettings(false)} />
         </Box>
       ) : (
+        <>
+        {errorMessage && (
+          <Box paddingX={1} height={1}>
+            <Text color="red">{errorMessage}</Text>
+          </Box>
+        )}
         <Shell
           sessions={sessions}
           activeSessionId={activeSessionId}
@@ -151,6 +186,7 @@ export function App(): React.ReactElement {
           detectedAgents={detectedAgents}
           portalConnected={portalConnected}
         />
+        </>
       )}
     </Box>
   );

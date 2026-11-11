@@ -17,19 +17,21 @@ async function main(): Promise<void> {
     input = fs.readFileSync(0, "utf-8");
   } catch {
     process.exit(0);
+    return;
   }
 
   let request: Record<string, unknown>;
   try {
-    request = JSON.parse(input!);
+    request = JSON.parse(input);
   } catch {
     process.exit(0);
+    return;
   }
 
-  const toolName = request!.tool_name as string;
-  const toolInput = request!.tool_input as Record<string, unknown>;
-  const sessionId = request!.session_id as string;
-  const cwd = request!.cwd as string;
+  const toolName = request.tool_name as string;
+  const toolInput = request.tool_input as Record<string, unknown>;
+  const sessionId = request.session_id as string;
+  const cwd = request.cwd as string;
 
   const ipcResponse = await sendToHookServer(
     {

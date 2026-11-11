@@ -27,6 +27,7 @@ export class SidebandReceiver extends EventEmitter {
   private metadataWatcher: fs.FSWatcher | null = null;
   private eventsOffset = 0;
   private stopped = false;
+  private metadataDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly sessionId: string) {
     super();
@@ -74,6 +75,10 @@ export class SidebandReceiver extends EventEmitter {
       this.eventsWatcher.close();
       this.eventsWatcher = null;
     }
+    if (this.metadataDebounceTimer) {
+      clearTimeout(this.metadataDebounceTimer);
+      this.metadataDebounceTimer = null;
+    }
     if (this.metadataWatcher) {
       this.metadataWatcher.close();
       this.metadataWatcher = null;
@@ -96,41 +101,44 @@ export class SidebandReceiver extends EventEmitter {
   private watchEvents(filePath: string): void {
     this.eventsWatcher = fs.watch(filePath, () => {
       if (this.stopped) return;
-      this.readNewEvents(filePath);
+      void this.readNewEvents(filePath);
     });
   }
 
-  private readNewEvents(filePath: string): void {
-    let fd: number | null = null;
+  private async readNewEvents(filePath: string): Promise<void> {
+    let fh: fsp.FileHandle | null = null;
     try {
-      fd = fs.openSync(filePath, "r");
-      const stat = fs.fstatSync(fd);
+      fh = await fsp.open(filePath, "r");
+      const stat = await fh.stat();
       const bytesToRead = stat.size - this.eventsOffset;
       if (bytesToRead <= 0) {
-        fs.closeSync(fd);
+        await fh.close();
         return;
       }
 
       const buf = Buffer.alloc(bytesToRead);
-      fs.readSync(fd, buf, 0, bytesToRead, this.eventsOffset);
+      await fh.read(buf, 0, bytesToRead, this.eventsOffset);
       this.eventsOffset = stat.size;
-      fs.closeSync(fd);
-      fd = null;
+      await fh.close();
+      fh = null;
 
       const text = buf.toString("utf-8");
       const lines = text.split("\n").filter(Boolean);
 
       for (const line of lines) {
         try {
-          const parsed = JSON.parse(line) as HookEvent;
-          this.emit("hook", parsed);
+          const raw = JSON.parse(line) as Record<string, unknown>;
+          const parsed = normalizeHookEvent(raw);
+          if (parsed.hook) {
+            this.emit("hook", parsed);
+          }
         } catch {
           // Skip malformed lines
         }
       }
     } catch {
-      if (fd !== null) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
+      if (fh !== null) {
+        try { await fh.close(); } catch { /* ignore */ }
       }
     }
   }
@@ -140,21 +148,19 @@ export class SidebandReceiver extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private watchMetadata(filePath: string): void {
-    // Debounce: status line may update rapidly
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
     this.metadataWatcher = fs.watch(filePath, () => {
       if (this.stopped) return;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        this.readMetadata(filePath);
+      if (this.metadataDebounceTimer) clearTimeout(this.metadataDebounceTimer);
+      this.metadataDebounceTimer = setTimeout(() => {
+        if (this.stopped) return;
+        void this.readMetadata(filePath);
       }, 200);
     });
   }
 
-  private readMetadata(filePath: string): void {
+  private async readMetadata(filePath: string): Promise<void> {
     try {
-      const text = fs.readFileSync(filePath, "utf-8").trim();
+      const text = (await fsp.readFile(filePath, "utf-8")).trim();
       if (!text) return;
       const raw = JSON.parse(text);
       const metadata = normalizeMetadata(raw);
@@ -168,6 +174,23 @@ export class SidebandReceiver extends EventEmitter {
 // ---------------------------------------------------------------------------
 // Normalize snake_case keys from status line JSON → camelCase SessionMetadata
 // ---------------------------------------------------------------------------
+
+/**
+ * Normalize a raw JSON object from events.jsonl into a HookEvent.
+ * Claude Code's stdin JSON uses snake_case (tool_name, session_id),
+ * while our HookEvent interface uses camelCase (toolName, sessionId).
+ */
+function normalizeHookEvent(raw: Record<string, unknown>): HookEvent {
+  return {
+    hook: raw.hook as string,
+    sessionId: (raw.sessionId ?? raw.session_id) as string | undefined,
+    toolName: (raw.toolName ?? raw.tool_name) as string | undefined,
+    error: raw.error as string | undefined,
+    notificationType: (raw.notificationType ?? raw.notification_type) as string | undefined,
+    model: raw.model as string | undefined,
+    raw,
+  };
+}
 
 function normalizeMetadata(raw: Record<string, unknown>): SessionMetadata {
   const model = raw.model as Record<string, unknown> | undefined;

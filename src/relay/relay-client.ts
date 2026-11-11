@@ -1,3 +1,4 @@
+import { stripAnsi } from "../strip-ansi.js";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -14,14 +15,17 @@ import {
   type RelayRequestChangesMsg,
 } from "./relay-protocol.js";
 import { ticketTracker } from "./ticket-tracker.js";
-import { createWorktree, autoSaveAllWorktrees } from "./worktree-manager.js";
+import { createWorktree, autoSaveAllWorktrees, pruneStaleEntries } from "./worktree-manager.js";
 import {
   setRelayConnectionStatus,
   setSessionEncryptionStatus,
   updateViewerCount,
   clearViewerCounts,
+  setSessionOrgSettings,
+  getSessionOrgSettings,
+  setWorktreeDefaults,
 } from "./relay-store.js";
-import { refreshAuthToken } from "./relay-auth.js";
+import { refreshAuthToken, getTokenExpiry } from "./relay-auth.js";
 import { appStore, getSessionInstance } from "../store/app-store.js";
 import { settingsStore } from "../store/settings-store.js";
 import { getAllDrivers } from "../agents/agent-registry.js";
@@ -42,6 +46,9 @@ import { makeDebugLog } from "../connectors/debug.js";
 import { RelayToCliMsgSchema } from "./relay-message-schemas.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { sessionMetadataStore } from "../agents/session-metadata.js";
+import { trackCliEvent, startTransaction } from "../analytics/index.js";
+import * as Sentry from "@sentry/node";
+import type { Span } from "@sentry/node";
 
 const debugLog = makeDebugLog("relay");
 
@@ -66,15 +73,91 @@ interface TrackedSession {
   viewerKeys: Map<string, ViewerCryptoState>;
   /** Monotonic sequence counter for encrypted PTY data ordering */
   encryptSeq: number;
+  /** Throttle timer for metadata sends */
+  metadataTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // ---------------------------------------------------------------------------
 // Replay buffer — ring buffer of recent PTY output per session
 // ---------------------------------------------------------------------------
 
+class SessionRingBuffer {
+  private chunks: (string | null)[];
+  private head = 0;
+  private tail = 0;
+  private count = 0;
+  private size = 0;
+  private capacity: number;
+  private maxBytes: number;
+  private initialCapacity: number;
+
+  constructor(maxBytes: number, initialCapacity = 256) {
+    this.maxBytes = maxBytes;
+    this.initialCapacity = initialCapacity;
+    this.capacity = initialCapacity;
+    this.chunks = new Array(initialCapacity).fill(null);
+  }
+
+  push(data: string): void {
+    while (this.size + data.length > this.maxBytes && this.count > 0) {
+      const removed = this.chunks[this.head] ?? "";
+      this.chunks[this.head] = null;
+      this.head = (this.head + 1) % this.capacity;
+      this.count--;
+      this.size -= removed.length;
+    }
+
+    // Shrink if capacity is oversized after evictions
+    this.maybeShrink();
+
+    if (this.count === this.capacity) {
+      this.grow();
+    }
+
+    this.chunks[this.tail] = data;
+    this.tail = (this.tail + 1) % this.capacity;
+    this.count++;
+    this.size += data.length;
+  }
+
+  toArray(): string[] {
+    const result: string[] = [];
+    for (let i = 0; i < this.count; i++) {
+      const chunk = this.chunks[(this.head + i) % this.capacity];
+      if (chunk != null) result.push(chunk);
+    }
+    return result;
+  }
+
+  private grow(): void {
+    const newCapacity = this.capacity * 2;
+    const newChunks: (string | null)[] = new Array(newCapacity).fill(null);
+    for (let i = 0; i < this.count; i++) {
+      newChunks[i] = this.chunks[(this.head + i) % this.capacity];
+    }
+    this.chunks = newChunks;
+    this.head = 0;
+    this.tail = this.count;
+    this.capacity = newCapacity;
+  }
+
+  private maybeShrink(): void {
+    if (this.capacity > this.initialCapacity && this.count < this.capacity / 4) {
+      const newCapacity = Math.max(this.initialCapacity, Math.floor(this.capacity / 2));
+      const newChunks: (string | null)[] = new Array(newCapacity).fill(null);
+      for (let i = 0; i < this.count; i++) {
+        newChunks[i] = this.chunks[(this.head + i) % this.capacity];
+      }
+      this.chunks = newChunks;
+      this.head = 0;
+      this.tail = this.count;
+      this.capacity = newCapacity;
+    }
+  }
+}
+
 class ReplayBuffer {
-  private buffers = new Map<string, string[]>();
-  private sizes = new Map<string, number>();
+  private buffers = new Map<string, SessionRingBuffer>();
   private maxBytes: number;
 
   constructor(maxKB: number) {
@@ -82,38 +165,24 @@ class ReplayBuffer {
   }
 
   push(sessionId: string, data: string): void {
-    let chunks = this.buffers.get(sessionId);
-    let size = this.sizes.get(sessionId) ?? 0;
-
-    if (!chunks) {
-      chunks = [];
-      this.buffers.set(sessionId, chunks);
+    let ring = this.buffers.get(sessionId);
+    if (!ring) {
+      ring = new SessionRingBuffer(this.maxBytes);
+      this.buffers.set(sessionId, ring);
     }
-
-    chunks.push(data);
-    size += data.length;
-
-    // Evict oldest chunks when over budget
-    while (size > this.maxBytes && chunks.length > 1) {
-      const removed = chunks.shift()!;
-      size -= removed.length;
-    }
-
-    this.sizes.set(sessionId, size);
+    ring.push(data);
   }
 
   get(sessionId: string): string[] {
-    return this.buffers.get(sessionId) ?? [];
+    return this.buffers.get(sessionId)?.toArray() ?? [];
   }
 
   remove(sessionId: string): void {
     this.buffers.delete(sessionId);
-    this.sizes.delete(sessionId);
   }
 
   clear(): void {
     this.buffers.clear();
-    this.sizes.clear();
   }
 }
 
@@ -131,6 +200,10 @@ export class RelayClient extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private shouldReconnect = false;
+  private isHandlingAuthFailure = false;
+  private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private tokenRefreshRetries = 0;
+  private static readonly MAX_TOKEN_REFRESH_RETRIES = 10;
 
   // Heartbeat state
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -138,10 +211,20 @@ export class RelayClient extends EventEmitter {
 
   private started = false;
 
+  // Analytics
+  private lastPingTime = 0;
+  private connectSpan: Span | null = null;
+  private errorSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Rate limiters
   private inputLimiter = new RateLimiter(30, 30); // 30 inputs/sec per key
   private browseLimiter = new RateLimiter(10, 10); // 10 browse requests/sec
   private createSessionLimiter = new RateLimiter(1, 0.2); // 1 per 5 seconds
+
+  // Cached driver list (avoids re-checking installed status on every poll)
+  private cachedDriversResult: Array<{ name: string; displayName: string; installed: boolean; models: any[] }> | null = null;
+  private cachedDriversTimestamp = 0;
+  private static readonly DRIVERS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
     super();
@@ -162,6 +245,13 @@ export class RelayClient extends EventEmitter {
     this.started = true;
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
+
+    // Clean up stale worktree manifest entries from previous sessions
+    const projectCwds = ticketTracker.getTrackedProjectCwds();
+    const cwd = projectCwds[0] ?? process.cwd();
+    await pruneStaleEntries(cwd).catch((err) =>
+      debugLog(`relay: worktree prune on startup failed: ${err}`),
+    );
 
     await this.watchSessions();
     await this.connect();
@@ -187,6 +277,19 @@ export class RelayClient extends EventEmitter {
 
     this.clearReconnectTimer();
     this.clearHeartbeat();
+    this.clearTokenRefreshTimer();
+
+    // Clean up orphaned connect span
+    if (this.connectSpan) {
+      this.connectSpan.end();
+      this.connectSpan = null;
+    }
+
+    // Clean up error safety timer
+    if (this.errorSafetyTimer) {
+      clearTimeout(this.errorSafetyTimer);
+      this.errorSafetyTimer = null;
+    }
 
     // Untrack all sessions
     for (const tracked of this.trackedSessions.values()) {
@@ -194,6 +297,7 @@ export class RelayClient extends EventEmitter {
     }
     this.trackedSessions.clear();
     this.replayBuffer.clear();
+    this.cachedDriversResult = null;
     clearViewerCounts();
     this.inputLimiter.clear();
     this.browseLimiter.clear();
@@ -220,8 +324,18 @@ export class RelayClient extends EventEmitter {
     }
 
     setRelayConnectionStatus("connecting");
+    this.connectSpan = startTransaction("relay.connect", "websocket.connect");
 
     try {
+      // Clean up previous WebSocket if it exists (e.g. on reconnect)
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        if (this.ws.readyState === this.ws.OPEN || this.ws.readyState === this.ws.CONNECTING) {
+          this.ws.close();
+        }
+        this.ws = null;
+      }
+
       // Dynamic import — ws is a dependency we expect to be available
       const { default: WebSocket } = await import("ws");
 
@@ -230,9 +344,14 @@ export class RelayClient extends EventEmitter {
 
       this.ws.on("open", () => {
         debugLog("relay: connected to relay server");
+        this.connectSpan?.end();
+        this.connectSpan = null;
         setRelayConnectionStatus("authenticating");
-        this.send({ type: "cli_auth", token: token! });
+        this.send({ type: "cli_auth", token });
         this.startHeartbeat();
+        trackCliEvent("cli_relay_connected", {
+          attempt: this.reconnectAttempt,
+        });
       });
 
       this.ws.on("message", (raw) => {
@@ -255,12 +374,18 @@ export class RelayClient extends EventEmitter {
         this.clearHeartbeat();
         clearViewerCounts();
 
+        // Cancel the error handler safety-net timer — close already fired
+        if (this.errorSafetyTimer) {
+          clearTimeout(this.errorSafetyTimer);
+          this.errorSafetyTimer = null;
+        }
+
         // Clear viewer keys on disconnect — viewers must re-handshake
         for (const tracked of this.trackedSessions.values()) {
           tracked.viewerKeys.clear();
         }
 
-        if (this.shouldReconnect) {
+        if (this.shouldReconnect && !this.isHandlingAuthFailure) {
           setRelayConnectionStatus("disconnected");
           this.scheduleReconnect();
         }
@@ -268,11 +393,34 @@ export class RelayClient extends EventEmitter {
 
       this.ws.on("error", (err) => {
         debugLog(`relay: WebSocket error: ${err.message}`);
+        if (this.connectSpan) {
+          this.connectSpan.setStatus({ code: 2, message: err.message });
+          this.connectSpan.end();
+          this.connectSpan = null;
+        }
         setRelayConnectionStatus("error", err.message);
+        // Note: "error" is always followed by "close" in the ws library,
+        // so reconnect is handled in the "close" handler. If for some reason
+        // "close" doesn't fire, schedule reconnect as a safety net.
+        this.errorSafetyTimer = setTimeout(() => {
+          this.errorSafetyTimer = null;
+          if (this.ws && this.shouldReconnect && this.ws.readyState > 1) {
+            debugLog("relay: error handler safety net — forcing reconnect");
+            this.ws = null;
+            this.clearHeartbeat();
+            this.scheduleReconnect();
+          }
+        }, 5000);
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: failed to connect: ${message}`);
+      // End orphaned connect span
+      if (this.connectSpan) {
+        this.connectSpan.setStatus({ code: 2, message });
+        this.connectSpan.end();
+        this.connectSpan = null;
+      }
       setRelayConnectionStatus("error", message);
 
       if (this.shouldReconnect) {
@@ -289,8 +437,10 @@ export class RelayClient extends EventEmitter {
     switch (msg.type) {
       case "relay_auth_ok":
         debugLog("relay: authenticated");
-        setRelayConnectionStatus("connected");
+        setRelayConnectionStatus("connected", undefined, 0);
         this.reconnectAttempt = 0;
+        this.isHandlingAuthFailure = false;
+        this.scheduleTokenRefresh();
         // Register all current sessions
         this.registerAllSessions();
         break;
@@ -319,6 +469,8 @@ export class RelayClient extends EventEmitter {
         debugLog(`relay: viewer ${msg.viewerId} left session ${msg.sessionId}`);
         updateViewerCount(msg.sessionId, -1);
         this.cleanupViewerCrypto(msg.sessionId, msg.viewerId);
+        this.browseLimiter.removeKey(msg.viewerId);
+        this.inputLimiter.removeKey(msg.viewerId);
         break;
 
       case "relay_create_session":
@@ -334,6 +486,12 @@ export class RelayClient extends EventEmitter {
         break;
 
       case "relay_ping":
+        if (this.lastPingTime > 0) {
+          const latencyMs = Date.now() - this.lastPingTime;
+          trackCliEvent("cli_relay_latency", { latencyMs });
+          Sentry.setMeasurement("relay.ping_latency", latencyMs, "millisecond");
+        }
+        this.lastPingTime = Date.now();
         this.send({ type: "cli_pong" });
         this.resetPongTimer();
         break;
@@ -374,19 +532,30 @@ export class RelayClient extends EventEmitter {
       case "relay_list_drivers":
         this.handleListDrivers(msg.viewerId);
         break;
+
+      case "relay_user_settings":
+        this.handleUserSettings(msg);
+        break;
+
+      case "relay_repo_detected":
+        this.handleRepoDetected(msg);
+        break;
     }
   }
 
   private async handleAuthFailure(): Promise<void> {
+    this.isHandlingAuthFailure = true;
     debugLog("relay: attempting token refresh...");
     const newToken = await refreshAuthToken();
     if (newToken) {
       debugLog("relay: token refreshed, reconnecting");
       this.reconnectAttempt = 0;
+      this.isHandlingAuthFailure = false;
       this.scheduleReconnect();
     } else {
-      debugLog("relay: token refresh failed — giving up");
-      this.shouldReconnect = false;
+      debugLog("relay: token refresh failed — will retry on next reconnect");
+      this.isHandlingAuthFailure = false;
+      this.scheduleReconnect();
     }
   }
 
@@ -417,13 +586,22 @@ export class RelayClient extends EventEmitter {
   }
 
   private resolveCwd(cwd: string): string {
+    const home = process.env.HOME ?? os.homedir();
+    let resolved: string;
     if (cwd.startsWith("~/")) {
-      return cwd.replace("~", process.env.HOME ?? os.homedir());
+      resolved = cwd.replace("~", home);
+    } else if (cwd === "~") {
+      resolved = home;
+    } else {
+      resolved = cwd;
     }
-    if (cwd === "~") {
-      return process.env.HOME ?? os.homedir();
+    // Normalize to prevent path traversal (e.g. ../../etc/passwd)
+    resolved = path.resolve(resolved);
+    // Validate the resolved path is within the user's home directory
+    if (!resolved.startsWith(home + path.sep) && resolved !== home) {
+      throw new Error(`Path traversal blocked: ${cwd} resolves outside home directory`);
     }
-    return cwd;
+    return resolved;
   }
 
   private handleRelayCreateSession(driverName: string, cwd: string): void {
@@ -448,118 +626,158 @@ export class RelayClient extends EventEmitter {
     }
   }
 
-  private async handleListDrivers(viewerId: string): Promise<void> {
-    const allDrivers = getAllDrivers();
-    const drivers = await Promise.all(
-      allDrivers.map(async (d) => ({
-        name: d.name,
-        displayName: d.displayName,
-        installed: await d.checkInstalled(),
-        models: d.listModels(),
-      })),
+  private handleRepoDetected(msg: RelayToCliMsg & { type: "relay_repo_detected" }): void {
+    debugLog(
+      `relay: repo detected session=${msg.sessionId} org=${msg.orgName} repo=${msg.repoFullName}`,
     );
-    this.send({ type: "cli_drivers_result", viewerId, drivers });
+
+    setSessionOrgSettings(msg.sessionId, {
+      orgId: msg.orgId,
+      orgName: msg.orgName,
+      repoId: msg.repoId,
+      repoName: msg.repoName,
+      repoFullName: msg.repoFullName,
+      settings: msg.settings,
+      enforced: msg.enforced,
+    });
+
+    this.emit("repo_detected", {
+      sessionId: msg.sessionId,
+      orgId: msg.orgId,
+      orgName: msg.orgName,
+      repoFullName: msg.repoFullName,
+      settings: msg.settings,
+      enforced: msg.enforced,
+    });
+  }
+
+  private handleUserSettings(msg: RelayToCliMsg & { type: "relay_user_settings" }): void {
+    debugLog("relay: received user settings");
+    setWorktreeDefaults(msg.worktreeDefaults);
+
+    // Sync to local config file
+    settingsStore.getState().update({
+      worktree: msg.worktreeDefaults,
+    });
+  }
+
+  // TODO: Web app polls this every 5s (code-relay-server epics.ts refreshSessionsPollingEpic).
+  // Consider increasing interval to 30-60s or switching to push-based updates.
+  private async handleListDrivers(viewerId: string): Promise<void> {
+    const now = Date.now();
+    if (!this.cachedDriversResult || now - this.cachedDriversTimestamp > RelayClient.DRIVERS_CACHE_TTL_MS) {
+      const allDrivers = getAllDrivers();
+      this.cachedDriversResult = await Promise.all(
+        allDrivers.map(async (d) => ({
+          name: d.name,
+          displayName: d.displayName,
+          installed: await d.checkInstalled(),
+          models: d.listModels(),
+        })),
+      );
+      this.cachedDriversTimestamp = now;
+    }
+    this.send({ type: "cli_drivers_result", viewerId, drivers: this.cachedDriversResult });
+  }
+
+  private async browseFileSystem(
+    requestId: string,
+    viewerId: string,
+    dirPath: string,
+    includeFiles: boolean,
+  ): Promise<void> {
+    if (!this.browseLimiter.allow(viewerId)) {
+      debugLog(`relay: rate limited browse from ${viewerId}`);
+      const base = { requestId, viewerId, resolvedPath: dirPath, directories: [], error: "Rate limited — try again" };
+      this.send(includeFiles
+        ? { type: "cli_browse_files_result", ...base, files: [] }
+        : { type: "cli_browse_dir_result", ...base });
+      return;
+    }
+
+    let resolvedPath: string;
+    try {
+      resolvedPath = this.resolveCwd(dirPath);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: browse path blocked: ${message}`);
+      const base = { requestId, viewerId, resolvedPath: dirPath, directories: [], error: message };
+      this.send(includeFiles
+        ? { type: "cli_browse_files_result", ...base, files: [] }
+        : { type: "cli_browse_dir_result", ...base });
+      return;
+    }
+
+    try {
+      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      const sortLocale = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+      const directories = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+        .map((e) => e.name)
+        .sort(sortLocale);
+
+      if (includeFiles) {
+        const files = entries
+          .filter((e) => e.isFile() && !e.name.startsWith("."))
+          .map((e) => e.name)
+          .sort(sortLocale);
+        this.send({
+          type: "cli_browse_files_result",
+          requestId,
+          viewerId,
+          resolvedPath: path.resolve(resolvedPath),
+          directories,
+          files,
+          error: null,
+        });
+      } else {
+        this.send({
+          type: "cli_browse_dir_result",
+          requestId,
+          viewerId,
+          resolvedPath: path.resolve(resolvedPath),
+          directories,
+          error: null,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugLog(`relay: browse failed: ${message}`);
+      const base = { requestId, viewerId, resolvedPath: path.resolve(resolvedPath), directories: [], error: message };
+      this.send(includeFiles
+        ? { type: "cli_browse_files_result", ...base, files: [] }
+        : { type: "cli_browse_dir_result", ...base });
+    }
   }
 
   private async handleBrowseDir(requestId: string, viewerId: string, dirPath: string): Promise<void> {
-    if (!this.browseLimiter.allow(viewerId)) {
-      debugLog(`relay: rate limited browse dir from ${viewerId}`);
-      this.send({
-        type: "cli_browse_dir_result",
-        requestId,
-        viewerId,
-        resolvedPath: dirPath,
-        directories: [],
-        error: "Rate limited — try again",
-      });
-      return;
-    }
-
-    const resolvedPath = this.resolveCwd(dirPath);
-
-    try {
-      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-      const directories = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-        .map((e) => e.name)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-
-      this.send({
-        type: "cli_browse_dir_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories,
-        error: null,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: browse dir failed: ${message}`);
-      this.send({
-        type: "cli_browse_dir_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories: [],
-        error: message,
-      });
-    }
+    return this.browseFileSystem(requestId, viewerId, dirPath, false);
   }
 
   private async handleBrowseFiles(requestId: string, viewerId: string, dirPath: string): Promise<void> {
-    if (!this.browseLimiter.allow(viewerId)) {
-      debugLog(`relay: rate limited browse files from ${viewerId}`);
+    return this.browseFileSystem(requestId, viewerId, dirPath, true);
+  }
+
+  private async handleRequestGitInfo(requestId: string, viewerId: string, cwd: string): Promise<void> {
+    let resolvedPath: string;
+    try {
+      resolvedPath = this.resolveCwd(cwd);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       this.send({
-        type: "cli_browse_files_result",
+        type: "cli_git_info_result",
         requestId,
         viewerId,
-        resolvedPath: dirPath,
-        directories: [],
-        files: [],
-        error: "Rate limited — try again",
+        branch: null,
+        remoteUrl: null,
+        commits: [],
+        changedFiles: 0,
+        isClean: true,
+        error: message,
       });
       return;
     }
 
-    const resolvedPath = this.resolveCwd(dirPath);
-
-    try {
-      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-      const directories = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-        .map((e) => e.name)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-      const files = entries
-        .filter((e) => e.isFile() && !e.name.startsWith("."))
-        .map((e) => e.name)
-        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-
-      this.send({
-        type: "cli_browse_files_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories,
-        files,
-        error: null,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      debugLog(`relay: browse files failed: ${message}`);
-      this.send({
-        type: "cli_browse_files_result",
-        requestId,
-        viewerId,
-        resolvedPath: path.resolve(resolvedPath),
-        directories: [],
-        files: [],
-        error: message,
-      });
-    }
-  }
-
-  private async handleRequestGitInfo(requestId: string, viewerId: string, cwd: string): Promise<void> {
-    const resolvedPath = this.resolveCwd(cwd);
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
     const execFileAsync = promisify(execFile);
@@ -590,10 +808,10 @@ export class RelayClient extends EventEmitter {
         const lines = logResult.value.split("\n");
         for (let i = 0; i + 3 < lines.length; i += 4) {
           commits.push({
-            hash: lines[i]!,
-            message: lines[i + 1]!,
-            author: lines[i + 2]!,
-            timestamp: parseInt(lines[i + 3]!, 10),
+            hash: lines[i] ?? "",
+            message: lines[i + 1] ?? "",
+            author: lines[i + 2] ?? "",
+            timestamp: parseInt(lines[i + 3] ?? "0", 10),
           });
         }
       }
@@ -632,6 +850,44 @@ export class RelayClient extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
+  // Phase 3: Shared helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolve worktree for a ticket — reuses existing worktree or creates a new one.
+   * Returns the effective cwd, worktree path, and branch name.
+   */
+  private async resolveWorktree(
+    resolvedCwd: string,
+    ticketId: string,
+    useWorktree: boolean | undefined,
+  ): Promise<{ effectiveCwd: string; worktreePath: string | null; branchName: string | null }> {
+    if (!useWorktree) return { effectiveCwd: resolvedCwd, worktreePath: null, branchName: null };
+    const existingWt = ticketTracker.getWorktreeInfo(ticketId);
+    if (existingWt?.worktreePath) {
+      return {
+        effectiveCwd: existingWt.worktreePath,
+        worktreePath: existingWt.worktreePath,
+        branchName: existingWt.branchName,
+      };
+    }
+    const wt = await createWorktree(resolvedCwd, ticketId);
+    if (wt) {
+      return { effectiveCwd: wt.worktreePath, worktreePath: wt.worktreePath, branchName: wt.branchName };
+    }
+    return { effectiveCwd: resolvedCwd, worktreePath: null, branchName: null };
+  }
+
+  /**
+   * Merge org-level system instructions with per-request instructions, deduped.
+   */
+  private mergeInstructions(sessionId: string | undefined, systemInstructions: string[]): string[] {
+    const orgSettings = sessionId ? getSessionOrgSettings(sessionId) : undefined;
+    const orgInstructions = orgSettings?.settings.systemInstructions?.map((i) => i.content) ?? [];
+    return [...new Set([...orgInstructions, ...systemInstructions])];
+  }
+
+  // -------------------------------------------------------------------------
   // Phase 3: Ticket dev-loop handlers
   // -------------------------------------------------------------------------
 
@@ -639,27 +895,10 @@ export class RelayClient extends EventEmitter {
     const resolvedCwd = this.resolveCwd(msg.cwd);
     const iteration = msg.iteration ?? 0;
 
-    // --- Worktree resolution ---
-    let effectiveCwd = resolvedCwd;
-    let worktreePath: string | null = null;
-    let branchName: string | null = null;
+    const { effectiveCwd, worktreePath, branchName } =
+      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
 
-    if (msg.useWorktree) {
-      // Reuse existing worktree if one exists for this ticket
-      const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
-      if (existingWt?.worktreePath) {
-        effectiveCwd = existingWt.worktreePath;
-        worktreePath = existingWt.worktreePath;
-        branchName = existingWt.branchName;
-      } else {
-        const wt = await createWorktree(resolvedCwd, msg.ticketId);
-        if (wt) {
-          effectiveCwd = wt.worktreePath;
-          worktreePath = wt.worktreePath;
-          branchName = wt.branchName;
-        }
-      }
-    }
+    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
 
     const promptParts = [
       "You are planning the implementation of a ticket.",
@@ -667,7 +906,7 @@ export class RelayClient extends EventEmitter {
       `Title: ${msg.ticketTitle}`,
       `Description: ${msg.ticketDescription}`,
       "",
-      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      ...allInstructions.map((i) => `System Instruction:\n${i}`),
       "",
     ];
 
@@ -706,9 +945,17 @@ export class RelayClient extends EventEmitter {
     debugLog(`relay: start planning ticket=${msg.ticketId} iteration=${iteration} cwd=${effectiveCwd} driver=${driverName}${branchName ? ` branch=${branchName}` : ""}`);
 
     try {
-      const session = appStore.getState().createSession(driverName, effectiveCwd);
+      // Non-interactive: minimal scrollback to save memory (raw output is captured separately)
+      const session = appStore.getState().createSession(driverName, effectiveCwd, undefined, undefined, 1);
       if (!session) {
         debugLog("relay: failed to create planning session");
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: "",
+          status: "error",
+          message: `Failed to create planning session (driver "${driverName}" not found?)`,
+        });
         return;
       }
 
@@ -725,9 +972,15 @@ export class RelayClient extends EventEmitter {
       // Accumulate raw PTY output for plan capture.
       // We can't rely on xterm buffer because the app-store's exit listener
       // calls kill() → xterm.dispose() before we can read it.
-      let rawOutput = "";
+      // Cap at 2MB to prevent unbounded memory growth in long planning sessions.
+      const RAW_OUTPUT_MAX = 2 * 1024 * 1024;
+      const rawChunks: string[] = [];
+      let rawSize = 0;
       const rawUnsub = session.onRawData((data) => {
-        rawOutput += data;
+        if (rawSize < RAW_OUTPUT_MAX) {
+          rawChunks.push(data);
+          rawSize += data.length;
+        }
       });
 
       session.start({
@@ -742,11 +995,26 @@ export class RelayClient extends EventEmitter {
       appStore.getState().setSessionMeta(session.id, { interactive: false, command });
       this.registerSession(session.id);
 
+      // Safety timeout: force-close planning sessions that run too long
+      const PLANNING_TIMEOUT_MS = 10 * 60 * 1000;
+      const safetyTimer = setTimeout(() => {
+        rawUnsub();
+        rawChunks.length = 0;
+        rawSize = 0;
+        if (getSessionInstance(session.id)) {
+          debugLog(`relay: planning session ${session.id} timed out after 10min, force closing`);
+          appStore.getState().closeSession(session.id);
+        }
+      }, PLANNING_TIMEOUT_MS);
+
       // In print mode, claude -p exits when done — listen for exit
       const onExit = () => {
+        clearTimeout(safetyTimer);
         rawUnsub();
         // Strip ANSI escape sequences from raw PTY output
-        const plainText = rawOutput.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
+        const plainText = stripAnsi(rawChunks.join("")).trim();
+        rawChunks.length = 0; // Release for GC
+        rawSize = 0;
 
         ticketTracker.updateStatus(msg.ticketId, "plan_ready");
 
@@ -778,26 +1046,10 @@ export class RelayClient extends EventEmitter {
   private async handleStartInteractivePlanning(msg: RelayStartInteractivePlanningMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
 
-    // --- Worktree resolution ---
-    let effectiveCwd = resolvedCwd;
-    let worktreePath: string | null = null;
-    let branchName: string | null = null;
+    const { effectiveCwd, worktreePath, branchName } =
+      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
 
-    if (msg.useWorktree) {
-      const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
-      if (existingWt?.worktreePath) {
-        effectiveCwd = existingWt.worktreePath;
-        worktreePath = existingWt.worktreePath;
-        branchName = existingWt.branchName;
-      } else {
-        const wt = await createWorktree(resolvedCwd, msg.ticketId);
-        if (wt) {
-          effectiveCwd = wt.worktreePath;
-          worktreePath = wt.worktreePath;
-          branchName = wt.branchName;
-        }
-      }
-    }
+    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
 
     const planningPrompt = [
       "You are planning the implementation of a ticket.",
@@ -805,7 +1057,7 @@ export class RelayClient extends EventEmitter {
       `Title: ${msg.ticketTitle}`,
       `Description: ${msg.ticketDescription}`,
       "",
-      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      ...allInstructions.map((i) => `System Instruction:\n${i}`),
       "",
       "Please analyze the requirements and create a detailed implementation plan. Include:",
       "- Files to create/modify",
@@ -820,6 +1072,13 @@ export class RelayClient extends EventEmitter {
       const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create interactive planning session");
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: "",
+          status: "error",
+          message: `Failed to create interactive planning session (driver "${driverName}" not found?)`,
+        });
         return;
       }
 
@@ -850,25 +1109,11 @@ export class RelayClient extends EventEmitter {
   private async handleStartImplementation(msg: RelayStartImplementationMsg): Promise<void> {
     const resolvedCwd = this.resolveCwd(msg.cwd);
 
-    // --- Worktree resolution ---
-    let effectiveCwd = resolvedCwd;
-    let worktreePath: string | null = null;
-    let branchName: string | null = null;
+    // Implementation always tries to reuse an existing worktree first (from planning phase)
+    const { effectiveCwd, worktreePath, branchName } =
+      await this.resolveWorktree(resolvedCwd, msg.ticketId, msg.useWorktree);
 
-    // Reuse worktree from planning phase if one exists
-    const existingWt = ticketTracker.getWorktreeInfo(msg.ticketId);
-    if (existingWt?.worktreePath) {
-      effectiveCwd = existingWt.worktreePath;
-      worktreePath = existingWt.worktreePath;
-      branchName = existingWt.branchName;
-    } else if (msg.useWorktree) {
-      const wt = await createWorktree(resolvedCwd, msg.ticketId);
-      if (wt) {
-        effectiveCwd = wt.worktreePath;
-        worktreePath = wt.worktreePath;
-        branchName = wt.branchName;
-      }
-    }
+    const allInstructions = this.mergeInstructions(msg.sessionId, msg.systemInstructions);
 
     const promptParts = [
       "You are implementing a plan. Follow the plan exactly.",
@@ -876,7 +1121,7 @@ export class RelayClient extends EventEmitter {
       "Plan:",
       msg.plan,
       "",
-      ...msg.systemInstructions.map((i) => `System Instruction:\n${i}`),
+      ...allInstructions.map((i) => `System Instruction:\n${i}`),
     ];
 
     if (branchName) {
@@ -901,6 +1146,13 @@ export class RelayClient extends EventEmitter {
       const session = appStore.getState().createSession(driverName, effectiveCwd);
       if (!session) {
         debugLog("relay: failed to create implementation session");
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: "",
+          status: "error",
+          message: `Failed to create implementation session (driver "${driverName}" not found?)`,
+        });
         return;
       }
 
@@ -936,9 +1188,14 @@ export class RelayClient extends EventEmitter {
       this.registerSession(session.id);
 
       // Monitor session status for implementation completion
+      const cleanup = () => {
+        session.removeListener("status", onStatus);
+        session.removeListener("exit", onExitFallback);
+      };
+
       const onStatus = (status: string) => {
         if (status === "waiting_input" || status === "exited") {
-          session.removeListener("status", onStatus);
+          cleanup();
 
           const plainText = session.getPlainText(500).join("\n");
 
@@ -961,7 +1218,31 @@ export class RelayClient extends EventEmitter {
           });
         }
       };
+
+      const onExitFallback = () => {
+        cleanup();
+
+        ticketTracker.updateStatus(msg.ticketId, "done");
+
+        this.send({
+          type: "cli_implementation_done",
+          ticketId: msg.ticketId,
+          sessionId: session.id,
+          summary: "(session exited)",
+          gitContext: { branch: branchName ?? undefined },
+        });
+
+        this.send({
+          type: "cli_ticket_status",
+          ticketId: msg.ticketId,
+          sessionId: session.id,
+          status: "done",
+          branchName: branchName ?? undefined,
+        });
+      };
+
       session.on("status", onStatus);
+      session.once("exit", onExitFallback);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`relay: handleStartImplementation error: ${message}`);
@@ -1085,6 +1366,8 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private async sendPtyData(tracked: TrackedSession, rawData: string): Promise<void> {
+    const encryptStart = performance.now();
+
     if (tracked.sck) {
       // E2E enabled — encrypt with SCK
       try {
@@ -1097,6 +1380,17 @@ export class RelayClient extends EventEmitter {
           data: encrypted,
           seq,
         });
+
+        // Sample 1 in 100 to avoid event flood
+        if (Math.random() < 0.01) {
+          const encryptMs = performance.now() - encryptStart;
+          trackCliEvent("cli_pty_data_sent", {
+            sessionId: tracked.sessionId,
+            dataLenBytes: rawData.length,
+            encrypted: true,
+            encryptMs: Math.round(encryptMs * 100) / 100,
+          });
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         debugLog(`relay: encrypt PTY data failed: ${message}`);
@@ -1114,6 +1408,16 @@ export class RelayClient extends EventEmitter {
         sessionId: tracked.sessionId,
         data: base64,
       });
+
+      // Sample 1 in 100 to avoid event flood
+      if (Math.random() < 0.01) {
+        trackCliEvent("cli_pty_data_sent", {
+          sessionId: tracked.sessionId,
+          dataLenBytes: rawData.length,
+          encrypted: false,
+          encryptMs: 0,
+        });
+      }
     }
   }
 
@@ -1143,15 +1447,29 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
 
   private async watchSessions(): Promise<void> {
-    let prevIds = new Set(appStore.getState().sessions.map((s) => s.id));
+    let prevIdList = appStore.getState().sessions.map((s) => s.id);
 
     // Track existing sessions
     for (const s of appStore.getState().sessions) {
       await this.trackSession(s.id);
     }
 
-    this.storeUnsub = appStore.subscribe((state) => {
-      const currentIds = new Set(state.sessions.map((s) => s.id));
+    this.storeUnsub = appStore.subscribe((state, prevState) => {
+      // Skip if session list reference unchanged (status/metadata-only updates)
+      if (state.sessions === prevState.sessions) return;
+
+      const currentIdList = state.sessions.map((s) => s.id);
+
+      // Fast path: same length and same IDs in order → no add/remove
+      if (
+        currentIdList.length === prevIdList.length &&
+        currentIdList.every((id, i) => id === prevIdList[i])
+      ) {
+        return;
+      }
+
+      const prevIds = new Set(prevIdList);
+      const currentIds = new Set(currentIdList);
 
       // New sessions
       for (const id of currentIds) {
@@ -1160,11 +1478,15 @@ export class RelayClient extends EventEmitter {
           this.registerSession(id);
           // Then track async for E2E crypto and PTY data streaming
           this.trackSession(id).then(() => {
+            // Guard: session may have been removed while trackSession was pending
+            if (!this.trackedSessions.has(id)) return;
             // Re-register with public key once E2E keys are generated
             const tracked = this.trackedSessions.get(id);
             if (tracked?.keyPair) {
               this.registerSession(id);
             }
+          }).catch((err) => {
+            debugLog(`relay: trackSession failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
           });
         }
       }
@@ -1183,7 +1505,7 @@ export class RelayClient extends EventEmitter {
         }
       }
 
-      prevIds = currentIds;
+      prevIdList = currentIdList;
     });
   }
 
@@ -1218,6 +1540,7 @@ export class RelayClient extends EventEmitter {
       sck,
       viewerKeys: new Map(),
       encryptSeq: 0,
+      metadataTimer: null,
     };
 
     // Stream raw PTY data to relay
@@ -1249,7 +1572,6 @@ export class RelayClient extends EventEmitter {
 
     // Forward metadata changes (throttled — every 10s max)
     let lastMetadataSend = 0;
-    let metadataTimer: ReturnType<typeof setTimeout> | null = null;
     const sendMetadata = () => {
       const data = sessionMetadataStore.get(sessionId);
       if (!data) return;
@@ -1273,9 +1595,9 @@ export class RelayClient extends EventEmitter {
       const now = Date.now();
       if (now - lastMetadataSend >= 10_000) {
         sendMetadata();
-      } else if (!metadataTimer) {
-        metadataTimer = setTimeout(() => {
-          metadataTimer = null;
+      } else if (!tracked.metadataTimer) {
+        tracked.metadataTimer = setTimeout(() => {
+          tracked.metadataTimer = null;
           sendMetadata();
         }, 10_000 - (now - lastMetadataSend));
       }
@@ -1285,9 +1607,9 @@ export class RelayClient extends EventEmitter {
     tracked.statusUnsub = () => {
       session.removeListener("status", onStatus);
       session.removeListener("metadata", onMetadata);
-      if (metadataTimer) {
-        clearTimeout(metadataTimer);
-        metadataTimer = null;
+      if (tracked.metadataTimer) {
+        clearTimeout(tracked.metadataTimer);
+        tracked.metadataTimer = null;
       }
     };
 
@@ -1395,6 +1717,69 @@ export class RelayClient extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
+  // Proactive token refresh
+  // -------------------------------------------------------------------------
+
+  private scheduleTokenRefresh(): void {
+    this.clearTokenRefreshTimer();
+
+    const token = settingsStore.getState().config.relay.authToken;
+    if (!token) return;
+
+    const exp = getTokenExpiry(token);
+    if (!exp) return;
+
+    // Refresh 5 minutes before expiry
+    const refreshAt = (exp * 1000) - (5 * 60 * 1000);
+    const delay = refreshAt - Date.now();
+
+    if (delay <= 0) {
+      // Token is already close to expiry — refresh immediately
+      debugLog("relay: token near expiry, refreshing now");
+      this.performProactiveRefresh();
+      return;
+    }
+
+    debugLog(`relay: scheduling token refresh in ${Math.round(delay / 1000 / 60)}m`);
+    this.tokenRefreshTimer = setTimeout(() => {
+      this.tokenRefreshTimer = null;
+      this.performProactiveRefresh();
+    }, delay);
+  }
+
+  private async performProactiveRefresh(): Promise<void> {
+    debugLog("relay: proactive token refresh...");
+    const newToken = await refreshAuthToken();
+    if (newToken) {
+      debugLog("relay: token refreshed proactively, reconnecting with new token");
+      this.reconnectAttempt = 0;
+      this.tokenRefreshRetries = 0;
+      if (this.ws) {
+        this.ws.close(1000, "Token refreshed");
+      }
+    } else {
+      this.tokenRefreshRetries++;
+      if (this.tokenRefreshRetries >= RelayClient.MAX_TOKEN_REFRESH_RETRIES) {
+        debugLog(`relay: token refresh failed after ${this.tokenRefreshRetries} attempts, giving up`);
+        this.tokenRefreshRetries = 0;
+        return;
+      }
+      debugLog(`relay: proactive token refresh failed (attempt ${this.tokenRefreshRetries}/${RelayClient.MAX_TOKEN_REFRESH_RETRIES}), will retry in 1 minute`);
+      this.tokenRefreshTimer = setTimeout(() => {
+        this.tokenRefreshTimer = null;
+        this.performProactiveRefresh();
+      }, 60_000);
+    }
+  }
+
+  private clearTokenRefreshTimer(): void {
+    if (this.tokenRefreshTimer) {
+      clearTimeout(this.tokenRefreshTimer);
+      this.tokenRefreshTimer = null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Reconnection with exponential backoff
   // -------------------------------------------------------------------------
 
@@ -1402,10 +1787,15 @@ export class RelayClient extends EventEmitter {
     this.clearReconnectTimer();
 
     const delays = [1000, 2000, 4000, 8000, 16000, 30000];
-    const delay = delays[Math.min(this.reconnectAttempt, delays.length - 1)]!;
+    const delay = delays[Math.min(this.reconnectAttempt, delays.length - 1)] ?? 30000;
     this.reconnectAttempt++;
 
     debugLog(`relay: reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`);
+    setRelayConnectionStatus("connecting", undefined, this.reconnectAttempt);
+    trackCliEvent("cli_relay_reconnect", {
+      attempt: this.reconnectAttempt,
+      delayMs: delay,
+    });
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -1425,6 +1815,13 @@ export class RelayClient extends EventEmitter {
   // -------------------------------------------------------------------------
   // Send helper
   // -------------------------------------------------------------------------
+
+  public sendUserSettings(worktreeDefaults: Partial<{ planning: boolean; interactivePlanning: boolean; implementation: boolean }>): void {
+    this.send({
+      type: "cli_set_user_settings",
+      worktreeDefaults,
+    });
+  }
 
   private send(msg: CliToRelayMsg): void {
     if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return;

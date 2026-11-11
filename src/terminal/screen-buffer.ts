@@ -42,21 +42,28 @@ export function gridToSpans(grid: CellGrid): ScreenContent {
     }
 
     const spans: SpanLine = [];
+    const first = row[0];
+    if (!first) {
+      lines.push([]);
+      continue;
+    }
     let current: Span = {
-      text: row[0]!.char,
-      fg: row[0]!.fg,
-      bg: row[0]!.bg,
-      bold: row[0]!.bold,
-      italic: row[0]!.italic,
-      underline: row[0]!.underline,
-      dim: row[0]!.dim,
-      inverse: row[0]!.inverse,
-      strikethrough: row[0]!.strikethrough,
+      text: first.char,
+      fg: first.fg,
+      bg: first.bg,
+      bold: first.bold,
+      italic: first.italic,
+      underline: first.underline,
+      dim: first.dim,
+      inverse: first.inverse,
+      strikethrough: first.strikethrough,
     };
 
     for (let i = 1; i < row.length; i++) {
-      const cell = row[i]!;
-      if (cellsMatch(cell, row[i - 1]!)) {
+      const cell = row[i];
+      const prev = row[i - 1];
+      if (!cell || !prev) continue;
+      if (cellsMatch(cell, prev)) {
         current.text += cell.char;
       } else {
         spans.push(current);
@@ -97,13 +104,14 @@ export function gridToSpans(grid: CellGrid): ScreenContent {
 export class ScreenBuffer {
   private content: ScreenContent = [];
   private dirty = false;
+  private paused = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private listeners: Set<(content: ScreenContent) => void> = new Set();
   private extractGridFn: (() => CellGrid) | null = null;
   private lastFlushTime = 0;
   private interval = 0;
 
-  constructor(private targetFps: number = 30) {}
+  constructor(private targetFps: number = 15) {}
 
   markDirty(): void {
     this.dirty = true;
@@ -127,6 +135,7 @@ export class ScreenBuffer {
 
   start(extractGrid: () => CellGrid): void {
     if (this.timer) return;
+    this.paused = false;
     this.extractGridFn = extractGrid;
     this.interval = Math.floor(1000 / this.targetFps);
     this.timer = setInterval(() => this.flush(), this.interval);
@@ -137,7 +146,28 @@ export class ScreenBuffer {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.paused = false;
     this.extractGridFn = null;
+    this.listeners.clear();
+    this.content = [];
+  }
+
+  pause(): void {
+    this.paused = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  resume(): void {
+    this.paused = false;
+    if (this.extractGridFn && !this.timer) {
+      this.timer = setInterval(() => this.flush(), this.interval);
+    }
+    if (this.dirty) {
+      this.flush();
+    }
   }
 
   onChange(listener: (content: ScreenContent) => void): () => void {

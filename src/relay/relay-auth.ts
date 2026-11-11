@@ -2,12 +2,18 @@ import http from "node:http";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
 import { settingsStore } from "../store/settings-store.js";
+import {
+  identifyCliUser,
+  clearCliUser,
+  trackCliEvent,
+} from "../analytics/index.js";
+import { setSentryUser, clearSentryUser } from "../analytics/sentry.js";
 
 /**
  * Run the browser-based OAuth login flow:
  * 1. Start a local HTTP server on a random port
  * 2. Open the browser to the auth page with ?port=<port>
- * 3. Wait for the browser to redirect back with ?token=<idToken>&refresh=<refreshToken>
+ * 3. Wait for the browser to redirect back with ?token=<accessToken>&refresh=<refreshToken>
  * 4. Store tokens in settings and shut down the server
  */
 export async function login(): Promise<{ success: boolean; error?: string }> {
@@ -114,6 +120,14 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
 </body>
 </html>`);
 
+        // Identify user in analytics
+        const uid = extractUidFromToken(token);
+        if (uid) {
+          identifyCliUser(uid);
+          setSentryUser(uid);
+        }
+        trackCliEvent("cli_auth_completed");
+
         clearTimeout(timeout);
         server.close();
         resolve({ success: true });
@@ -129,6 +143,8 @@ export async function login(): Promise<{ success: boolean; error?: string }> {
  * Clear stored auth tokens.
  */
 export function logout(): void {
+  clearCliUser();
+  clearSentryUser();
   settingsStore.getState().updateRelay({
     authToken: undefined,
     refreshToken: undefined,
@@ -151,13 +167,12 @@ export function getAuthToken(): string | null {
   return config.relay.authToken ?? null;
 }
 
-// Firebase Web API key (public — same as in the web app)
-// Restricted API key — only allows Firebase Auth (identitytoolkit + securetoken)
-const FIREBASE_API_KEY = "AIzaSyAwJ4OgFu6y4XJCC4AkLdeTmfLygzPwpPE";
+/** Base URL for the CLI token endpoint. */
+const CLI_TOKEN_URL = "https://flaio.ai/api/auth/cli-token";
 
 /**
- * Refresh the Firebase ID token using the stored refresh token.
- * Returns the new ID token, or null if refresh failed.
+ * Refresh the access token using the stored refresh token.
+ * Returns the new access token, or null if refresh failed.
  */
 export async function refreshAuthToken(): Promise<string | null> {
   const { config } = settingsStore.getState();
@@ -165,31 +180,73 @@ export async function refreshAuthToken(): Promise<string | null> {
   if (!refreshToken) return null;
 
   try {
-    const res = await fetch(
-      `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
-      },
-    );
+    const res = await fetch(process.env.CLI_TOKEN_URL || CLI_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+    });
 
     if (!res.ok) return null;
 
     const data = (await res.json()) as {
-      id_token?: string;
-      refresh_token?: string;
+      token?: string;
+      refreshToken?: string;
     };
 
-    if (!data.id_token) return null;
+    if (!data.token) return null;
 
-    // Persist the new tokens
+    // Persist the new tokens (refresh token is rotated)
     settingsStore.getState().updateRelay({
-      authToken: data.id_token,
-      refreshToken: data.refresh_token ?? refreshToken,
+      authToken: data.token,
+      refreshToken: data.refreshToken ?? refreshToken,
     });
 
-    return data.id_token;
+    return data.token;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract UID from JWT payload WITHOUT signature verification.
+ *
+ * This is intentional: the CLI only decodes tokens it received from our own
+ * auth server / Firebase. Signature verification happens server-side when the
+ * token is used to authenticate the WebSocket connection. These helpers are
+ * convenience extractors for display / local logic only — never for
+ * authorization decisions.
+ */
+export function extractUidFromToken(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    return (payload.user_id as string) ?? (payload.sub as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function getTokenExpiry(token: string): number | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString());
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+export function extractEmailFromToken(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+    return (payload.email as string) ?? null;
   } catch {
     return null;
   }

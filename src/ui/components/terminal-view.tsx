@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { ScreenContent, SpanLine, Span } from "../../terminal/screen-buffer.js";
 import type { AgentSession } from "../../agents/agent-session.js";
 import type { SessionState } from "../../store/app-store.js";
+import { useSpinner } from "../hooks/use-spinner.js";
 
 interface TerminalViewProps {
   session: AgentSession | null;
@@ -46,14 +47,56 @@ function renderSpan(span: Span, key: number): React.ReactElement | null {
   );
 }
 
-function renderLine(line: SpanLine, lineIndex: number): React.ReactElement {
+const TerminalLine = React.memo(function TerminalLine({
+  line,
+}: {
+  line: SpanLine;
+}): React.ReactElement {
   return (
-    <Box key={lineIndex} flexDirection="row" height={1}>
+    <Box flexDirection="row" height={1}>
       {line.length === 0 ? (
         <Text> </Text>
       ) : (
         line.map((span, i) => renderSpan(span, i))
       )}
+    </Box>
+  );
+});
+
+/** Build a stable cache key for a SpanLine so React.memo can skip unchanged rows. */
+function lineKey(line: SpanLine): string {
+  if (line.length === 0) return "empty";
+  let k = "";
+  for (const span of line) {
+    k += span.text;
+    if (span.bold) k += "B";
+    if (span.fg) k += span.fg;
+    if (span.bg) k += span.bg;
+    k += "|";
+  }
+  return k;
+}
+
+/** Spinner overlay shown while a session is booting up. */
+function StartingOverlay({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}): React.ReactElement {
+  const frame = useSpinner();
+  return (
+    <Box
+      flexDirection="column"
+      alignItems="center"
+      justifyContent="center"
+      width={width}
+      height={height}
+    >
+      <Text color="yellow">
+        {frame} Starting session…
+      </Text>
     </Box>
   );
 }
@@ -94,6 +137,10 @@ export function TerminalView({
         <Text dimColor>Press Ctrl+T to create a new session</Text>
       </Box>
     );
+  }
+
+  if (sessionState?.status === "starting" && content.length === 0) {
+    return <StartingOverlay width={width} height={height} />;
   }
 
   // Check if this session is non-interactive (print mode)
@@ -138,7 +185,9 @@ export function TerminalView({
           </Box>
         </Box>
       )}
-      {paddedLines.map((line, i) => renderLine(line, i))}
+      {paddedLines.map((line, i) => (
+        <TerminalLine key={`${i}:${lineKey(line)}`} line={line} />
+      ))}
     </Box>
   );
 }

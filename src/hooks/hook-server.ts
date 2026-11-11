@@ -71,8 +71,18 @@ export class HookServer extends EventEmitter {
     });
   }
 
+  private safeWrite(conn: net.Socket, data: string): void {
+    if (!conn.destroyed && conn.writable) {
+      conn.write(data);
+    }
+  }
+
   private handleConnection(conn: net.Socket): void {
     let buffer = "";
+
+    conn.on("error", () => {
+      conn.destroy();
+    });
 
     conn.on("data", (chunk) => {
       buffer += chunk.toString();
@@ -87,7 +97,7 @@ export class HookServer extends EventEmitter {
           const msg: HookMessage = JSON.parse(line);
           this.handleMessage(msg, conn);
         } catch {
-          conn.write(JSON.stringify({ type: "error", payload: { message: "Invalid JSON" } }) + "\n");
+          this.safeWrite(conn, JSON.stringify({ type: "error", payload: { message: "Invalid JSON" } }) + "\n");
         }
       }
     });
@@ -98,26 +108,26 @@ export class HookServer extends EventEmitter {
       case "permission_request": {
         // Emit to let the app handle this
         this.emit("permission_request", msg.payload, (response: HookResponse) => {
-          conn.write(JSON.stringify(response) + "\n");
+          this.safeWrite(conn, JSON.stringify(response) + "\n");
           conn.end();
         });
         break;
       }
       case "post_tool_use": {
         this.emit("post_tool_use", msg.payload);
-        conn.write(JSON.stringify({ type: "ack", payload: {} }) + "\n");
+        this.safeWrite(conn, JSON.stringify({ type: "ack", payload: {} }) + "\n");
         conn.end();
         break;
       }
       case "stop": {
         this.emit("stop", msg.payload);
-        conn.write(JSON.stringify({ type: "ack", payload: {} }) + "\n");
+        this.safeWrite(conn, JSON.stringify({ type: "ack", payload: {} }) + "\n");
         conn.end();
         break;
       }
       case "notification": {
         this.emit("notification", msg.payload);
-        conn.write(JSON.stringify({ type: "ack", payload: {} }) + "\n");
+        this.safeWrite(conn, JSON.stringify({ type: "ack", payload: {} }) + "\n");
         conn.end();
         break;
       }

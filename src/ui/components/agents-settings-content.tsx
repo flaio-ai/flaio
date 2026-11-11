@@ -7,9 +7,11 @@ import {
   getClaudeHooksConfig,
   getClaudeStatusLineConfig,
   getGeminiHooksConfig,
+  getCopilotHooksConfig,
   mergeSettingsFile,
   areClaudeHooksConfigured,
   areGeminiHooksConfigured,
+  areCopilotHooksConfigured,
 } from "../../agents/sideband/hook-scripts.js";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +23,8 @@ type InstallMethod = "npm" | "brew";
 const AGENT_DEFS = [
   { driverName: "claude", displayName: "Claude Code", command: "claude", npmPackage: "@anthropic-ai/claude-code", brewFormula: "claude-code" },
   { driverName: "gemini", displayName: "Gemini CLI", command: "gemini", npmPackage: "@google/gemini-cli", brewFormula: "gemini-cli" },
+  { driverName: "copilot", displayName: "Copilot CLI", command: "copilot", npmPackage: "@github/copilot", brewFormula: "copilot" },
+  { driverName: "codex", displayName: "Codex CLI", command: "codex", npmPackage: "@openai/codex", brewFormula: "codex" },
 ] as const;
 
 type AgentInstallStatus = "checking" | "not_installed" | "up_to_date" | "update_available" | "installing" | "error";
@@ -79,19 +83,22 @@ interface AgentsSettingsContentProps {
   isActive: boolean;
 }
 
-type HooksStatus = "checking" | "configured" | "not_configured" | "installing" | "done" | "error";
+type HooksStatus = "checking" | "configured" | "not_configured" | "installing" | "done" | "error" | "unsupported";
 
 export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps): React.ReactElement {
   const [subTab, setSubTab] = useState(0);
   const [agents, setAgents] = useState<AgentVersionInfo[]>(initAgents);
-  const [hooksStatus, setHooksStatus] = useState<{ claude: HooksStatus; gemini: HooksStatus }>({ claude: "checking", gemini: "checking" });
+  const [hooksStatus, setHooksStatus] = useState<Record<string, HooksStatus>>(
+    () => Object.fromEntries(AGENT_DEFS.map((d) => [d.driverName, "checking" as const])),
+  );
   const [hooksError, setHooksError] = useState<string | null>(null);
 
   const checkVersions = useCallback((currentAgents: AgentVersionInfo[]) => {
     let cancelled = false;
 
     for (let idx = 0; idx < currentAgents.length; idx++) {
-      const agent = currentAgents[idx]!;
+      const agent = currentAgents[idx];
+      if (!agent) continue;
       const i = idx;
 
       // Reset to checking
@@ -100,7 +107,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       const getInstalled = execFileAsync(agent.command, ["--version"])
         .then(({ stdout }) => {
           const match = stdout.match(SEMVER_RE);
-          return match ? match[1]! : null;
+          return match ? (match[1] ?? null) : null;
         })
         .catch(() => null);
 
@@ -138,18 +145,28 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
 
   // Check hooks status on mount
   useEffect(() => {
-    Promise.all([areClaudeHooksConfigured(), areGeminiHooksConfigured()]).then(
-      ([claude, gemini]) => {
-        setHooksStatus({
-          claude: claude ? "configured" : "not_configured",
-          gemini: gemini ? "configured" : "not_configured",
-        });
-      },
-    );
+    const checks: Record<string, Promise<boolean>> = {
+      claude: areClaudeHooksConfigured(),
+      gemini: areGeminiHooksConfigured(),
+      copilot: areCopilotHooksConfigured(),
+    };
+    Promise.all(
+      Object.entries(checks).map(async ([name, p]) => [name, await p] as const),
+    ).then((results) => {
+      // Drivers without a hook integration (e.g. Codex) fall back to PTY status polling
+      setHooksStatus({
+        ...Object.fromEntries(AGENT_DEFS.map((d) => [d.driverName, "unsupported" as const])),
+        ...Object.fromEntries(
+          results.map(([name, ok]) => [name, ok ? "configured" : "not_configured"] as const),
+        ),
+      });
+    });
   }, []);
 
   const handleSetupHooks = useCallback(async () => {
-    setHooksStatus((prev) => ({ ...prev, claude: "installing", gemini: "installing" }));
+    setHooksStatus((prev) => Object.fromEntries(
+      Object.entries(prev).map(([k, v]) => [k, v === "unsupported" ? v : ("installing" as const)]),
+    ));
     setHooksError(null);
     try {
       const { hookPath, statusLinePath } = await installHookScripts();
@@ -163,14 +180,19 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       const geminiCfg = getGeminiHooksConfig(hookPath);
       await mergeSettingsFile(geminiSettingsPath, geminiCfg);
 
-      setHooksStatus({ claude: "done", gemini: "done" });
+      const copilotSettingsPath = path.join(os.homedir(), ".copilot", "settings.json");
+      const copilotCfg = getCopilotHooksConfig(hookPath);
+      await mergeSettingsFile(copilotSettingsPath, copilotCfg);
+
+      setHooksStatus((prev) => Object.fromEntries(
+        Object.entries(prev).map(([k, v]) => [k, v === "unsupported" ? v : ("done" as const)]),
+      ));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setHooksError(msg);
-      setHooksStatus((prev) => ({
-        claude: prev.claude === "installing" ? "error" : prev.claude,
-        gemini: prev.gemini === "installing" ? "error" : prev.gemini,
-      }));
+      setHooksStatus((prev) => Object.fromEntries(
+        Object.entries(prev).map(([k, v]) => [k, v === "installing" ? "error" : v]),
+      ));
     }
   }, []);
 
@@ -187,7 +209,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         const getInstalled = execFileAsync(agent.command, ["--version"])
           .then(({ stdout }) => {
             const match = stdout.match(SEMVER_RE);
-            return match ? match[1]! : null;
+            return match ? (match[1] ?? null) : null;
           })
           .catch(() => null);
 
@@ -230,11 +252,12 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         return { ...a, installMethod: newMethod, status: "checking" as const, installedVersion: null, latestVersion: null, error: undefined };
       });
       // Re-check versions for the toggled agent
-      const agent = updated[idx]!;
+      const agent = updated[idx];
+      if (!agent) return updated;
       const getInstalled = execFileAsync(agent.command, ["--version"])
         .then(({ stdout }) => {
           const match = stdout.match(SEMVER_RE);
-          return match ? match[1]! : null;
+          return match ? (match[1] ?? null) : null;
         })
         .catch(() => null);
       const getLatest = getLatestVersion(agent);
@@ -274,7 +297,8 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
     }
   });
 
-  const agent = agents[subTab]!;
+  const agent = agents[subTab];
+  if (!agent) return <></>;
 
   return (
     <Box flexDirection="column">
@@ -344,7 +368,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>─── Sideband Hooks ───</Text>
           {(() => {
-            const hs = agent.command === "claude" ? hooksStatus.claude : hooksStatus.gemini;
+            const hs = hooksStatus[AGENT_DEFS[subTab]!.driverName] ?? "checking";
             return (
               <Box marginTop={0}>
                 <Text>
@@ -352,13 +376,14 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
                     : hs === "configured" || hs === "done" ? <Text color="green">configured</Text>
                     : hs === "installing" ? <Text color="yellow">installing...</Text>
                     : hs === "error" ? <Text color="red">error</Text>
+                    : hs === "unsupported" ? <Text color="gray">not available (status from terminal output)</Text>
                     : <Text color="gray">not configured</Text>}
                 </Text>
               </Box>
             );
           })()}
           {(() => {
-            const hs = agent.command === "claude" ? hooksStatus.claude : hooksStatus.gemini;
+            const hs = hooksStatus[AGENT_DEFS[subTab]!.driverName] ?? "checking";
             if (hs === "not_configured" || hs === "error") {
               return (
                 <Box>

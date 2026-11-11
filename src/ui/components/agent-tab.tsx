@@ -12,12 +12,19 @@ export const STATUS_INDICATORS: Record<AgentStatus, { symbol: string; color: str
   exited: { symbol: "○", color: "red" },
 };
 
+/** Exit-specific indicators based on exit code */
+const EXIT_INDICATORS = {
+  clean: { symbol: "✓", color: "green" },
+  error: { symbol: "○", color: "red" },
+} as const;
+
 interface AgentTabProps {
   name: string;
   status: AgentStatus;
   isActive: boolean;
   index: number;
   width?: number;
+  exitCode?: number;
 }
 
 function truncate(str: string, max: number): string {
@@ -37,8 +44,11 @@ function AgentTabInner({
   isActive,
   index,
   width,
+  exitCode,
 }: AgentTabProps): React.ReactElement {
-  const indicator = STATUS_INDICATORS[status];
+  const indicator = status === "exited"
+    ? (exitCode === 0 ? EXIT_INDICATORS.clean : EXIT_INDICATORS.error)
+    : STATUS_INDICATORS[status];
 
   // number(2) + space(1) + dot(1) = 4 chars of overhead inside the box
   // borders add 2 cols, so available inner width = (width ?? 20) - 2

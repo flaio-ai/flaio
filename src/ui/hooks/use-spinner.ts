@@ -12,5 +12,5 @@ export function useSpinner(intervalMs = 150): string {
     return () => clearInterval(timer);
   }, [intervalMs]);
 
-  return FRAMES[index]!;
+  return FRAMES[index] ?? "";
 }
