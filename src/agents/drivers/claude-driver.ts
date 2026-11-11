@@ -1,4 +1,5 @@
 import {
+  assertSafeAgentArg,
   BaseDriver,
   type AgentStatus,
   type SpawnConfig,
@@ -36,6 +37,7 @@ export class ClaudeDriver extends BaseDriver {
     mcpConfig: true,
     appendSystemPrompt: true,
     untrustedWorkspace: true,
+    untrustedWorkspaceEdits: true,
   };
 
   async checkInstalled(): Promise<boolean> {
@@ -64,7 +66,7 @@ export class ClaudeDriver extends BaseDriver {
   }): SpawnConfig {
     const args: string[] = [];
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
     if (options.allowedTools?.length) {
       args.push("--allowedTools", options.allowedTools.join(","));
@@ -129,7 +131,7 @@ export class ClaudeDriver extends BaseDriver {
     }
 
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
     args.push("--permission-mode", CLAUDE_PERMISSION_MODES[options.permissionMode]);
     if (options.appendSystemPrompt?.trim()) {

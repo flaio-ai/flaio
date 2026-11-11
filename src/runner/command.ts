@@ -8,13 +8,15 @@ import { AgentSession } from "../agents/agent-session.js";
 import { OpenCodeDriver } from "../agents/drivers/opencode-driver.js";
 import { HookServer } from "../hooks/hook-server.js";
 import { JobRunner, type JobAgentSession } from "../relay/jobs/job-runner.js";
+import type { PrJobOptions } from "../relay/jobs/pr-job-runner.js";
 import { flaioMcpSpawnConfigProvider, flaioTicketWorkspace } from "../relay/jobs/ticket-integration.js";
 import { TicketTracker } from "../relay/ticket-tracker.js";
 import { createWorktree } from "../relay/worktree-manager.js";
 import { getCliVersion } from "../relay/runner-info.js";
 import { providerSessionEnv } from "./agent-env.js";
 import { CLOUD_DRIVER, CloudRunner, type JobRunnerContext, type RunnerJobRunner } from "./cloud-runner.js";
-import { RUNNER_GIT_TOKEN_ENV, shallowClone } from "./git-checkout.js";
+import { shallowClone } from "./git-checkout.js";
+import { setRunnerGitToken } from "../relay/safe-git.js";
 import { connectRelay } from "./relay-link.js";
 import { readRunnerConfig, RUNNER_EXIT, type RunnerExitCode } from "./runner-config.js";
 import { UsageCollector } from "./usage.js";
@@ -33,12 +35,14 @@ export function resolveCloudCwd(cwd: string, checkoutPath: string): string {
   return resolved;
 }
 
-function createCloudJobRunner(
+/** Real JobRunner for a cloud job (exported for the end-to-end test; `opts` only overrides test seams). */
+export function createCloudJobRunner(
   ctx: JobRunnerContext,
   tracker: TicketTracker,
   usage: UsageCollector,
+  opts: { prJobs?: Omit<PrJobOptions, "reviewOnly">; driverTmpDir?: string } = {},
 ): RunnerJobRunner {
-  const driver = new OpenCodeDriver({ headless: true, provider: ctx.secrets.provider });
+  const driver = new OpenCodeDriver({ headless: true, provider: ctx.secrets.provider, tmpDir: opts.driverTmpDir });
   const sessions = new Map<string, AgentSession>();
   const runner = new JobRunner({
     send: ctx.send,
@@ -71,6 +75,8 @@ function createCloudJobRunner(
     tracker,
     workspace: flaioTicketWorkspace,
     getMcpSpawnConfig: flaioMcpSpawnConfigProvider,
+    // Review-only: PrJobRunner refuses pr_fix even if CloudRunner let one through.
+    prJobs: { ...opts.prJobs, reviewOnly: true },
   });
   return {
     runJob: (msg) => runner.runJob(msg),
@@ -115,10 +121,8 @@ export async function runCloudRunnerOnce(): Promise<RunnerExitCode> {
     registerCheckout: (ticketId, checkoutPath) => {
       tracker.upsert(ticketId, { originalCwd: checkoutPath, driverName: CLOUD_DRIVER, useWorktree: true });
     },
-    setGitToken: (token) => {
-      if (token) process.env[RUNNER_GIT_TOKEN_ENV] = token;
-      else delete process.env[RUNNER_GIT_TOKEN_ENV];
-    },
+    // In memory only; handed to each PR fetch as a one-call header (never process.env).
+    setGitToken: (token) => setRunnerGitToken(token),
     usage: () => {
       usage.flush();
       return usage.total();

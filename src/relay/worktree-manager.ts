@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { makeDebugLog } from "../connectors/debug.js";
+import { runSafeGit } from "./safe-git.js";
 
 const execFile = promisify(execFileCb);
 const debugLog = makeDebugLog("worktree");
@@ -396,14 +397,23 @@ export async function ensureFlaioExcluded(cwd: string, pattern = ".flaio/"): Pro
 /** Git config that keeps repo-provided hooks (husky & co.) from running on our git calls. */
 export const NO_HOOKS_CONFIG = ["-c", "core.hooksPath=/dev/null"] as const;
 
+/**
+ * Optional hardening for the detached-worktree helpers: `-c` overrides
+ * (e.g. blanks for program keys of the repo config) applied on top of
+ * runSafeGit's defaults. PR jobs always pass through here.
+ */
+export interface DetachedGitOptions {
+  config?: readonly string[];
+}
+
 /** Directory holding Flaio-created worktrees of a repo. */
 export function flaioWorktreesDir(repoRoot: string): string {
   return path.join(repoRoot, ".flaio", "worktrees");
 }
 
 /** Absolute paths of the registered worktrees of a repo that live under `.flaio/worktrees/`. */
-export async function listFlaioWorktreePaths(repoRoot: string): Promise<string[]> {
-  const { stdout } = await execFile("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
+export async function listFlaioWorktreePaths(repoRoot: string, opts: DetachedGitOptions = {}): Promise<string[]> {
+  const { stdout } = await runSafeGit(repoRoot, ["worktree", "list", "--porcelain"], { config: opts.config, timeoutMs: 30_000 });
   const base = await fsp.realpath(flaioWorktreesDir(repoRoot)).catch(() => flaioWorktreesDir(repoRoot));
   const out: string[] = [];
   for (const line of stdout.split("\n")) {
@@ -420,17 +430,23 @@ export async function listFlaioWorktreePaths(repoRoot: string): Promise<string[]
  * at `commit` (no branch is created, the user's checkout and branches are not
  * touched). A worktree or directory already at that path is removed first.
  */
-export async function addDetachedWorktree(repoRoot: string, name: string, commit: string): Promise<string> {
+export async function addDetachedWorktree(
+  repoRoot: string,
+  name: string,
+  commit: string,
+  opts: DetachedGitOptions = {},
+): Promise<string> {
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(name) || name.includes("..")) {
     throw new Error(`Invalid worktree name: ${name}`);
   }
   const worktreePath = path.join(flaioWorktreesDir(repoRoot), name);
   return withManifestLock(repoRoot, async () => {
-    await removeWorktreeAt(repoRoot, worktreePath);
+    await removeWorktreeAt(repoRoot, worktreePath, opts);
     await fsp.mkdir(path.dirname(worktreePath), { recursive: true });
-    await execFile("git", [...NO_HOOKS_CONFIG, "worktree", "add", "--detach", worktreePath, commit], {
-      cwd: repoRoot,
-      timeout: 120_000,
+    // Hardened: no hooks, no filters / smudge (LFS), no submodule recursion.
+    await runSafeGit(repoRoot, ["worktree", "add", "--detach", worktreePath, commit], {
+      config: opts.config,
+      timeoutMs: 120_000,
     });
     debugLog(`worktree: added detached worktree ${worktreePath} at ${commit}`);
     return worktreePath;
@@ -441,17 +457,18 @@ export async function addDetachedWorktree(repoRoot: string, name: string, commit
  * Remove a Flaio-created detached worktree, discarding any changes in it (the
  * caller has already pushed or reported what it needed). Missing paths are fine.
  */
-export async function removeDetachedWorktree(repoRoot: string, worktreePath: string): Promise<void> {
-  await withManifestLock(repoRoot, () => removeWorktreeAt(repoRoot, worktreePath));
+export async function removeDetachedWorktree(repoRoot: string, worktreePath: string, opts: DetachedGitOptions = {}): Promise<void> {
+  await withManifestLock(repoRoot, () => removeWorktreeAt(repoRoot, worktreePath, opts));
 }
 
-async function removeWorktreeAt(repoRoot: string, worktreePath: string): Promise<void> {
+async function removeWorktreeAt(repoRoot: string, worktreePath: string, opts: DetachedGitOptions = {}): Promise<void> {
   const base = flaioWorktreesDir(repoRoot);
   if (!path.resolve(worktreePath).startsWith(path.resolve(base) + path.sep)) {
     throw new Error(`Refusing to remove ${worktreePath}: not a Flaio worktree of ${repoRoot}`);
   }
   try {
-    await execFile("git", ["worktree", "remove", "--force", "--force", worktreePath], { cwd: repoRoot, timeout: 60_000 });
+    // The worktree held agent-touched content: hardened git, never its own config.
+    await runSafeGit(repoRoot, ["worktree", "remove", "--force", "--force", worktreePath], { config: opts.config, timeoutMs: 60_000 });
     return;
   } catch {
     // Not a registered worktree, or its directory is gone: rm + prune below.
@@ -459,5 +476,5 @@ async function removeWorktreeAt(repoRoot: string, worktreePath: string): Promise
   await fsp.rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
   // Drop the administrative entry of a worktree whose directory vanished
   // (runs under the repo lock, so no Flaio worktree is being created).
-  await execFile("git", ["worktree", "prune"], { cwd: repoRoot, timeout: 30_000 }).catch(() => undefined);
+  await runSafeGit(repoRoot, ["worktree", "prune"], { config: opts.config, timeoutMs: 30_000 }).catch(() => undefined);
 }

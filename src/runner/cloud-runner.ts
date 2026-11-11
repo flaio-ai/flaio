@@ -6,6 +6,10 @@
 //   → wait for relay_run_job of exactly FLAIO_JOB_ID → JobRunner.runJob
 //   → job end (cli_phase_complete / cli_job_failed) → cli_job_usage → exit.
 //
+// Cloud runners are REVIEW-ONLY: only pr_review jobs run; pr_fix (and any
+// other job kind, which could push) is refused with cli_job_failed, and a
+// GitHub token with write access is refused before anything is cloned.
+//
 // Every wait has a timeout, the whole run has a hard deadline, and a relay
 // disconnect ends the run at once (no reconnect: the token is single-use).
 // ---------------------------------------------------------------------------
@@ -64,6 +68,9 @@ export interface CloudRunnerDeps {
 
 /** Driver the cloud runner always uses. */
 export const CLOUD_DRIVER = "opencode";
+
+/** The only job kind a cloud runner runs (review-only: nothing is ever pushed). */
+export const CLOUD_JOB_KINDS: ReadonlySet<string> = new Set(["pr_review"]);
 
 export class CloudRunner {
   private link: RelayLink | null = null;
@@ -129,6 +136,11 @@ export class CloudRunner {
 
     // 3. Shallow clone with the single-repo token.
     if (!secrets.github) throw exitError(RUNNER_EXIT.SECRETS, "no repository access was granted for this job");
+    if (secrets.github.access !== "read") {
+      // Review-only: a write-capable token is never used (not even to clone).
+      this.sendJobFailed("Cloud runners are review-only and refuse a GitHub token with write access; nothing was cloned.");
+      throw exitError(RUNNER_EXIT.SECRETS, "refused a GitHub token with write access (cloud runners are review-only)");
+    }
     const repository = secrets.github.repository;
     let checkoutPath: string;
     try {
@@ -173,7 +185,16 @@ export class CloudRunner {
     if (!parsed.success || parsed.data.type !== "relay_run_job") {
       throw exitError(RUNNER_EXIT.JOB_FAILED, "invalid relay_run_job message");
     }
-    const msg = this.prepareJob(parsed.data as RelayRunJobMsg, checkoutPath, repository);
+    const assigned = parsed.data as RelayRunJobMsg;
+    if (!CLOUD_JOB_KINDS.has(assigned.job.kind)) {
+      this.ticketId = assigned.ticket.id;
+      this.sendJobFailed(
+        `Cloud runners are review-only: a ${assigned.job.kind} job cannot run here (fixes run on a local runner).`,
+        assigned.ticket.id,
+      );
+      throw exitError(RUNNER_EXIT.JOB_FAILED, `refused ${assigned.job.kind} job (cloud runners are review-only)`);
+    }
+    const msg = this.prepareJob(assigned, checkoutPath, repository);
     this.jobStartedAt = this.now();
     this.deps.log(`running ${msg.job.kind} job ${msg.job.id}`);
     const sessionId = await this.jobRunner.runJob(msg);
@@ -252,6 +273,13 @@ export class CloudRunner {
         break;
       }
     }
+  }
+
+  /** Report the assigned job failed before JobRunner took it (ends the job on the server). */
+  private sendJobFailed(error: string, ticketId: string = this.ticketId ?? ""): void {
+    if (this.jobEnded) return;
+    this.jobEnded = true;
+    this.send({ type: "cli_job_failed", jobId: this.deps.config.jobId, ticketId, error });
   }
 
   /** JobRunner → relay. Watches for the end of the assigned job. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ALLOW_SECRET_ENV_MARKER, buildChildEnv } from "../terminal/pty-manager.js";
 import { providerSessionEnv } from "./agent-env.js";
-import { CREDENTIAL_HELPER, RUNNER_GIT_TOKEN_ENV, authHeaderEnv, redact, shallowClone, type GitExec } from "./git-checkout.js";
+import { authHeaderEnv, redact, shallowClone, type GitExec } from "./git-checkout.js";
 import { readRunnerConfig, RUNNER_ENV } from "./runner-config.js";
 import { UsageCollector } from "./usage.js";
 import { resolveCloudCwd } from "./command.js";
@@ -9,7 +9,7 @@ import { resolveCloudCwd } from "./command.js";
 describe("agent env: provider key allow path", () => {
   it("scrubs inherited provider keys and runner secrets", () => {
     const env = buildChildEnv(
-      { PATH: "/bin", OPENROUTER_API_KEY: "leak", ANTHROPIC_API_KEY: "leak", [RUNNER_GIT_TOKEN_ENV]: "gh", FLAIO_RUNNER_TOKEN: "t" },
+      { PATH: "/bin", OPENROUTER_API_KEY: "leak", ANTHROPIC_API_KEY: "leak", GITHUB_TOKEN_FLAIO_RUNNER: "gh", FLAIO_RUNNER_TOKEN: "t" },
       undefined,
     );
     expect(env).toEqual({ PATH: "/bin" });
@@ -58,25 +58,27 @@ describe("UsageCollector", () => {
 });
 
 describe("shallowClone", () => {
-  it("passes the token only through the git process env, then installs an env-reading helper", async () => {
+  it("passes the token only through the clone's own env, hardened, and installs no credential helper", async () => {
     const calls: { args: string[]; env?: NodeJS.ProcessEnv }[] = [];
     const git: GitExec = async (args, opts) => {
       calls.push({ args, env: opts.env });
       return { stdout: "" };
     };
     const dir = "/tmp/flaio-runner-test-nonexistent";
-    const target = await shallowClone({ repository: "acme/web", token: "ghs_SECRET", dir, git, baseEnv: { PATH: "/bin" } });
+    const target = await shallowClone({ repository: "acme/web", token: "ghs_SECRET", dir, git, baseEnv: { PATH: "/bin", GIT_DIR: "/evil" } });
     expect(target).toBe(`${dir}/web`);
+    expect(calls).toHaveLength(1); // no `git config credential.helper` afterwards
     const clone = calls[0];
     expect(clone.args).toContain("https://github.com/acme/web.git");
     expect(clone.args.join(" ")).not.toContain("ghs_SECRET");
     expect(clone.args).toContain("--depth");
+    expect(clone.args).toContain("--no-recurse-submodules");
+    expect(clone.args).toContain("core.hooksPath=/dev/null");
     expect(clone.env?.GIT_CONFIG_VALUE_0).toBe(authHeaderEnv("ghs_SECRET").GIT_CONFIG_VALUE_0);
     expect(clone.env?.GIT_TERMINAL_PROMPT).toBe("0");
-    const helper = calls.find((c) => c.args.includes("credential.https://github.com.helper"));
-    expect(helper?.args).toContain(CREDENTIAL_HELPER);
-    expect(CREDENTIAL_HELPER).not.toContain("ghs_SECRET");
-    expect(CREDENTIAL_HELPER).toContain(RUNNER_GIT_TOKEN_ENV);
+    expect(clone.env?.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+    expect(clone.env?.GIT_DIR).toBeUndefined();
+    expect(JSON.stringify(calls)).not.toContain("credential.https");
   });
 
   it("rejects odd repository names and redacts the token from errors", async () => {

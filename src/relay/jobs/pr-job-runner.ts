@@ -31,8 +31,10 @@ import {
   cleanupPrCheckout,
   finishPrFix,
   fixTargetBranch,
+  formatFixChanges,
   PrJobError,
   resolvePrRepo,
+  validatePrSubject,
   writePrDiff,
   type PrCheckout,
   type PrFixResult,
@@ -41,6 +43,7 @@ import {
 import type { McpSpawnConfig, McpSpawnConfigProvider, TicketWorkspaceWriter } from "./job-seams.js";
 import { buildPrFixPrompt, buildPrReviewPrompt, prAgentPermissionMode, prAgentPermissions } from "./pr-job-prompts.js";
 import type { JobAgentSession } from "./job-runner.js";
+import { isSafeAgentArg } from "../../agents/drivers/base-driver.js";
 
 const debugLog = makeDebugLog("pr-jobs");
 
@@ -81,6 +84,11 @@ export interface PrJobOptions {
   progressMaxEvents?: number;
   /** How often to check that the agent's PTY session still exists. */
   exitCheckIntervalMs?: number;
+  /**
+   * Review-only runner (cloud): pr_fix, and anything else that would push, is
+   * refused before any checkout. Default false (local runners may fix).
+   */
+  reviewOnly?: boolean;
   ops?: Partial<PrCheckoutOps>;
 }
 
@@ -117,6 +125,10 @@ interface PrRun {
   finished: boolean;
   /** pr_fix: the agent exited and the runner is committing / pushing. */
   finishing: boolean;
+  /** pr_fix: aborts the commit / push on cancel. */
+  abort: AbortController | null;
+  /** pr_fix: the in-flight git work (teardown waits for it before removing the worktree). */
+  pushWork: Promise<unknown> | null;
   checkout: PrCheckout | null;
   pushBranch: string | null;
   session: JobAgentSession | null;
@@ -210,7 +222,9 @@ export class PrJobRunner {
     if (!run || run.job.id !== msg.jobId) return false;
     debugLog(`pr-jobs: cancelling ${msg.jobId}: ${msg.reason}`);
     if (run.finishing && !run.finished) {
-      debugLog(`pr-jobs: ${msg.jobId} is already pushing; the push completes but is not reported`);
+      // Abort the commit / push; finishFix reports whether the branch moved.
+      debugLog(`pr-jobs: ${msg.jobId} is pushing; aborting the push`);
+      run.abort?.abort();
     }
     run.finished = true;
     void this.teardown(run);
@@ -246,6 +260,14 @@ export class PrJobRunner {
       return null;
     };
     if (!subject || subject.type !== "pr") return refuse(`Job ${job.kind} has no pull request subject`);
+    try {
+      validatePrSubject(subject);
+    } catch (err) {
+      return refuse(errMessage(err));
+    }
+    if (kind === "pr_fix" && this.opts.reviewOnly) {
+      return refuse("This runner is review-only (cloud runners do not push fixes). Run the fix on a local runner.");
+    }
     if (kind === "pr_fix") {
       if (!job.fix) return refuse("pr_fix job has no fix input (findings and target)");
       try {
@@ -255,10 +277,17 @@ export class PrJobRunner {
       }
     }
     const driverName = msg.ticket.driverName || DEFAULT_DRIVER_NAME;
+    if (!isSafeAgentArg(driverName)) return refuse("The job names an invalid driver");
+    if (msg.ticket.model != null && msg.ticket.model !== "" && !isSafeAgentArg(msg.ticket.model)) {
+      return refuse("The job names an invalid model");
+    }
     const driver = this.deps.getDriver(driverName);
     if (!driver) return refuse(`Driver "${driverName}" not found`);
     if (!driver.ticketCapabilities.mcpConfig || !driver.ticketCapabilities.untrustedWorkspace) {
       return refuse(`Driver "${driverName}" cannot run pull request jobs (needs MCP config and untrusted-workspace isolation)`);
+    }
+    if (kind === "pr_fix" && !driver.ticketCapabilities.untrustedWorkspaceEdits) {
+      return refuse(`Driver "${driverName}" can only review pull requests (it has no safe edit mode for untrusted code)`);
     }
 
     // One job per review id and per PR: a newer job supersedes the older one (no end message, like tickets).
@@ -282,6 +311,8 @@ export class PrJobRunner {
       driverName,
       finished: false,
       finishing: false,
+      abort: null,
+      pushWork: null,
       checkout: null,
       pushBranch: null,
       session: null,
@@ -339,11 +370,25 @@ export class PrJobRunner {
     }
 
     const hasDiff = !!(await this.ops.writeDiff(run.checkout, subject));
+    if (stale()) return abort();
+    if (!hasDiff) {
+      // Never review (or fix) blind.
+      throw new PrJobError(
+        "no_diff",
+        `Could not compute the pull request's diff against ${subject.baseRef} (base branch missing or no common history); no agent was started.`,
+      );
+    }
     const workspace = this.deps.workspace();
     await workspace.ensureExcluded(wt).catch((err) => debugLog(`pr-jobs: ensureExcluded failed: ${errMessage(err)}`));
     await workspace.writeBrief(wt, run.msg.briefMarkdown, { ticketId: run.reviewId, jobId: job.id });
     if (stale()) return abort();
-    this.systemProgress(run, "Preparing checkout", "done", `${run.checkout.headSha.slice(0, 12)}${hasDiff ? "" : " (no diff against the base)"}`);
+    const links = run.checkout.neutralisedLinks?.length ?? 0;
+    this.systemProgress(
+      run,
+      "Preparing checkout",
+      "done",
+      `${run.checkout.headSha.slice(0, 12)}${links ? ` (${links} symlink(s) leaving the repository replaced)` : ""}`,
+    );
 
     const perms = prAgentPermissions(kind);
     run.mcp = await this.deps.mcpProvider()(run.reviewId, job.id, {
@@ -391,6 +436,7 @@ export class PrJobRunner {
           print: true,
           allowedTools: perms.allow,
           untrustedWorkspace: true,
+          readOnly: kind === "pr_review",
         },
         env,
       );
@@ -516,37 +562,47 @@ export class PrJobRunner {
     const fix = run.job.fix as PrFixInput;
     const agentSummary = run.completion?.summary.trim() ?? "";
     run.finishing = true;
+    run.abort = new AbortController();
     this.endListeners(run);
     this.systemProgress(run, "Pushing fixes", "started", run.pushBranch ?? undefined);
     let result: PrFixResult;
+    const work = this.ops.finishFix(checkout, run.subject, fix, {
+      jobId: run.job.id,
+      commitMessage: clip(
+        `Apply review fixes to #${run.subject.number}\n\n${agentSummary || "Fixes for the selected review findings."}\n\nFlaio-Review: ${run.reviewId}`,
+        SUMMARY_MAX,
+      ),
+      signal: run.abort.signal,
+    });
+    run.pushWork = work.catch(() => undefined);
     try {
-      result = await this.ops.finishFix(checkout, run.subject, fix, {
-        jobId: run.job.id,
-        commitMessage: clip(
-          `Apply review fixes to #${run.subject.number}\n\n${agentSummary || "Fixes for the selected review findings."}\n\nFlaio-Review: ${run.reviewId}`,
-          SUMMARY_MAX,
-        ),
-      });
+      result = await work;
     } catch (err) {
       run.finishing = false;
+      if (run.finished) {
+        // Cancelled: say truthfully what happened to the branch (the relay no longer expects a result).
+        const pushed = err instanceof PrJobError ? err.pushed : null;
+        this.sendProgress(run, "Pushing fixes", pushed ? "done" : "failed", clip(errMessage(err), NOTE_MAX), "flaio");
+        debugLog(`pr-jobs: ${run.job.id} cancelled during the push: ${errMessage(err)}`);
+        await this.teardown(run);
+        return;
+      }
       this.fail(run, err instanceof PrJobError ? err.message : `Pushing the fix failed: ${errMessage(err)}`);
       return;
     }
     run.finishing = false;
     if (run.finished) {
-      // Cancelled while pushing: the push happened but the relay no longer expects a result.
-      debugLog(`pr-jobs: ${run.job.id} pushed ${result.commitSha} to ${result.branch} after a cancel`);
+      // Cancelled after the push completed: the branch did move; say so.
+      this.sendProgress(run, "Pushing fixes", "done", `Cancelled after the push completed: ${result.branch} @ ${result.commitSha.slice(0, 12)}`, "flaio");
+      debugLog(`pr-jobs: ${run.job.id} pushed ${result.commitSha} to ${result.branch} before the cancel took effect`);
       await this.teardown(run);
       return;
     }
     this.systemProgress(run, "Pushing fixes", "done", `${result.branch} @ ${result.commitSha.slice(0, 12)}`);
     // The runner has no GitHub credentials: Flaio opens the stacked PR as the user once it has the branch.
-    const stacked =
-      fix.target === "new_branch"
-        ? ` Flaio opens the stacked pull request from ${result.branch} into ${run.subject.isFork ? run.subject.baseRef : run.subject.headRef}.`
-        : "";
+    const stacked = fix.target === "new_branch" ? ` Flaio opens the stacked pull request from ${result.branch} into ${run.subject.headRef}.` : "";
     const summary = clip(
-      `Pushed ${result.commitCount} commit(s) to ${result.branch} (${result.commitSha}).${stacked}${agentSummary ? `\n\n${agentSummary}` : ""}`,
+      `Pushed ${result.commitCount} commit(s) to ${result.branch} (${result.commitSha}).${stacked}\n\n${formatFixChanges(result.changes)}${agentSummary ? `\n\n${agentSummary}` : ""}`,
       SUMMARY_MAX,
     );
     this.end(run, {
@@ -610,6 +666,8 @@ export class PrJobRunner {
       this.endListeners(run);
       if (run.session && this.deps.getSession(run.session.id)) this.deps.closeSession(run.session.id);
       this.releaseMcp(run);
+      // Never remove the worktree under an in-flight commit / push (aborted on cancel).
+      if (run.pushWork) await run.pushWork;
       if (run.checkout) {
         try {
           await this.ops.cleanup(run.checkout);

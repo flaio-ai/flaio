@@ -15,6 +15,7 @@ import { TicketTracker } from "../ticket-tracker.js";
 import { JobRunner, type JobAgentSession } from "./job-runner.js";
 import { flaioMcpSpawnConfigProvider, flaioTicketWorkspace } from "./ticket-integration.js";
 import type { PrJobOptions } from "./pr-job-runner.js";
+import { PrJobError } from "../pr-checkout.js";
 
 // ---------------------------------------------------------------------------
 // Fakes: the PTY session is faked (as in job-runner.test.ts); git, the ticket
@@ -580,6 +581,136 @@ describe("pr_fix jobs", () => {
     expect(h.ofType("cli_phase_complete")[0]).toMatchObject({ jobId: "fix2", phase: "pr_fix", result: "failed" });
     expect(g(bare, "rev-parse", "refs/heads/feature")).toBe(headSha);
     await until(() => expect(prWorktrees()).toEqual([]));
+  });
+});
+
+describe("security", () => {
+  it("refuses fork fixes for both targets, before fetching", async () => {
+    for (const [id, target] of [["f1", "same_branch"], ["f2", "new_branch"]] as const) {
+      const job = prJob("pr_fix", id, {
+        subject: subject({ isFork: true }),
+        fix: { findingIds: ["f1"], target, maintainerCanModify: true, headRepository: "contrib/widgets" },
+      });
+      expect(await h.runner.runJob(runMsg(job))).toBeNull();
+    }
+    expect(h.ofType("cli_job_failed").map((m) => m.error)).toEqual([expect.stringMatching(/forks/), expect.stringMatching(/forks/)]);
+    expect(h.sessions).toHaveLength(0);
+    expect(g(clone, "for-each-ref", "refs/flaio/")).toBe("");
+  });
+
+  it("a review-only runner refuses pr_fix before any checkout", async () => {
+    h = makeHarness({ reviewOnly: true });
+    expect(await h.runner.runJob(runMsg(prJob("pr_fix", "fix1")))).toBeNull();
+    expect(h.ofType("cli_job_failed")[0]?.error).toMatch(/review-only/);
+    expect(h.sessions).toHaveLength(0);
+    expect(g(clone, "for-each-ref", "refs/flaio/")).toBe("");
+  });
+
+  it("refuses driver or model values that could be read as flags, and malformed subjects", async () => {
+    const m1 = runMsg(prJob("pr_review", "j1"));
+    m1.ticket.model = "--dangerously-skip-permissions";
+    const m2 = runMsg(prJob("pr_review", "j2"));
+    m2.ticket.driverName = "-x";
+    const m3 = runMsg(prJob("pr_review", "j3", { subject: subject({ baseRef: "main:refs/heads/x" }) }));
+    for (const m of [m1, m2, m3]) expect(await h.runner.runJob(m)).toBeNull();
+    expect(h.ofType("cli_job_failed").map((m) => m.jobId)).toEqual(["j1", "j2", "j3"]);
+    expect(h.sessions).toHaveLength(0);
+    // A ticket job with a flag-like model is refused the same way.
+    const t = runMsg({ ...prJob("pr_review", "t1"), kind: "implement", subject: null, ticketId: "ticket1" } as Job);
+    t.ticket = { ...t.ticket, id: "ticket1", cwd: clone, model: "--evil" };
+    expect(await h.runner.runJob(t)).toBeNull();
+    expect(h.ofType("cli_job_failed").at(-1)).toMatchObject({ jobId: "t1", error: expect.stringMatching(/invalid model/) });
+  });
+
+  it("refuses to review blind when no diff against the base can be produced", async () => {
+    const job = prJob("pr_review", "job1", { subject: subject({ baseRef: "no-such-branch" }) });
+    expect(await h.runner.runJob(runMsg(job))).toBeNull();
+    expect(h.ofType("cli_job_failed")[0]?.error).toMatch(/Could not compute the pull request's diff against no-such-branch/);
+    expect(h.sessions).toHaveLength(0);
+    await until(() => expect(prWorktrees()).toEqual([]));
+  });
+
+  it("refuses pr_fix with a driver that has no safe untrusted edit mode", async () => {
+    const driver = new ClaudeDriver();
+    Object.defineProperty(driver, "ticketCapabilities", { value: { ...driver.ticketCapabilities, untrustedWorkspaceEdits: false } });
+    const runner = new JobRunner({
+      send: (m) => h.sent.push(m),
+      resolveCwd: (c) => c,
+      resolveWorktree: async (c) => ({ effectiveCwd: c, worktreePath: null, branchName: null }),
+      getDriver: () => driver,
+      createSession: () => null,
+      getSession: () => null,
+      closeSession: () => undefined,
+      announceSession: () => undefined,
+      tracker: h.tracker,
+      bus: new TicketPhaseBus(),
+      workspace: flaioTicketWorkspace,
+      getMcpSpawnConfig: flaioMcpSpawnConfigProvider,
+      prJobs: { candidateCwds: () => [clone] },
+    });
+    expect(await runner.runJob(runMsg(prJob("pr_fix", "fix1")))).toBeNull();
+    expect(h.ofType("cli_job_failed")[0]?.error).toMatch(/can only review/);
+    runner.dispose();
+  });
+
+  it("passes readOnly to the driver for reviews only", async () => {
+    await h.runner.runJob(runMsg(prJob("pr_review", "job1")));
+    expect(h.last().spawned?.options).toMatchObject({ untrustedWorkspace: true, readOnly: true });
+  });
+
+  it("reports the changed files with line counts in the completion summary", async () => {
+    await h.runner.runJob(runMsg(prJob("pr_fix", "fix1")));
+    fs.writeFileSync(path.join(h.last().cwd, "app.ts"), "export const a = 3;\nexport const b = 4;\n");
+    await h.call("complete_phase", { result: "success", summary: "Fix a." });
+    h.last().exit(0);
+    await until(() => expect(h.ofType("cli_phase_complete")).toHaveLength(1));
+    expect(h.ofType("cli_phase_complete")[0]?.summary).toContain("Changed 1 file(s), +2 -1:\n- app.ts (+2 -1)");
+  });
+
+  it("refuses a fix touching a workflow file and pushes nothing", async () => {
+    await h.runner.runJob(runMsg(prJob("pr_fix", "fix1")));
+    const wt = h.last().cwd;
+    fs.mkdirSync(path.join(wt, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(path.join(wt, ".github", "workflows", "x.yml"), "on: push\n");
+    await h.call("complete_phase", { result: "success", summary: "Fix." });
+    h.last().exit(0);
+    await until(() => expect(h.ofType("cli_job_failed")).toHaveLength(1));
+    expect(h.ofType("cli_job_failed")[0]?.error).toMatch(/protected CI .* \.github\/workflows\/x\.yml/);
+    expect(g(bare, "rev-parse", "refs/heads/feature")).toBe(headSha);
+  });
+
+  it("cancel while pushing aborts the push, waits for it before removing the worktree, and says what happened", async () => {
+    let signal: AbortSignal | undefined;
+    let settled = false;
+    h = makeHarness({
+      ops: {
+        finishFix: (_co, _s, _f, o) =>
+          new Promise((_resolve, reject) => {
+            signal = o.signal;
+            o.signal?.addEventListener("abort", () =>
+              setTimeout(() => {
+                settled = true;
+                reject(new PrJobError("cancelled", "Cancelled while pushing; the push was stopped and feature was not updated.", false));
+              }, 200),
+            );
+          }),
+      },
+    });
+    await h.runner.runJob(runMsg(prJob("pr_fix", "fix1")));
+    fs.writeFileSync(path.join(h.last().cwd, "app.ts"), "export const a = 9;\n");
+    await h.call("complete_phase", { result: "success", summary: "Fix." });
+    h.last().exit(0);
+    await until(() => expect(signal).toBeDefined());
+    expect(h.runner.cancelJob({ type: "relay_cancel_job", jobId: "fix1", ticketId: "rev1", reason: "user" })).toBe(true);
+    expect(signal?.aborted).toBe(true);
+    // The worktree stays until the aborted push settled.
+    expect(prWorktrees()).toHaveLength(1);
+    await until(() => expect(prWorktrees()).toEqual([]));
+    expect(settled).toBe(true);
+    const note = h.ofType("cli_ticket_event").at(-1);
+    expect(note?.event.payload).toMatchObject({ step: "Pushing fixes", status: "failed", note: expect.stringMatching(/not updated/) });
+    expect(h.ofType("cli_phase_complete")).toEqual([]);
+    expect(h.ofType("cli_job_failed")).toEqual([]);
   });
 });
 

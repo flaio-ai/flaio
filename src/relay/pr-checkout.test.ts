@@ -7,16 +7,20 @@ import type { PrJobSubject } from "../contracts/agent-loop.js";
 import {
   checkFixTarget,
   checkoutPr,
-  forkPushUrl,
   cleanupPrCheckout,
   finishPrFix,
+  fixTargetBranch,
+  FIX_MAX_FILES,
+  isSafeBranchName,
   PrJobError,
+  prCheckoutName,
   prCheckoutPrefix,
   remoteMatchesRepo,
   resolvePrRepo,
   sweepStalePrCheckouts,
   writePrDiff,
 } from "./pr-checkout.js";
+import { EMPTY_TRUSTED_CONFIG, resetTrustedGitConfigForTests } from "./safe-git.js";
 
 // ---------------------------------------------------------------------------
 // Real git fixture: a bare "GitHub" remote at <tmp>/remotes/acme/widgets.git
@@ -30,6 +34,7 @@ beforeAll(() => {
   process.env.GIT_CONFIG_NOSYSTEM = "1";
   process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = "Test";
   process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = "test@example.com";
+  resetTrustedGitConfigForTests(EMPTY_TRUSTED_CONFIG);
 });
 afterAll(() => {
   process.env = savedEnv;
@@ -291,57 +296,330 @@ describe("finishPrFix", () => {
     expect(g(fx.clone, "for-each-ref", "--format=%(refname)", "refs/flaio/unpushed/")).toContain("pr-acme-widgets-7");
   });
 
-  it("refuses a run that changed nothing or rewrote the PR history", async () => {
+  it("refuses a run that changed nothing", async () => {
     const co = await checkout();
     const none = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "job1", commitMessage: "Fix" }).catch(
       (e: unknown) => e,
     );
     expect((none as PrJobError).code).toBe("no_changes");
-    g(co.worktreePath, "reset", "--hard", "HEAD~1");
-    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 8;\n");
-    const rewritten = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, {
-      jobId: "job1",
-      commitMessage: "Fix",
-    }).catch((e: unknown) => e);
-    expect((rewritten as PrJobError).code).toBe("history_rewritten");
     expect(g(fx.bare, "rev-parse", "refs/heads/feature")).toBe(fx.headSha);
     await cleanupPrCheckout(co);
   });
 
-  it("refuses same_branch for a fork head unless the server says maintainers may edit it", () => {
+  it("pushes exactly one commit on top of the PR head with the working-tree changes, ignoring the agent's own commits and HEAD", async () => {
+    const co = await checkout();
+    // The agent commits something else and moves HEAD around...
+    fs.writeFileSync(path.join(co.worktreePath, "smuggled.ts"), "x\n");
+    g(co.worktreePath, "add", "smuggled.ts");
+    g(co.worktreePath, "commit", "-m", "smuggled");
+    const agentCommit = g(co.worktreePath, "rev-parse", "HEAD");
+    fs.rmSync(path.join(co.worktreePath, "smuggled.ts"));
+    g(co.worktreePath, "reset", "-q", "--hard", `${agentCommit}~2`);
+    // ...and leaves this in the working tree.
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 8;\n");
+    const res = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "job1", commitMessage: "Fix" });
+    expect(g(fx.bare, "rev-parse", `${res.commitSha}^`)).toBe(fx.headSha);
+    expect(g(fx.bare, "rev-list", "--count", `${fx.headSha}..${res.commitSha}`)).toBe("1");
+    expect(g(fx.bare, "diff", "--name-only", fx.headSha, res.commitSha)).toBe("app.ts");
+    expect(() => g(fx.bare, "cat-file", "-e", agentCommit)).toThrow(); // never pushed
+    expect(res.changes.files).toEqual([{ path: "app.ts", status: "M", added: 1, deleted: 1, binary: false }]);
+    await cleanupPrCheckout(co);
+  });
+
+  it("refuses every fix on a fork PR, whatever the target or maintainer flag", async () => {
     const fork = { ...fx.subject, isFork: true };
-    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch" })).toThrow(/fork/);
-    expect(() => checkFixTarget(fork, { findingIds: [], target: "new_branch" })).not.toThrow();
-    // The flag alone is not enough: the fork's repository must be named, and valid.
-    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: true })).toThrow(/fork/);
-    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: true, headRepository: "../x" })).toThrow(/fork/);
-    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: false, headRepository: "contrib/widgets" })).toThrow(/fork/);
-    expect(() => checkFixTarget(fork, { findingIds: [], target: "same_branch", maintainerCanModify: true, headRepository: "contrib/widgets" })).not.toThrow();
+    for (const fix of [
+      { findingIds: [], target: "same_branch" as const },
+      { findingIds: [], target: "new_branch" as const },
+      { findingIds: [], target: "same_branch" as const, maintainerCanModify: true, headRepository: "contrib/widgets" },
+      { findingIds: [], target: "new_branch" as const, maintainerCanModify: true, headRepository: "contrib/widgets" },
+    ]) {
+      expect(() => checkFixTarget(fork, fix)).toThrow(/forks/);
+    }
+    // finishPrFix re-checks: nothing is pushed even if a fork checkout got this far.
+    const co = await checkout();
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 10;\n");
+    const err = await finishPrFix(co, fork, { findingIds: [], target: "new_branch", newBranchName: "fix/x" }, { jobId: "j", commitMessage: "F" }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as PrJobError).code).toBe("fork_fix_refused");
+    expect(() => g(fx.bare, "rev-parse", "--verify", "refs/heads/fix/x")).toThrow();
+    await cleanupPrCheckout(co);
   });
 
-  it("derives the fork's push URL in the base remote's style", () => {
-    expect(forkPushUrl("git@github.com:acme/widgets.git", "contrib/widgets")).toBe("git@github.com:contrib/widgets.git");
-    expect(forkPushUrl("https://github.com/acme/widgets", "contrib/widgets")).toBe("https://github.com/contrib/widgets.git");
-    expect(forkPushUrl("ssh://git@github.com/acme/widgets.git/", "contrib/w")).toBe("ssh://git@github.com/contrib/w.git");
-    expect(forkPushUrl("/srv/git/acme/widgets.git", "contrib/widgets")).toBe("/srv/git/contrib/widgets.git");
+  it("refuses changes to workflows and other protected paths, naming them, and pushes nothing", async () => {
+    const co = await checkout();
+    fs.mkdirSync(path.join(co.worktreePath, ".github", "workflows"), { recursive: true });
+    fs.writeFileSync(path.join(co.worktreePath, ".github", "workflows", "ci.yml"), "on: push\n");
+    fs.writeFileSync(path.join(co.worktreePath, ".gitattributes"), "* filter=x\n");
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 11;\n");
+    const err = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F" }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as PrJobError).code).toBe("unsafe_changes");
+    expect((err as Error).message).toContain(".github/workflows/ci.yml");
+    expect((err as Error).message).toContain(".gitattributes");
+    expect(g(fx.bare, "rev-parse", "refs/heads/feature")).toBe(fx.headSha);
+    await cleanupPrCheckout(co);
   });
 
-  it("same_branch on a maintainer-editable fork pushes to the fork's branch, never the base repo", async () => {
-    // The contributor's fork: a second bare repo next to the base one, holding the PR branch.
-    const forkBare = path.join(fx.tmp, "remotes", "contrib", "widgets.git");
-    fs.mkdirSync(forkBare, { recursive: true });
-    g(forkBare, "init", "--bare", "-b", "main");
-    g(fx.seed, "push", forkBare, "feature:refs/heads/feature");
-    g(fx.bare, "update-ref", "-d", "refs/heads/feature"); // the base repo has only refs/pull/7/head
-    const subject = { ...fx.subject, isFork: true };
-    const fix = { findingIds: ["f1"], target: "same_branch" as const, maintainerCanModify: true, headRepository: "contrib/widgets" };
+  it("refuses implausible change sets: too many files, binaries, new symlinks", async () => {
+    const tryFix = async (prep: (wt: string) => void) => {
+      const co = await checkout();
+      prep(co.worktreePath);
+      const err = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F" }).catch(
+        (e: unknown) => e,
+      );
+      await cleanupPrCheckout(co);
+      return err as PrJobError;
+    };
+    const many = await tryFix((wt) => {
+      for (let i = 0; i <= FIX_MAX_FILES; i++) fs.writeFileSync(path.join(wt, `f${i}.ts`), "x\n");
+    });
+    expect(many.code).toBe("unsafe_changes");
+    expect(many.message).toContain(`limit ${FIX_MAX_FILES}`);
+    const binary = await tryFix((wt) => fs.writeFileSync(path.join(wt, "blob.bin"), Buffer.from([0, 1, 2, 0, 255])));
+    expect(binary.message).toMatch(/binary files: blob\.bin/);
+    const link = await tryFix((wt) => fs.symlinkSync("/etc/passwd", path.join(wt, "passwd")));
+    expect(link.message).toMatch(/symbolic links or submodules: passwd/);
+    expect(g(fx.bare, "rev-parse", "refs/heads/feature")).toBe(fx.headSha);
+  });
+
+  it("refuses to push when the repo's git config gained a program-executing key after checkout, without running it", async () => {
+    const co = await checkout();
+    const marker = path.join(fx.tmp, "fsmonitor-ran");
+    const hook = path.join(fx.tmp, "fsmon.sh");
+    fs.writeFileSync(hook, `#!/bin/sh\necho ran >> "${marker}"\n`, { mode: 0o755 });
+    g(fx.clone, "config", "core.fsmonitor", hook); // what a hostile agent would write
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 12;\n");
+    const err = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F" }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as PrJobError).code).toBe("config_tampered");
+    expect((err as Error).message).toContain("core.fsmonitor");
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(g(fx.bare, "rev-parse", "refs/heads/feature")).toBe(fx.headSha);
+    g(fx.clone, "config", "--unset", "core.fsmonitor");
+    await cleanupPrCheckout(co);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it("ignores a global gitconfig and a repointed worktree .git written by the agent (fsmonitor never runs)", async () => {
+    const co = await checkout();
+    const marker = path.join(fx.tmp, "fsmonitor-ran");
+    const hook = path.join(fx.tmp, "fsmon.sh");
+    fs.writeFileSync(hook, `#!/bin/sh\necho ran >> "${marker}"\n`, { mode: 0o755 });
+    // A hostile ~/.gitconfig: plain git would run the fsmonitor (also with -c core.hooksPath=/dev/null).
+    const evilGlobal = path.join(fx.tmp, "evil-gitconfig");
+    fs.writeFileSync(evilGlobal, `[core]\n\tfsmonitor = ${hook}\n`);
+    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "status", "--porcelain"], {
+      cwd: co.worktreePath,
+      env: { ...process.env, GIT_CONFIG_GLOBAL: evilGlobal },
+      stdio: "ignore",
+    });
+    expect(fs.existsSync(marker)).toBe(true); // the attack works against plain git
+    fs.rmSync(marker);
+    // The worktree's .git file repointed at a git dir with its own fsmonitor config.
+    const fake = path.join(fx.tmp, "fakegit");
+    g(fx.tmp, "init", "-q", "--bare", fake);
+    fs.appendFileSync(path.join(fake, "config"), `[core]\n\tfsmonitor = ${hook}\n`);
+    fs.writeFileSync(path.join(co.worktreePath, ".git"), `gitdir: ${fake}\n`);
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 13;\n");
+    process.env.GIT_CONFIG_GLOBAL = evilGlobal;
+    try {
+      const res = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F" });
+      expect(g(fx.bare, "rev-parse", "refs/heads/feature")).toBe(res.commitSha);
+      expect(g(fx.bare, "rev-parse", `${res.commitSha}^`)).toBe(fx.headSha);
+      expect(res.changes.files.map((f) => f.path)).toEqual(["app.ts"]);
+      await cleanupPrCheckout(co);
+    } finally {
+      process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    }
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it("validates branch names from job input before using them in refspecs", async () => {
+    expect(isSafeBranchName("feature/x-1.2")).toBe(true);
+    for (const bad of ["-x", "+main", "a..b", "a:b", "a b", "a~1", "a^", "a\\b", "x.lock", "/x", "x/", "@", "a@{1}", "", "ä"]) {
+      expect(isSafeBranchName(bad)).toBe(false);
+    }
+    const { match } = await resolvePrRepo(fx.subject, [fx.clone]);
+    for (const subject of [
+      { ...fx.subject, baseRef: "main:refs/heads/evil" },
+      { ...fx.subject, headRef: "-evil" },
+      { ...fx.subject, number: 7.5 },
+      { ...fx.subject, headSha: "--upload-pack=x" },
+    ]) {
+      const err = await checkoutPr(match, subject, opts()).catch((e: unknown) => e);
+      expect((err as PrJobError).code).toBe("invalid_subject");
+    }
+    expect(g(fx.clone, "for-each-ref", "refs/flaio/")).toBe("");
+    // same_branch uses the PR's head ref: validated too.
+    const err = await fixTargetBranch(fx.clone, { ...fx.subject, headRef: "x:y" }, { findingIds: [], target: "same_branch" }, "j").catch(
+      (e: unknown) => e,
+    );
+    expect((err as PrJobError).code).toBe("invalid_branch");
+  });
+
+  it("aborts an in-flight push on cancel and reports truthfully that nothing was pushed", async () => {
+    // A slow transport: ssh to the bare repo through a wrapper that waits before receive-pack.
+    const wrapper = path.join(fx.tmp, "slow-ssh.sh");
+    fs.writeFileSync(
+      wrapper,
+      `#!/bin/sh\ncase "$*" in *receive-pack*) sleep 4; exec git-receive-pack '${fx.bare}';; *) exec git-upload-pack '${fx.bare}';; esac\n`,
+      { mode: 0o755 },
+    );
+    g(fx.clone, "remote", "set-url", "--push", "origin", "ssh://slow.invalid/acme/widgets.git");
+    const co = await checkout();
+    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 14;\n");
+    process.env.GIT_SSH_COMMAND = wrapper;
+    const ac = new AbortController();
+    try {
+      const started = Date.now();
+      setTimeout(() => ac.abort(), 700);
+      const err = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, {
+        jobId: "j",
+        commitMessage: "F",
+        signal: ac.signal,
+      }).catch((e: unknown) => e);
+      expect((err as PrJobError).code).toBe("cancelled");
+      expect((err as PrJobError).pushed).toBe(false);
+      expect((err as Error).message).toMatch(/not updated/);
+      expect(Date.now() - started).toBeLessThan(3500);
+    } finally {
+      delete process.env.GIT_SSH_COMMAND;
+    }
+    expect(g(fx.bare, "rev-parse", "refs/heads/feature")).toBe(fx.headSha);
+    // Already cancelled before the push: nothing is attempted.
+    const pre = new AbortController();
+    pre.abort();
+    const err2 = await finishPrFix(co, fx.subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F", signal: pre.signal }).catch(
+      (e: unknown) => e,
+    );
+    expect((err2 as PrJobError).code).toBe("cancelled");
+    expect((err2 as PrJobError).pushed).toBe(false);
+    await cleanupPrCheckout(co);
+  });
+});
+
+describe("worktree names", () => {
+  it("cannot escape the worktrees directory whatever the job id, attempt or subject say", () => {
+    const name = prCheckoutName({ owner: "../..", repo: "x/../../y", number: 7 }, "../../../etc", 1);
+    expect(name).toMatch(/^pr-[a-z0-9-]+$/);
+    expect(name).not.toContain("..");
+    expect(name).not.toContain("/");
+    const hostile = prCheckoutName({ owner: "a", repo: "b", number: "1/../../x" as unknown as number }, "j", "../2" as unknown as number);
+    expect(hostile).toMatch(/^pr-[a-z0-9-]+$/);
+  });
+});
+
+describe("checkoutPr: hostile PR content", () => {
+  /** Push a new PR head built by `prep` in the seed (on top of the feature branch) as refs/pull/7/head. */
+  function pushPrHead(prep: (seed: string) => void): PrJobSubject {
+    prep(fx.seed);
+    g(fx.seed, "add", "-A");
+    g(fx.seed, "commit", "-q", "-m", "hostile");
+    g(fx.seed, "push", "-q", "origin", "HEAD:refs/heads/feature");
+    const headSha = g(fx.seed, "rev-parse", "HEAD");
+    g(fx.bare, "update-ref", "refs/pull/7/head", headSha);
+    return { ...fx.subject, headSha };
+  }
+
+  it("replaces symlinks that leave the worktree (absolute, relative, directory, chained, .flaio) and keeps in-tree ones", async () => {
+    const outside = path.join(fx.tmp, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "secret.txt"), "secret\n");
+    const subject = pushPrHead((seed) => {
+      fs.mkdirSync(path.join(seed, "docs"));
+      fs.writeFileSync(path.join(seed, "docs", "real.md"), "real\n");
+      fs.symlinkSync(path.join(outside, "secret.txt"), path.join(seed, "abs-link"));
+      fs.symlinkSync("../../../outside/secret.txt", path.join(seed, "docs", "rel-link"));
+      fs.symlinkSync(outside, path.join(seed, "dir-link"));
+      fs.symlinkSync("real.md", path.join(seed, "docs", "ok-link"));
+      fs.symlinkSync("docs", path.join(seed, "docs-link"));
+      fs.symlinkSync("dir-link/secret.txt", path.join(seed, "chain-link")); // via another escaping link
+      fs.symlinkSync(outside, path.join(seed, ".flaio"));
+    });
     const { match } = await resolvePrRepo(subject, [fx.clone]);
     const co = await checkoutPr(match, subject, opts());
-    fs.writeFileSync(path.join(co.worktreePath, "app.ts"), "export const a = 10;\n");
-    const res = await finishPrFix(co, subject, fix, { jobId: "job1", commitMessage: "Fix" });
-    expect(res.branch).toBe("feature");
-    expect(g(forkBare, "rev-parse", "refs/heads/feature")).toBe(res.commitSha);
-    expect(() => g(fx.bare, "rev-parse", "--verify", "refs/heads/feature")).toThrow();
+    const wt = co.worktreePath;
+    expect([...(co.neutralisedLinks ?? [])].sort()).toEqual(["abs-link", "chain-link", "dir-link", "docs/rel-link"]);
+    for (const p of co.neutralisedLinks ?? []) {
+      expect(fs.lstatSync(path.join(wt, p)).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(path.join(wt, p), "utf-8")).toMatch(/^flaio: this path is a symbolic link/);
+    }
+    expect(fs.readlinkSync(path.join(wt, "docs", "ok-link"))).toBe("real.md");
+    expect(fs.readlinkSync(path.join(wt, "docs-link"))).toBe("docs");
+    expect(fs.existsSync(path.join(wt, ".flaio"))).toBe(false); // the PR's .flaio link is gone, the target untouched
+    expect(fs.readFileSync(path.join(outside, "secret.txt"), "utf-8")).toBe("secret\n");
+    // The runner's own writes land in a real directory inside the worktree.
+    const diffFile = (await writePrDiff(co, subject)) as string;
+    expect(fs.realpathSync(diffFile).startsWith(fs.realpathSync(wt) + path.sep)).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual(["secret.txt"]);
+
+    // A fix neither pushes the placeholders nor may change them.
+    fs.writeFileSync(path.join(wt, "app.ts"), "export const a = 20;\n");
+    const res = await finishPrFix(co, subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F" });
+    expect(g(fx.bare, "diff", "--name-only", subject.headSha, res.commitSha)).toBe("app.ts");
+    expect(g(fx.bare, "cat-file", "-p", `${res.commitSha}:abs-link`)).toBe(path.join(outside, "secret.txt"));
+    await cleanupPrCheckout(co);
+
+    const co2 = await checkoutPr(match, subject, opts("job2"));
+    fs.writeFileSync(path.join(co2.worktreePath, "abs-link"), "changed\n");
+    const err = await finishPrFix(co2, subject, { findingIds: [], target: "same_branch" }, { jobId: "j2", commitMessage: "F" }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as PrJobError).code).toBe("unsafe_changes");
+    expect((err as Error).message).toContain("abs-link");
+    await cleanupPrCheckout(co2);
+  });
+
+  it("never runs filter drivers from the repo config, and never fetches submodules, even with submodule.recurse", async () => {
+    const marker = path.join(fx.tmp, "filter-ran");
+    const subRemote = path.join(fx.tmp, "attacker-sub.git");
+    g(fx.tmp, "init", "-q", "--bare", subRemote);
+    const subject = pushPrHead((seed) => {
+      fs.writeFileSync(path.join(seed, ".gitattributes"), "*.ts filter=evil\n");
+      fs.writeFileSync(path.join(seed, ".gitmodules"), `[submodule "sub"]\n\tpath = sub\n\turl = ${subRemote}\n`);
+      g(seed, "update-index", "--add", "--cacheinfo", `160000,${fx.headSha},sub`);
+      fs.writeFileSync(path.join(seed, "b.ts"), "export const b = 1;\n");
+    });
+    // The user's repo config defines a program filter and recursion; the PR's .gitattributes activates it.
+    g(fx.clone, "config", "filter.evil.smudge", `sh -c 'echo smudge >> "${marker}"; cat'`);
+    g(fx.clone, "config", "filter.evil.clean", `sh -c 'echo clean >> "${marker}"; cat'`);
+    g(fx.clone, "config", "submodule.recurse", "true");
+    const { match } = await resolvePrRepo(subject, [fx.clone]);
+    const co = await checkoutPr(match, subject, opts());
+    expect(fs.readFileSync(path.join(co.worktreePath, "b.ts"), "utf-8")).toBe("export const b = 1;\n");
+    const sub = path.join(co.worktreePath, "sub");
+    expect(fs.existsSync(sub) ? fs.readdirSync(sub) : []).toEqual([]);
+    fs.writeFileSync(path.join(co.worktreePath, "b.ts"), "export const b = 2;\n");
+    await finishPrFix(co, subject, { findingIds: [], target: "same_branch" }, { jobId: "j", commitMessage: "F" });
+    await cleanupPrCheckout(co);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it("deepens a shallow single-branch clone until head and base share a merge base, so a diff is produced", async () => {
+    // main moves 80 commits ahead of where the PR branched off.
+    g(fx.seed, "checkout", "-q", "main");
+    for (let i = 0; i < 80; i++) {
+      fs.writeFileSync(path.join(fx.seed, "log.txt"), `${i}\n`);
+      g(fx.seed, "add", "log.txt");
+      g(fx.seed, "commit", "-q", "-m", `main ${i}`);
+    }
+    g(fx.seed, "push", "-q", "origin", "main");
+    // Cloud-runner style clone: shallow, single branch, file:// so --depth applies.
+    const shallow = path.join(fx.tmp, "shallow", "widgets");
+    g(fx.tmp, "clone", "-q", "--depth", "5", "--single-branch", "--no-tags", `file://${fx.bare}`, shallow);
+    expect(g(shallow, "rev-parse", "--is-shallow-repository")).toBe("true");
+    const { match } = await resolvePrRepo(fx.subject, [shallow]);
+    const co = await checkoutPr(match, fx.subject, opts());
+    expect(co.mergeBase).toBeTruthy();
+    const diffFile = await writePrDiff(co, fx.subject);
+    expect(diffFile).not.toBeNull();
+    const diff = fs.readFileSync(diffFile as string, "utf-8");
+    expect(diff).toContain("+export const a = 2;");
+    expect(diff).not.toContain("log.txt"); // against the merge base, not main's tip
     await cleanupPrCheckout(co);
   });
 });
