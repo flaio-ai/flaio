@@ -43,6 +43,38 @@ describe("cleanupTickets", () => {
     expect([...tracker.getAll().keys()].sort()).toEqual(["busy", "live", "recent", "unknownAge"]);
   });
 
+  it("sweeps only tickets in a terminal status, however old the others are", async () => {
+    const old = { lastJobFinishedAt: NOW - 90 * DAY_MS };
+    const tracker = makeTracker({
+      done: entry({ ...old, status: "done" }),
+      failed: entry({ ...old, status: "failed" }),
+      cancelled: entry({ ...old, status: "cancelled" }),
+      planReady: entry({ ...old, status: "plan_ready" }),
+      needsInfo: entry({ ...old, status: "needs_info" }),
+      stuck: entry({ ...old, status: "stuck" }),
+      planning: entry({ ...old, status: "planning" }),
+      implementing: entry({ ...old, status: "implementing" }),
+      running: entry({ ...old, status: "running" }),
+      idle: entry({ ...old, status: "idle" }),
+    });
+    const res = await cleanupTickets(
+      { tracker, isBusy: () => false, now: () => NOW, checkWorktree: safe },
+      { retentionMs: 14 * DAY_MS },
+    );
+    expect(res.removed.sort()).toEqual(["cancelled", "done", "failed"]);
+    expect([...tracker.getAll().keys()].sort()).toEqual(
+      ["idle", "implementing", "needsInfo", "planReady", "planning", "running", "stuck"],
+    );
+
+    // Also when a ticket is named explicitly (a cancel for a ticket that is not done).
+    const only = await cleanupTickets(
+      { tracker, isBusy: () => false, now: () => NOW, checkWorktree: safe },
+      { retentionMs: 0, only: ["planReady"] },
+    );
+    expect(only.removed).toEqual([]);
+    expect(tracker.get("planReady")).toBeDefined();
+  });
+
   it("never removes a worktree with unsaved work", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "flaio-cleanup-"));
     try {

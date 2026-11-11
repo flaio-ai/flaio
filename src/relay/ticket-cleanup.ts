@@ -3,8 +3,9 @@
 //
 // Removes the tracker entry (and the Flaio-created worktree, branch kept) of a
 // ticket whose last job ended long enough ago. Conservative: a ticket that is
-// running, or whose worktree has uncommitted changes or commits on no remote,
-// is never touched — it is only logged.
+// running or still has something pending (a plan in review, an open question,
+// a stuck agent), or whose worktree has uncommitted changes or commits on no
+// remote, is never touched — it is only logged.
 // ---------------------------------------------------------------------------
 
 import { execFile as execFileCb } from "node:child_process";
@@ -17,6 +18,14 @@ const execFile = promisify(execFileCb);
 const debugLog = makeDebugLog("tickets");
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Tracker statuses that end a ticket's work on this runner. Only these are
+ * swept: any other status (plan_ready, needs_info, stuck, planning, …) means
+ * the ticket is waiting for a review, an answer or its agent, and its session
+ * and worktree are still needed however long ago the last job ended.
+ */
+export const TERMINAL_TICKET_STATUSES: ReadonlySet<string> = new Set(["done", "failed", "cancelled"]);
 
 export type WorktreeCheck = { safe: true } | { safe: false; reason: string };
 
@@ -86,6 +95,7 @@ export async function cleanupTickets(deps: TicketCleanupDeps, opts: TicketCleanu
     const entry = all.get(ticketId);
     if (!entry) continue;
     if (deps.isBusy(ticketId) || entry.sessionId || entry.activeJob) continue;
+    if (!TERMINAL_TICKET_STATUSES.has(entry.status)) continue;
     const last = lastActivity(entry);
     // Unknown age: keep (conservative).
     if (last === null || now - last < opts.retentionMs) continue;
