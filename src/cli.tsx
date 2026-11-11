@@ -280,6 +280,21 @@ program
     process.exit(0);
   });
 
+program
+  .command("runner")
+  .description("Headless cloud runner: run the one job named by FLAIO_JOB_ID, then exit (no TUI)")
+  .option("--once", "Run exactly one job and exit (required)")
+  .action(async (opts: { once?: boolean }) => {
+    if (!opts.once) {
+      process.stderr.write("flaio runner: only --once is supported\n");
+      process.exit(2);
+    }
+    const { runCloudRunnerOnce } = await import("./runner/command.js");
+    const code = await runCloudRunnerOnce();
+    await shutdownAnalytics().catch(() => {});
+    process.exit(code);
+  });
+
 // ── helpers ──────────────────────────────────────────────────────────
 function ensureLoaded() {
   if (!settingsStore.getState().loaded) {

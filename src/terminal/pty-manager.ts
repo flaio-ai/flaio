@@ -10,6 +10,43 @@ export interface PtySpawnOptions {
   rows?: number;
 }
 
+/** Env vars never passed to agent processes (inherited or explicit), unless allowed below. */
+export const SENSITIVE_ENV_PATTERN =
+  /^(AWS_SECRET|ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|SENTRY_AUTH_TOKEN|DATABASE_URL|DB_PASSWORD|PRIVATE_KEY|SECRET_KEY|AUTH_TOKEN|REFRESH_TOKEN|FLAIO_RUNNER_TOKEN)/i;
+
+/**
+ * Explicit allow path: an explicit `options.env` may name, in this variable
+ * (comma separated), sensitive keys it deliberately passes to the agent. The
+ * cloud runner uses it for the provider key it injects for one session. Only
+ * keys present in that same explicit env are allowed; inherited process env
+ * values are always scrubbed. The marker itself never reaches the child.
+ */
+export const ALLOW_SECRET_ENV_MARKER = "FLAIO_ALLOW_SECRET_ENV";
+
+/** The agent process env: scrubbed process env + explicit env (scrubbed except allowed keys). */
+export function buildChildEnv(
+  parent: NodeJS.ProcessEnv,
+  explicit: Record<string, string> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parent)) {
+    if (v !== undefined && !SENSITIVE_ENV_PATTERN.test(k) && k !== ALLOW_SECRET_ENV_MARKER) out[k] = v;
+  }
+  if (!explicit) return out;
+  const allowed = new Set(
+    (explicit[ALLOW_SECRET_ENV_MARKER] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  for (const [k, v] of Object.entries(explicit)) {
+    if (k === ALLOW_SECRET_ENV_MARKER) continue;
+    if (SENSITIVE_ENV_PATTERN.test(k) && !allowed.has(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 export class PtyManager extends EventEmitter {
   private pty: IPty | null = null;
 
@@ -32,14 +69,7 @@ export class PtyManager extends EventEmitter {
     const extraPaths = ["/opt/homebrew/bin", "/usr/local/bin"];
     const fullPath = [...extraPaths.filter(p => !currentPath.includes(p)), currentPath].join(":");
 
-    // Filter sensitive env vars before passing to child processes
-    const filteredEnv: Record<string, string> = {};
-    const sensitivePatterns = /^(AWS_SECRET|ANTHROPIC_API_KEY|OPENAI_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|SENTRY_AUTH_TOKEN|DATABASE_URL|DB_PASSWORD|PRIVATE_KEY|SECRET_KEY|AUTH_TOKEN|REFRESH_TOKEN)/i;
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined && !sensitivePatterns.test(k)) {
-        filteredEnv[k] = v;
-      }
-    }
+    const childEnv = buildChildEnv(process.env, options.env);
 
     this.pty = spawn(shell, args, {
       name: "xterm-256color",
@@ -47,8 +77,7 @@ export class PtyManager extends EventEmitter {
       rows,
       cwd: options.cwd ?? process.cwd(),
       env: {
-        ...filteredEnv,
-        ...options.env,
+        ...childEnv,
         CLAUDECODE: "",
         PATH: fullPath,
         TERM: "xterm-256color",

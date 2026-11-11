@@ -2,6 +2,7 @@ import type { BaseDriver } from "./drivers/base-driver.js";
 import { ClaudeDriver } from "./drivers/claude-driver.js";
 import { GeminiDriver } from "./drivers/gemini-driver.js";
 import { CopilotDriver } from "./drivers/copilot-driver.js";
+import { OpenCodeDriver } from "./drivers/opencode-driver.js";
 
 const drivers: Map<string, BaseDriver> = new Map();
 
@@ -31,3 +32,4 @@ export async function getInstalledDrivers(): Promise<BaseDriver[]> {
 registerDriver(new ClaudeDriver());
 registerDriver(new GeminiDriver());
 registerDriver(new CopilotDriver());
+registerDriver(new OpenCodeDriver());
