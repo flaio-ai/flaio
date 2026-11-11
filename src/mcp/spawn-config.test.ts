@@ -57,6 +57,27 @@ describe("getMcpSpawnConfig", () => {
     expect(settings.hooks.Stop[0].matcher).toBeUndefined();
   });
 
+  it("pull request sessions: toolset, permission rules, no Stop hook, token kept out of the agent env", () => {
+    const cfg = getMcpSpawnConfig("rev-1", "job-9", {
+      worktreePath: "/repo/.flaio/worktrees/pr-x",
+      socketPath: "/tmp/x.sock",
+      nodePath: "/usr/bin/node",
+      cliEntry: "/opt/flaio/dist/cli.js",
+      toolset: "pr_review",
+      permissions: { allow: ["Read", "mcp__flaio__submit_review"], deny: ["Bash"] },
+      stopHook: false,
+      tokenInAgentEnv: false,
+    });
+    created.push(cfg);
+    const json = JSON.parse(fs.readFileSync(cfg.mcpConfigPath, "utf-8"));
+    expect(json.mcpServers.flaio.env).toMatchObject({ FLAIO_MCP_TOOLSET: "pr_review", FLAIO_MCP_TOKEN: cfg.token });
+    const settings = JSON.parse(fs.readFileSync(cfg.settingsPath, "utf-8"));
+    expect(settings).toEqual({ permissions: { allow: ["Read", "mcp__flaio__submit_review"], deny: ["Bash"] } });
+    expect(cfg.env).not.toHaveProperty("FLAIO_MCP_TOKEN");
+    expect(cfg.env).toMatchObject({ FLAIO_TICKET_ID: "rev-1", FLAIO_JOB_ID: "job-9" });
+    expect(resolveMcpSession(cfg.token)).toMatchObject({ ticketId: "rev-1", toolset: "pr_review" });
+  });
+
   it("omits --job when there is no job and uses fresh tokens", () => {
     const a = getMcpSpawnConfig("t", null);
     const b = getMcpSpawnConfig("t", null);

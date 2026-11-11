@@ -147,3 +147,70 @@ describe("handleMcpToolCall (CLI endpoint)", () => {
     expect((await readWorkspace(wt)).plan).toBe("P\n");
   });
 });
+
+describe("submit_review (pull request reviews)", () => {
+  const review = {
+    verdict: "needs_fixes",
+    summary: "One bug.",
+    findings: [{ severity: "high", confidence: "high", title: "Null deref", path: "src/a.ts", line: 4, scenario: "Call a() with no user." }],
+  };
+
+  it("handleToolCall validates, persists review.json and emits review_submitted", async () => {
+    const out = await handleToolCall({ ...ctx(), toolset: "pr_review" }, "submit_review", review, { emit });
+    expect(out).toEqual({ ok: true });
+    const saved = JSON.parse(fs.readFileSync(path.join(wt, ".flaio/ticket/review.json"), "utf-8"));
+    expect(saved.findings[0]).toMatchObject({ title: "Null deref", suggestedFix: null });
+    expect(events).toEqual([
+      {
+        event: "review_submitted",
+        payload: {
+          ticketId: "t1",
+          jobId: "j1",
+          review: { ...review, findings: [{ ...review.findings[0], suggestedFix: null }], checkedClean: [] },
+        },
+      },
+    ]);
+  });
+
+  it("is not callable outside a pr_review toolset, and PR sessions cannot call ticket tools", async () => {
+    await expect(handleToolCall(ctx(), "submit_review", review, { emit })).rejects.toThrow(/not available/);
+    await expect(handleToolCall({ ...ctx(), toolset: "pr_review" }, "submit_plan", { steps: ["a"], markdown: "P" }, { emit })).rejects.toThrow(
+      /not available/,
+    );
+    expect(events).toEqual([]);
+
+    const bus = new TicketPhaseBus();
+    const ticketToken = registerMcpSession({ ticketId: "t1", jobId: "j1", worktreePath: wt });
+    expect(await handleMcpToolCall({ token: ticketToken, tool: "submit_review", input: review }, bus)).toMatchObject({
+      ok: false,
+      code: "unknown_tool",
+    });
+    const prToken = registerMcpSession({ ticketId: "rev1", jobId: "j2", worktreePath: wt, toolset: "pr_review" });
+    expect(await handleMcpToolCall({ token: prToken, tool: "ask_question", input: { text: "?" } }, bus)).toMatchObject({
+      ok: false,
+      code: "unknown_tool",
+    });
+  });
+
+  it("the CLI endpoint accepts one review per session; an invalid one can be corrected", async () => {
+    const bus = new TicketPhaseBus();
+    const seen: unknown[] = [];
+    bus.onEvent("review_submitted", (p) => seen.push(p));
+    const token = registerMcpSession({ ticketId: "rev1", jobId: "j2", worktreePath: wt, toolset: "pr_review" });
+
+    const bad = await handleMcpToolCall({ token, tool: "submit_review", input: { verdict: "lgtm", summary: "x" } }, bus);
+    expect(bad).toMatchObject({ ok: false, code: "invalid_input" });
+    expect(seen).toHaveLength(0);
+
+    // Two concurrent submissions: only one is accepted.
+    const [first, second] = await Promise.all([
+      handleMcpToolCall({ token, tool: "submit_review", input: review }, bus),
+      handleMcpToolCall({ token, tool: "submit_review", input: { verdict: "approve", summary: "Fine." } }, bus),
+    ]);
+    expect(first).toMatchObject({ ok: true });
+    expect(second).toMatchObject({ ok: false, code: "already_submitted" });
+    const third = await handleMcpToolCall({ token, tool: "submit_review", input: review }, bus);
+    expect(third).toMatchObject({ ok: false, code: "already_submitted" });
+    expect(seen).toEqual([expect.objectContaining({ ticketId: "rev1", jobId: "j2" })]);
+  });
+});

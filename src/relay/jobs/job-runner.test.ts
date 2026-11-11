@@ -319,7 +319,7 @@ describe("JobRunner.runJob", () => {
     expect(h.ofType("cli_job_failed")[0]).toMatchObject({ jobId: "job1", error: expect.stringContaining("nope") });
   });
 
-  it("refuses pr_review / pr_fix jobs until they are implemented (Pull requests Wave 0)", async () => {
+  it("refuses pr_review / pr_fix jobs without a pull request subject (never runs them as ticket jobs)", async () => {
     const h = harness;
     for (const kind of ["pr_review", "pr_fix"] as const) {
       expect(await h.runner.runJob(runJobMsg(job(kind, `job-${kind}`, "plan"), null))).toBeNull();

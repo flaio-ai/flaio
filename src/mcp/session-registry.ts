@@ -8,12 +8,17 @@
 // ---------------------------------------------------------------------------
 
 import { randomBytes } from "node:crypto";
+import type { FlaioMcpToolset } from "../contracts/mcp-tools.js";
 
 export interface McpSessionBinding {
   ticketId: string;
   jobId: string | null;
   /** Ticket worktree. When unknown, the MCP server's reported cwd is used. */
   worktreePath: string | null;
+  /** Tools the session may call. Absent = the ticket tools. */
+  toolset?: FlaioMcpToolset;
+  /** pr_review: submit_review is accepted once ("pending" while it is being handled). */
+  reviewSubmission?: "pending" | "done";
   createdAt: number;
 }
 
@@ -36,6 +41,24 @@ export function updateMcpSession(token: string, patch: Partial<Omit<McpSessionBi
   if (!cur) return false;
   sessions.set(token, { ...cur, ...patch });
   return true;
+}
+
+/**
+ * pr_review: claim the session's single submit_review. Returns false when a
+ * review was already submitted (or is being handled) for this token.
+ */
+export function claimReviewSubmission(token: string): boolean {
+  const cur = sessions.get(token);
+  if (!cur || cur.reviewSubmission) return false;
+  cur.reviewSubmission = "pending";
+  return true;
+}
+
+/** Settle a claim: "done" keeps it, "released" lets the agent submit again (invalid input). */
+export function settleReviewSubmission(token: string, outcome: "done" | "released"): void {
+  const cur = sessions.get(token);
+  if (!cur) return;
+  cur.reviewSubmission = outcome === "done" ? "done" : undefined;
 }
 
 export function revokeMcpSession(token: string): void {

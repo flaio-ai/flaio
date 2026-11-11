@@ -8,8 +8,9 @@
 // ---------------------------------------------------------------------------
 
 import { ticketPhaseBus, type TicketPhaseBus } from "../contracts/ticket-phase-bus.js";
+import { toolsetAllows } from "../contracts/mcp-tools.js";
 import { handleToolCall, isFlaioMcpToolName, ToolInputError, type BusEmit } from "./tool-handlers.js";
-import { resolveMcpSession } from "./session-registry.js";
+import { claimReviewSubmission, resolveMcpSession, settleReviewSubmission } from "./session-registry.js";
 
 export interface McpToolCallPayload {
   token: string;
@@ -21,7 +22,7 @@ export interface McpToolCallPayload {
 
 export type McpToolCallResult =
   | { ok: true; result: unknown }
-  | { ok: false; code: "unauthorized" | "unknown_tool" | "invalid_input" | "error"; error: string };
+  | { ok: false; code: "unauthorized" | "unknown_tool" | "invalid_input" | "already_submitted" | "error"; error: string };
 
 export async function handleMcpToolCall(
   payload: Partial<McpToolCallPayload>,
@@ -32,6 +33,11 @@ export async function handleMcpToolCall(
 
   const tool = String(payload.tool ?? "");
   if (!isFlaioMcpToolName(tool)) return { ok: false, code: "unknown_tool", error: `Unknown tool: ${tool}` };
+  // The token's toolset decides what this agent may call (a ticket agent never
+  // submits a PR review; a PR review agent never plans or asks questions).
+  if (!toolsetAllows(session.toolset, tool)) {
+    return { ok: false, code: "unknown_tool", error: `Tool ${tool} is not available in this Flaio session` };
+  }
 
   const worktreePath = session.worktreePath ?? (typeof payload.cwd === "string" ? payload.cwd : null);
   if (!worktreePath) return { ok: false, code: "error", error: "Ticket worktree is unknown" };
@@ -40,15 +46,32 @@ export async function handleMcpToolCall(
     bus.emitEvent(event, p);
   };
 
+  // One review per job: claim the submission synchronously (no await in
+  // between) so two concurrent calls cannot both pass; an invalid submission
+  // releases the claim so the agent can correct it and try again.
+  const isReview = tool === "submit_review";
+  const token = payload.token as string;
+  if (isReview) {
+    if (!claimReviewSubmission(token)) {
+      return {
+        ok: false,
+        code: "already_submitted",
+        error: "A review was already submitted for this job. submit_review accepts one submission; stop now.",
+      };
+    }
+  }
+
   try {
     const result = await handleToolCall(
-      { ticketId: session.ticketId, jobId: session.jobId, worktreePath },
+      { ticketId: session.ticketId, jobId: session.jobId, worktreePath, toolset: session.toolset ?? null },
       tool,
       payload.input,
       { emit },
     );
+    if (isReview) settleReviewSubmission(token, "done");
     return { ok: true, result };
   } catch (err) {
+    if (isReview) settleReviewSubmission(token, "released");
     if (err instanceof ToolInputError) return { ok: false, code: "invalid_input", error: err.message };
     return { ok: false, code: "error", error: err instanceof Error ? err.message : String(err) };
   }

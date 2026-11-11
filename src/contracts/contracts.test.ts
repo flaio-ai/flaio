@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { RelayToCliMsgSchema } from "../relay/relay-message-schemas.js";
-import { CompletePhaseInput, FLAIO_MCP_PR_TOOLS, FLAIO_MCP_TOOLS, SubmitPlanInput, SubmitReviewInput } from "./mcp-tools.js";
+import {
+  CompletePhaseInput,
+  FLAIO_MCP_PR_TOOLS,
+  FLAIO_MCP_TOOLS,
+  FLAIO_MCP_TOOLSETS,
+  SubmitPlanInput,
+  SubmitReviewInput,
+  toolsetAllows,
+} from "./mcp-tools.js";
 import { DECISIONS, jobSubjectKey, type PrReviewSubmission } from "./agent-loop.js";
 import { TicketPhaseBus } from "./ticket-phase-bus.js";
 
@@ -41,10 +49,18 @@ describe("Stage 0 contracts", () => {
     expect(RelayToCliMsgSchema.safeParse(bad).success).toBe(false);
   });
 
-  it("defines the six MCP tools", () => {
+  it("defines the MCP tools: the six ticket tools plus submit_review", () => {
     expect(Object.keys(FLAIO_MCP_TOOLS).sort()).toEqual(
+      ["ask_question", "complete_phase", "get_ticket_context", "record_decision", "report_progress", "submit_plan", "submit_review"],
+    );
+    expect([...FLAIO_MCP_TOOLSETS.ticket].sort()).toEqual(
       ["ask_question", "complete_phase", "get_ticket_context", "record_decision", "report_progress", "submit_plan"],
     );
+    expect(toolsetAllows(undefined, "submit_review")).toBe(false);
+    expect(toolsetAllows("pr_review", "submit_review")).toBe(true);
+    expect(toolsetAllows("pr_review", "submit_plan")).toBe(false);
+    expect(toolsetAllows("pr_fix", "complete_phase")).toBe(true);
+    expect(toolsetAllows("pr_fix", "submit_review")).toBe(false);
     expect(SubmitPlanInput.safeParse({ steps: [], markdown: "x" }).success).toBe(false);
     expect(CompletePhaseInput.parse({ result: "success", summary: "done" }).testsRun).toEqual([]);
   });
@@ -80,9 +96,9 @@ describe("Stage 0 contracts", () => {
     expect(jobSubjectKey({ ticketId: "t1" })).toBe("ticket:t1");
   });
 
-  it("defines submit_review matching PrReviewSubmission, outside the registered tools", () => {
+  it("defines submit_review matching PrReviewSubmission, registered for PR review sessions", () => {
     expect(Object.keys(FLAIO_MCP_PR_TOOLS)).toEqual(["submit_review"]);
-    expect("submit_review" in FLAIO_MCP_TOOLS).toBe(false);
+    expect(FLAIO_MCP_TOOLS.submit_review.input).toBe(SubmitReviewInput);
     const parsed: PrReviewSubmission = SubmitReviewInput.parse({
       verdict: "needs_fixes",
       summary: "Two lifecycle bugs.",

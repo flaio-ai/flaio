@@ -43,6 +43,13 @@ export interface TicketSpawnOptions {
   print?: boolean;
   /** Tool allow-list (print-mode planning). */
   allowedTools?: string[];
+  /**
+   * The working directory holds untrusted code (a pull request under review):
+   * ignore project/user agent settings, hooks and MCP servers found there and
+   * confine file tools to the working directory. Only drivers whose
+   * ticketCapabilities.untrustedWorkspace is true honour it.
+   */
+  untrustedWorkspace?: boolean;
 }
 
 export interface TicketSpawnConfig extends SpawnConfig {
@@ -66,6 +73,8 @@ export interface TicketCapabilities {
   mcpConfig: boolean;
   /** Accepts extra system prompt text on the command line. */
   appendSystemPrompt: boolean;
+  /** Honours TicketSpawnOptions.untrustedWorkspace (required for pull request jobs). */
+  untrustedWorkspace?: boolean;
 }
 
 export const NO_TICKET_CAPABILITIES: TicketCapabilities = Object.freeze({
