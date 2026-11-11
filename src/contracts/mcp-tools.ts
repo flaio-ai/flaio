@@ -67,6 +67,42 @@ export const FLAIO_MCP_TOOLS = {
 
 export type FlaioMcpToolName = keyof typeof FLAIO_MCP_TOOLS;
 
+// ---- Pull request review tools (Pull requests Wave 0: contract only) --------
+//
+// submit_review gives a pr_review job structured output, the way submit_plan
+// does for tickets: hook server -> TicketPhaseBus -> cli_phase_complete.review.
+// Mirrors PrReviewSubmission in ./agent-loop.ts. Not registered by the MCP
+// server yet: stream F moves it into FLAIO_MCP_TOOLS together with its handler.
+
+export const PrReviewFindingInputSchema = z.object({
+  severity: z.enum(["critical", "high", "medium", "low", "info"]),
+  /** "verified_by_test" only when reproduced with a test or scratch run. */
+  confidence: z.enum(["verified_by_test", "high", "medium", "low"]),
+  title: z.string().min(1),
+  /** Repo-relative path; null for a PR-wide finding. */
+  path: z.string().min(1).nullable().default(null),
+  /** Line in the head version of `path`. */
+  line: z.number().int().positive().nullable().default(null),
+  /** Concrete scenario that triggers the problem. */
+  scenario: z.string().min(1),
+  suggestedFix: z.string().min(1).nullable().default(null),
+});
+
+export const SubmitReviewInput = z.object({
+  verdict: z.enum(["approve", "needs_fixes", "comment"]),
+  summary: z.string().min(1),
+  findings: z.array(PrReviewFindingInputSchema).default([]),
+  /** Things checked and found clean, one sentence each. */
+  checkedClean: z.array(z.string().min(1)).default([]),
+});
+
+/** PR tools, kept out of FLAIO_MCP_TOOLS until their handlers exist. */
+export const FLAIO_MCP_PR_TOOLS = {
+  submit_review: { input: SubmitReviewInput, output: OkOutput },
+} as const;
+
+export type FlaioMcpPrToolName = keyof typeof FLAIO_MCP_PR_TOOLS;
+
 /** Files kept in the ticket worktree (excluded from commits via .git/info/exclude). */
 export const TICKET_WORKSPACE_DIR = ".flaio/ticket";
 export const TICKET_WORKSPACE_FILES = {

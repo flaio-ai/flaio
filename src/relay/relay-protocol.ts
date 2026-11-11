@@ -1,4 +1,13 @@
-import type { Job, JobKind, PhaseResult, Runner, TicketAgentSession, TicketEvent } from "../contracts/agent-loop.js";
+import type {
+  Job,
+  JobKind,
+  JobSecrets,
+  PhaseResult,
+  PrReviewSubmission,
+  Runner,
+  TicketAgentSession,
+  TicketEvent,
+} from "../contracts/agent-loop.js";
 
 // ---------------------------------------------------------------------------
 // WebSocket protocol message types for CLI ↔ Relay ↔ Browser communication
@@ -284,6 +293,8 @@ export interface CliPhaseCompleteMsg {
   /** Structured plan when phase is plan / revise_plan. */
   plan?: { steps: string[]; risks: string[]; files: string[]; markdown: string };
   gitContext?: { branch?: string; prUrl?: string; headSha?: string };
+  /** Structured review when phase is pr_review (from the submit_review MCP tool). Absent on older CLIs. */
+  review?: PrReviewSubmission;
 }
 
 export interface CliJobFailedMsg {
@@ -293,6 +304,18 @@ export interface CliJobFailedMsg {
   error: string;
   /** Fallback heuristics flagged the agent as stuck rather than crashed. */
   stuck?: boolean;
+}
+
+/**
+ * Cloud runner (kind "cloud") asks for the job-scoped secrets of a job it has
+ * claimed: provider key and a single-repo GitHub token. Pull requests Wave 0:
+ * contract only, not handled yet. Local runners never send this.
+ */
+export interface CliRequestJobSecretsMsg {
+  type: "cli_request_job_secrets";
+  requestId: string;
+  runnerId: string;
+  jobId: string;
 }
 
 export type CliToRelayMsg =
@@ -320,7 +343,8 @@ export type CliToRelayMsg =
   | CliAgentSessionMsg
   | CliTicketEventMsg
   | CliPhaseCompleteMsg
-  | CliJobFailedMsg;
+  | CliJobFailedMsg
+  | CliRequestJobSecretsMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -604,6 +628,18 @@ export interface RelayCancelJobMsg {
   reason: string;
 }
 
+/** Reply to cli_request_job_secrets. Pull requests Wave 0: contract only, not sent yet. */
+export interface RelayJobSecretsMsg {
+  type: "relay_job_secrets";
+  requestId: string;
+  jobId: string;
+  ok: boolean;
+  /** Present when ok. */
+  secrets?: JobSecrets;
+  /** Present when not ok (job not claimed by this runner, spend limit reached, ...). */
+  error?: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -627,7 +663,8 @@ export type RelayToCliMsg =
   | RelayRepoDetectedMsg
   | RelayUserSettingsMsg
   | RelayRunJobMsg
-  | RelayCancelJobMsg;
+  | RelayCancelJobMsg
+  | RelayJobSecretsMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages
