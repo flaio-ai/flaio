@@ -45,7 +45,13 @@ describe("Stage 0 contracts", () => {
   });
 
   it("keeps the PR fix input fields (the parsed message is what the runner uses)", () => {
-    const fix = { findingIds: ["f1"], target: "same_branch", maintainerCanModify: true, headRepository: "contrib/widgets" };
+    const fix = {
+      findingIds: ["f1"],
+      target: "same_branch",
+      maintainerCanModify: true,
+      headRepository: "contrib/widgets",
+      pushPermission: { repository: "contrib/widgets", push: true, checkedAt: 1_700_000_000_000 },
+    };
     const subject = { type: "pr", owner: "acme", repo: "widgets", number: 7, headSha: "a".repeat(40), headRef: "feature", baseRef: "main", isFork: true };
     const msg = {
       type: "relay_run_job",

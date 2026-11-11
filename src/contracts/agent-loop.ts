@@ -239,6 +239,22 @@ export interface PrFixInput {
   maintainerCanModify?: boolean;
   /** `owner/repo` of the PR's head repository when it is a fork (where a same-branch fix pushes). */
   headRepository?: string;
+  /**
+   * Set by startPrFix: the server checked, with the user's own GitHub token,
+   * that the user has push permission on `repository` (the repo the fix pushes
+   * to). Runners and the relay require `push: true`; the user's own "allow
+   * push" settings are never proof of permission. Absent on jobs created
+   * before this check existed (they are refused at dispatch).
+   */
+  pushPermission?: PrFixPushPermission;
+}
+
+export interface PrFixPushPermission {
+  /** `owner/repo` the fix will push to. */
+  repository: string;
+  push: true;
+  /** Epoch ms of the check. */
+  checkedAt: number;
 }
 
 /** Exclusivity key of a pull request subject: `pr:<owner>/<repo>#<number>` (owner/repo lower-cased). */
