@@ -178,7 +178,34 @@ const RelayUserSettingsSchema = z.object({
 
 // Virtual developer (Stage 0): job dispatch. Mirrors RelayRunJobMsg / RelayCancelJobMsg.
 
-const JobKindSchema = z.enum(["plan", "implement", "revise_plan", "review_fixes", "ci_fix", "answer_resume"]);
+const JobKindSchema = z.enum([
+  "plan",
+  "implement",
+  "revise_plan",
+  "review_fixes",
+  "ci_fix",
+  "answer_resume",
+  "pr_review",
+  "pr_fix",
+]);
+
+// Pull requests (Wave 0). Mirrors PrJobSubject / PrFixInput in contracts/agent-loop.ts.
+const PrJobSubjectSchema = z.object({
+  type: z.literal("pr"),
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  headSha: z.string(),
+  headRef: z.string(),
+  baseRef: z.string(),
+  isFork: z.boolean(),
+});
+
+const PrFixInputSchema = z.object({
+  findingIds: z.array(z.string()),
+  target: z.enum(["same_branch", "new_branch"]),
+  newBranchName: z.string().optional(),
+});
 
 const TicketAgentSessionSchema = z.object({
   id: z.string(),
@@ -216,10 +243,14 @@ const JobSchema = z.object({
       teamId: z.string().nullable().optional(),
       sessionId: z.string().optional(),
       iteration: z.number().optional(),
+      runnerPreference: z.enum(["auto", "local", "cloud"]).optional(),
     })
     .nullable()
     .optional(),
   result: z.enum(["success", "needs_info", "failed"]).nullable().optional(),
+  subject: PrJobSubjectSchema.nullable().optional(),
+  reviewId: z.string().nullable().optional(),
+  fix: PrFixInputSchema.nullable().optional(),
 });
 
 const RelayRunJobSchema = z.object({

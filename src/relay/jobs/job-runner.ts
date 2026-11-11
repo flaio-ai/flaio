@@ -16,7 +16,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { stripAnsi } from "../../strip-ansi.js";
-import type { Job, JobKind, TicketAgentSession, TicketEventPayloads } from "../../contracts/agent-loop.js";
+import { isPrJobKind, type Job, type JobKind, type TicketAgentSession, type TicketEventPayloads } from "../../contracts/agent-loop.js";
 import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../../contracts/mcp-tools.js";
 import { ticketPhaseBus, type TicketPhaseBus, type TicketPhaseBusEvents } from "../../contracts/ticket-phase-bus.js";
 import type { AgentStatus, BaseDriver, TicketSpawnConfig, TicketSpawnOptions } from "../../agents/drivers/base-driver.js";
@@ -240,6 +240,21 @@ export class JobRunner {
     if (!options.legacy) {
       const duplicate = this.handleDuplicate(msg);
       if (duplicate !== undefined) return duplicate;
+    }
+
+    // Pull requests (Wave 0): pr_review / pr_fix are in the contract but NOT YET
+    // IMPLEMENTED here (stream F). Refuse them rather than run them as ticket jobs;
+    // ticket kinds are unaffected.
+    if (isPrJobKind(job.kind)) {
+      debugLog(`jobs: ${job.id} refused: job kind ${job.kind} not supported yet`);
+      this.rememberFinished(job, false);
+      this.sendJobEnd(job, {
+        type: "cli_job_failed",
+        jobId: job.id,
+        ticketId: job.ticketId,
+        error: `Job kind "${job.kind}" is not supported by this Flaio CLI yet`,
+      });
+      return null;
     }
 
     // A newer runJob (or a cancel) for the same ticket while this one is still
