@@ -2,7 +2,8 @@ import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "
 import { execSync } from "node:child_process";
 
 // Match the `codex` CLI but not the desktop app, its app-server, or the VS Code extension host.
-const CODEX_PROCESS_PATTERN = /\bcodex\b(?!.*(?:app-server|Codex\.app|\.vscode))/;
+// The exclusions can appear before or after the command name in a ps line, so anchor the lookahead.
+const CODEX_PROCESS_PATTERN = /^(?!.*(?:app-server|Codex\.app|\.vscode)).*\bcodex\b/;
 
 export class CodexDriver extends BaseDriver {
   readonly name = "codex";
