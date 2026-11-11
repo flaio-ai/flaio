@@ -318,6 +318,27 @@ export interface CliRequestJobSecretsMsg {
   jobId: string;
 }
 
+/**
+ * Cloud runner (kind "cloud") reports the model usage of its job before it
+ * exits; the relay writes the usage ledger (users/{uid}/usage/{jobId}).
+ * Accepted only from the connection authenticated with that job's runner token.
+ */
+export interface CliJobUsageMsg {
+  type: "cli_job_usage";
+  jobId: string;
+  runnerId: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    /** null when the harness did not report a cost. */
+    costUsd: number | null;
+    /** Model the agent ran with (`provider/model`). */
+    model: string | null;
+    durationMs: number;
+  };
+}
+
 export type CliToRelayMsg =
   | CliAuthMsg
   | CliRegisterSessionMsg
@@ -344,7 +365,8 @@ export type CliToRelayMsg =
   | CliTicketEventMsg
   | CliPhaseCompleteMsg
   | CliJobFailedMsg
-  | CliRequestJobSecretsMsg;
+  | CliRequestJobSecretsMsg
+  | CliJobUsageMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
