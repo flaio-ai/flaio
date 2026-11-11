@@ -16,7 +16,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../contracts/mcp-tools.js";
+import { PR_WORKSPACE_FILES, TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../contracts/mcp-tools.js";
 
 export type TicketWorkspaceFile = keyof typeof TICKET_WORKSPACE_FILES;
 
@@ -265,6 +265,23 @@ export async function writeBrief(
   await ensureWorkspace(worktreePath);
   await writeAtomic(worktreePath, workspaceFilePath(worktreePath, "brief"), markdown.endsWith("\n") ? markdown : markdown + "\n");
   await startPhase(worktreePath, phase ?? {});
+}
+
+/** Write one of the pull request job files (pr.diff, review.json) next to brief.md. */
+export async function writePrWorkspaceFile(
+  worktreePath: string,
+  file: keyof typeof PR_WORKSPACE_FILES,
+  content: string,
+): Promise<string> {
+  await ensureWorkspace(worktreePath);
+  const filePath = path.join(workspaceDir(worktreePath), PR_WORKSPACE_FILES[file]);
+  await writeAtomic(worktreePath, filePath, content.endsWith("\n") ? content : content + "\n");
+  return filePath;
+}
+
+/** Record the review a pr_review agent submitted (review.json). */
+export async function writeReview(worktreePath: string, review: unknown): Promise<void> {
+  await writePrWorkspaceFile(worktreePath, "review", JSON.stringify(review, null, 2));
 }
 
 /** Replace plan.md with the latest plan. */

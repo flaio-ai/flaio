@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES } from "../../contracts/mcp-tools.js";
+import { TICKET_WORKSPACE_DIR, TICKET_WORKSPACE_FILES, type FlaioMcpToolset } from "../../contracts/mcp-tools.js";
 import { ensureFlaioExcluded } from "../worktree-manager.js";
 
 /** Writes ticket workspace files into a worktree. */
@@ -100,6 +100,14 @@ export interface McpSpawnConfig {
 export interface McpSpawnContext {
   /** Directory the agent runs in (ticket worktree, or the project dir). */
   worktreePath: string;
+  /** Pull request jobs: the tools the session may call (default: the ticket tools). */
+  toolset?: FlaioMcpToolset;
+  /** Pull request jobs: agent permission rules for the settings file. */
+  permissions?: { allow: string[]; deny: string[] };
+  /** false: no ticket Stop hook in the settings file (PR jobs). */
+  stopHook?: boolean;
+  /** false: keep the MCP session token out of the agent env (PR jobs). */
+  tokenInAgentEnv?: boolean;
 }
 
 export type McpSpawnConfigProvider = (

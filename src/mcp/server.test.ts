@@ -4,7 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FLAIO_MCP_TOOLS } from "../contracts/mcp-tools.js";
+import { FLAIO_MCP_TOOLSETS, type FlaioMcpToolset } from "../contracts/mcp-tools.js";
 import { ticketPhaseBus } from "../contracts/ticket-phase-bus.js";
 import { HookServer } from "../hooks/hook-server.js";
 import { readWorkspace, writeBrief } from "../workspace/ticket-workspace.js";
@@ -23,8 +23,8 @@ afterEach(() => {
   ticketPhaseBus.removeAllListeners();
 });
 
-async function connect(callTool: ToolCaller) {
-  const server = createFlaioMcpServer({ callTool, version: "test" });
+async function connect(callTool: ToolCaller, toolset?: FlaioMcpToolset) {
+  const server = createFlaioMcpServer({ callTool, version: "test", ...(toolset ? { toolset } : {}) });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "1" });
   await Promise.all([server.connect(serverT), client.connect(clientT)]);
@@ -35,8 +35,33 @@ describe("Flaio MCP server", () => {
   it("registers exactly the contract tools", async () => {
     const { client } = await connect(async () => ({ ok: true }));
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(Object.keys(FLAIO_MCP_TOOLS).sort());
+    expect(tools.map((t) => t.name).sort()).toEqual([...FLAIO_MCP_TOOLSETS.ticket].sort());
+    expect(tools.map((t) => t.name)).not.toContain("submit_review");
     for (const t of tools) expect(t.description).toBeTruthy();
+  });
+
+  it("registers only the PR review tools for a pr_review session", async () => {
+    const calls: unknown[] = [];
+    const { client } = await connect(async (tool, input) => {
+      calls.push({ tool, input });
+      return { ok: true };
+    }, "pr_review");
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(["get_ticket_context", "report_progress", "submit_review"]);
+    const ok = await client.callTool({ name: "submit_review", arguments: { verdict: "approve", summary: "Looks right." } });
+    expect(ok.isError).toBeFalsy();
+    expect(calls).toEqual([
+      { tool: "submit_review", input: { verdict: "approve", summary: "Looks right.", findings: [], checkedClean: [] } },
+    ]);
+    const bad = await client.callTool({ name: "submit_review", arguments: { verdict: "lgtm", summary: "x" } });
+    expect(bad.isError).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads the toolset from FLAIO_MCP_TOOLSET", () => {
+    expect(resolveMcpRuntimeConfig({}, { FLAIO_MCP_TOOLSET: "pr_fix" }, "/w").toolset).toBe("pr_fix");
+    expect(resolveMcpRuntimeConfig({}, { FLAIO_MCP_TOOLSET: "bogus" }, "/w").toolset).toBe("ticket");
+    expect(resolveMcpRuntimeConfig({}, {}, "/w").toolset).toBe("ticket");
   });
 
   it("validates input and passes parsed data (with defaults) to the caller", async () => {

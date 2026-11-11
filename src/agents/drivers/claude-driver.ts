@@ -35,6 +35,7 @@ export class ClaudeDriver extends BaseDriver {
     permissionModes: true,
     mcpConfig: true,
     appendSystemPrompt: true,
+    untrustedWorkspace: true,
   };
 
   async checkInstalled(): Promise<boolean> {
@@ -142,6 +143,14 @@ export class ClaudeDriver extends BaseDriver {
     }
     if (options.allowedTools?.length) {
       args.push("--allowedTools", options.allowedTools.join(","));
+    }
+    if (options.untrustedWorkspace) {
+      // Pull request code: --restricted drops command-running tools and
+      // WebFetch, ignores user/project/local settings (so a .claude/settings.json
+      // or hooks shipped by the PR never load) and confines file tools to the
+      // working directory; --settings still applies. --strict-mcp-config loads
+      // only the Flaio server from --mcp-config (never a PR's .mcp.json).
+      args.push("--restricted", "--strict-mcp-config");
     }
     if (options.print) {
       args.push("-p");
