@@ -9,7 +9,7 @@ import { ClaudeDriver } from "../../agents/drivers/claude-driver.js";
 import type { AgentStatus, BaseDriver, TicketSpawnConfig, TicketSpawnOptions } from "../../agents/drivers/base-driver.js";
 import type { CliToRelayMsg, RelayRunJobMsg } from "../relay-protocol.js";
 import { TicketTracker } from "../ticket-tracker.js";
-import { JobRunner, type JobAgentSession } from "./job-runner.js";
+import { FINISHED_OUTCOMES_MAX, JobRunner, type JobAgentSession } from "./job-runner.js";
 import {
   mapRequestChanges,
   mapStartImplementation,
@@ -861,27 +861,89 @@ describe("duplicate relay_run_job", () => {
     expect(h.ofType("cli_job_claimed")).toHaveLength(1);
   });
 
-  it("ignores a finished attempt but runs a retry (attempts + 1)", async () => {
+  it("re-sends the failure of a finished attempt instead of running it again, but runs a retry (attempts + 1)", async () => {
     const h = harness;
     const j = job("plan", "job1", "plan");
     await h.runner.runJob(runJobMsg(j, null));
     h.clock.now += 60_000;
     h.last().exit(0); // failed attempt 1
+    expect(h.ofType("cli_job_failed")).toHaveLength(1);
+
+    // Same id#attempts again (the relay released the claim): it never saw the failure.
     expect(await h.runner.runJob(runJobMsg(j, null))).toBeNull();
     expect(h.sessions).toHaveLength(1);
+    const failed = h.ofType("cli_job_failed");
+    expect(failed).toHaveLength(2);
+    expect(failed[1]).toEqual(failed[0]);
+    expect(failed[1]).toMatchObject({ jobId: "job1", ticketId: "t1" });
 
     await h.runner.runJob(runJobMsg({ ...j, attempts: 2 }, null));
     expect(h.sessions).toHaveLength(2);
+    expect(h.ofType("cli_job_failed")).toHaveLength(2);
   });
 
-  it("ignores a re-delivered job that already completed", async () => {
+  it("re-sends cli_phase_complete (with the plan) for a re-delivered job that already completed", async () => {
     const h = harness;
+    const plan = { steps: ["a"], risks: [], files: ["src/x.ts"], markdown: "# Plan" };
     const msg = runJobMsg(job("plan", "job1", "plan"), null);
     await h.runner.runJob(msg);
+    h.bus.emitEvent("plan_submitted", { ticketId: "t1", jobId: "job1", plan });
     h.bus.emitEvent("phase_complete", { ticketId: "t1", jobId: "job1", completion: { result: "success", summary: "ok", testsRun: [] } });
+    expect(h.ofType("cli_phase_complete")).toHaveLength(1);
+
     expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
     expect(h.sessions).toHaveLength(1);
     expect(h.sessions[0]?.closed).toBe(false);
+    const complete = h.ofType("cli_phase_complete");
+    expect(complete).toHaveLength(2);
+    expect(complete[1]).toEqual(complete[0]);
+    expect(complete[1]).toMatchObject({ jobId: "job1", phase: "plan", result: "success", summary: "ok", plan });
+    // Only the outcome is repeated.
+    expect(h.ofType("cli_ticket_event")).toHaveLength(1);
+    expect(h.ofType("cli_job_claimed")).toHaveLength(1);
+  });
+
+  it("re-sends a start failure for a duplicate of the attempt that could not start", async () => {
+    const h = makeHarness({ failStart: true });
+    harness.runner.dispose();
+    harness = h;
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    expect(await h.runner.runJob(msg)).toBeNull();
+    expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
+    const failed = h.ofType("cli_job_failed");
+    expect(failed).toHaveLength(2);
+    expect(failed[1]).toEqual(failed[0]);
+    expect(failed[0]?.error).toContain("Agent failed to start");
+    expect(h.sessions).toHaveLength(1);
+  });
+
+  it("stays silent for a finished attempt that reported no outcome (cancelled by the relay)", async () => {
+    const h = harness;
+    const msg = runJobMsg(job("plan", "job1", "plan"), null);
+    await h.runner.runJob(msg);
+    h.runner.cancelJob({ type: "relay_cancel_job", jobId: "job1", ticketId: "t1", reason: "reset" });
+    const sentBefore = h.sent.length;
+    expect(await h.runner.runJob(structuredClone(msg))).toBeNull();
+    expect(h.sent).toHaveLength(sentBefore);
+    expect(h.sessions).toHaveLength(1);
+  });
+
+  it("keeps outcomes for a bounded number of recent attempts; older duplicates are still not run again", async () => {
+    const h = harness;
+    const failing = (i: number): RelayRunJobMsg => {
+      const msg = runJobMsg(job("plan", `job-${i}`, "plan"), null);
+      return { ...msg, ticket: { ...msg.ticket, driverName: "no-such-driver" } };
+    };
+    for (let i = 0; i <= FINISHED_OUTCOMES_MAX; i++) await h.runner.runJob(failing(i));
+    expect(h.ofType("cli_job_failed")).toHaveLength(FINISHED_OUTCOMES_MAX + 1);
+
+    // The newest outcome is repeated, the oldest one has been dropped.
+    await h.runner.runJob(failing(FINISHED_OUTCOMES_MAX));
+    expect(h.ofType("cli_job_failed")).toHaveLength(FINISHED_OUTCOMES_MAX + 2);
+    expect(h.ofType("cli_job_failed").at(-1)).toMatchObject({ jobId: `job-${FINISHED_OUTCOMES_MAX}` });
+    expect(await h.runner.runJob(failing(0))).toBeNull();
+    expect(h.ofType("cli_job_failed")).toHaveLength(FINISHED_OUTCOMES_MAX + 2);
+    expect(h.sessions).toHaveLength(0);
   });
 });
 

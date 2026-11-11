@@ -141,6 +141,11 @@ const RAW_OUTPUT_MAX = 2 * 1024 * 1024;
 const DEFAULT_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 /** How many finished job attempts to remember for duplicate relay_run_job detection. */
 const FINISHED_JOBS_MAX = 1000;
+/** For how many of the most recent of them the job-ending message is kept (it can carry a whole plan). */
+export const FINISHED_OUTCOMES_MAX = 100;
+
+/** The message that ends a relay job. */
+type JobEndMsg = Extract<CliToRelayMsg, { type: "cli_phase_complete" | "cli_job_failed" }>;
 
 /** A dispatch attempt: retries re-send the same job id with attempts + 1. */
 function jobAttemptKey(job: Pick<Job, "id" | "attempts">): string {
@@ -153,6 +158,8 @@ export class JobRunner {
   private pending = new Map<string, { token: number; jobId: string; attemptKey: string }>();
   /** Job attempts that ended in this process (insertion-ordered, bounded). */
   private finishedJobs = new Set<string>();
+  /** Job-ending message sent for the most recent finished attempts (insertion-ordered, bounded). */
+  private finishedOutcomes = new Map<string, JobEndMsg>();
   private reopenSeq = 0;
   private pendingSeq = 0;
   private workspace: TicketWorkspaceWriter;
@@ -409,8 +416,10 @@ export class JobRunner {
   // -------------------------------------------------------------------------
 
   /**
-   * relay_run_job for a job attempt this process already has: ignore it.
-   * Returns undefined when the message is not a duplicate.
+   * relay_run_job for a job attempt this process already has: never run it
+   * twice. A running attempt is claimed again; a finished one gets its
+   * job-ending message again. Returns undefined when the message is not a
+   * duplicate.
    */
   private handleDuplicate(msg: RelayRunJobMsg): string | null | undefined {
     const { job, ticket } = msg;
@@ -432,10 +441,32 @@ export class JobRunner {
       return run.session.id;
     }
     if (this.finishedJobs.has(key)) {
-      debugLog(`jobs: duplicate relay_run_job ${job.id} (already finished) — ignored`);
+      // The relay dispatched this attempt again, so it never got its outcome
+      // (a claim released after a disconnect keeps the attempt number). Without
+      // a reply the job would sit claimed.
+      const outcome = this.finishedOutcomes.get(key);
+      if (outcome) {
+        debugLog(`jobs: duplicate relay_run_job ${job.id} (already finished) — re-sending ${outcome.type}`);
+        this.deps.send(outcome);
+      } else {
+        debugLog(`jobs: duplicate relay_run_job ${job.id} (already finished, nothing was reported) — ignored`);
+      }
       return null;
     }
     return undefined;
+  }
+
+  /** Send the message that ends a relay job and keep it for a duplicate dispatch of the same attempt. */
+  private sendJobEnd(job: Job, msg: JobEndMsg): void {
+    const key = jobAttemptKey(job);
+    this.finishedOutcomes.delete(key);
+    this.finishedOutcomes.set(key, msg);
+    while (this.finishedOutcomes.size > FINISHED_OUTCOMES_MAX) {
+      const oldest = this.finishedOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      this.finishedOutcomes.delete(oldest);
+    }
+    this.deps.send(msg);
   }
 
   private rememberFinished(job: Job, legacy: boolean): void {
@@ -932,7 +963,7 @@ export class JobRunner {
       return;
     }
     this.deps.tracker.updateStatus(run.ticketId, "failed");
-    this.deps.send({
+    this.sendJobEnd(run.job, {
       type: "cli_job_failed",
       jobId: run.job.id,
       ticketId: run.ticketId,
@@ -1001,7 +1032,7 @@ export class JobRunner {
     if (legacy) {
       this.deps.send({ type: "cli_ticket_status", ticketId: job.ticketId, sessionId, status: "error", message: error });
     } else {
-      this.deps.send({ type: "cli_job_failed", jobId: job.id, ticketId: job.ticketId, error });
+      this.sendJobEnd(job, { type: "cli_job_failed", jobId: job.id, ticketId: job.ticketId, error });
     }
   }
 
@@ -1144,7 +1175,7 @@ export class JobRunner {
       return;
     }
     const branch = run.ctx.branchName ?? undefined;
-    this.deps.send({
+    this.sendJobEnd(run.job, {
       type: "cli_phase_complete",
       ticketId: p.ticketId,
       jobId: run.job.id,

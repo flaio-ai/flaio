@@ -370,9 +370,11 @@ describe("relay ⇄ CLI job flow (fake relay, real client)", () => {
     expect(at(ofType("cli_job_failed"), 0)).toMatchObject({ jobId: "job-impl", ticketId: "t-int" });
     expect(app.resolveMcpSession(token)).toBeNull();
 
-    // A late duplicate of the finished attempt does not start anything.
+    // A late duplicate of the finished attempt does not start anything: the
+    // relay is told the outcome again.
     sendToCli(runJobMsg(job("job-impl", "implement", "acceptEdits"), null));
-    await new Promise((r) => setTimeout(r, 150));
+    await vi.waitFor(() => expect(ofType("cli_job_failed")).toHaveLength(2));
+    expect(at(ofType("cli_job_failed"), 1)).toEqual(at(ofType("cli_job_failed"), 0));
     expect(ptys).toHaveLength(2);
   });
 
