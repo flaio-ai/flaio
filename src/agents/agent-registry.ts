@@ -3,6 +3,7 @@ import { ClaudeDriver } from "./drivers/claude-driver.js";
 import { CodexDriver } from "./drivers/codex-driver.js";
 import { GeminiDriver } from "./drivers/gemini-driver.js";
 import { CopilotDriver } from "./drivers/copilot-driver.js";
+import { OpenCodeDriver } from "./drivers/opencode-driver.js";
 
 const drivers: Map<string, BaseDriver> = new Map();
 
@@ -33,3 +34,4 @@ registerDriver(new ClaudeDriver());
 registerDriver(new CodexDriver());
 registerDriver(new GeminiDriver());
 registerDriver(new CopilotDriver());
+registerDriver(new OpenCodeDriver());

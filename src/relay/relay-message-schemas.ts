@@ -176,6 +176,115 @@ const RelayUserSettingsSchema = z.object({
   }),
 });
 
+// Virtual developer (Stage 0): job dispatch. Mirrors RelayRunJobMsg / RelayCancelJobMsg.
+
+const JobKindSchema = z.enum([
+  "plan",
+  "implement",
+  "revise_plan",
+  "review_fixes",
+  "ci_fix",
+  "answer_resume",
+  "pr_review",
+  "pr_fix",
+]);
+
+// Pull requests (Wave 0). Mirrors PrJobSubject / PrFixInput in contracts/agent-loop.ts.
+const PrJobSubjectSchema = z.object({
+  type: z.literal("pr"),
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  headSha: z.string(),
+  headRef: z.string(),
+  baseRef: z.string(),
+  isFork: z.boolean(),
+});
+
+const PrFixInputSchema = z.object({
+  findingIds: z.array(z.string()),
+  target: z.enum(["same_branch", "new_branch"]),
+  newBranchName: z.string().optional(),
+  maintainerCanModify: z.boolean().optional(),
+  headRepository: z.string().max(200).optional(),
+  pushPermission: z
+    .object({
+      repository: z.string().max(200),
+      push: z.literal(true),
+      checkedAt: z.number(),
+    })
+    .optional(),
+});
+
+const TicketAgentSessionSchema = z.object({
+  id: z.string(),
+  driver: z.string(),
+  transcriptPath: z.string().optional(),
+  runnerId: z.string().optional(),
+  resumeCount: z.number().int(),
+  lastResumedAt: z.number().optional(),
+});
+
+const JobSchema = z.object({
+  id: z.string(),
+  ticketId: z.string(),
+  ownerUid: z.string(),
+  orgId: z.string().nullable(),
+  kind: JobKindSchema,
+  prompt: z.string().nullable(),
+  permissionMode: z.enum(["plan", "acceptEdits", "default"]),
+  status: z.enum(["queued", "claimed", "running", "done", "failed", "cancelled"]),
+  runnerId: z.string().nullable(),
+  leaseExpiresAt: z.number().nullable(),
+  attempts: z.number().int(),
+  maxAttempts: z.number().int(),
+  error: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  availableAt: z.number().nullable().optional(),
+  runOptions: z
+    .object({
+      cwd: z.string().optional(),
+      driverName: z.string().optional(),
+      model: z.string().optional(),
+      useWorktree: z.boolean().optional(),
+      systemInstructions: z.array(z.string()).optional(),
+      teamId: z.string().nullable().optional(),
+      sessionId: z.string().optional(),
+      iteration: z.number().optional(),
+      runnerPreference: z.enum(["auto", "local", "cloud"]).optional(),
+    })
+    .nullable()
+    .optional(),
+  result: z.enum(["success", "needs_info", "failed"]).nullable().optional(),
+  subject: PrJobSubjectSchema.nullable().optional(),
+  reviewId: z.string().nullable().optional(),
+  fix: PrFixInputSchema.nullable().optional(),
+});
+
+const RelayRunJobSchema = z.object({
+  type: z.literal("relay_run_job"),
+  job: JobSchema,
+  ticket: z.object({
+    id: z.string(),
+    title: z.string(),
+    cwd: z.string().max(4096),
+    useWorktree: z.boolean(),
+    driverName: z.string(),
+    model: z.string().nullable(),
+    agentSession: TicketAgentSessionSchema.nullable(),
+  }),
+  briefMarkdown: z.string().max(512 * 1024),
+  systemInstructions: z.array(z.string()),
+});
+
+const RelayCancelJobSchema = z.object({
+  type: z.literal("relay_cancel_job"),
+  jobId: z.string(),
+  ticketId: z.string(),
+  reason: z.string(),
+});
+
 export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayAuthOkSchema,
   RelayAuthFailSchema,
@@ -198,4 +307,6 @@ export const RelayToCliMsgSchema = z.discriminatedUnion("type", [
   RelayListDriversSchema,
   RelayRepoDetectedSchema,
   RelayUserSettingsSchema,
+  RelayRunJobSchema,
+  RelayCancelJobSchema,
 ]);

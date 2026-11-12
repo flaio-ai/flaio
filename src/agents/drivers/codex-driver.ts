@@ -23,7 +23,7 @@ export class CodexDriver extends BaseDriver {
     }
   }
 
-  listModels(): ModelInfo[] {
+  protected defaultModels(): ModelInfo[] {
     return [
       { id: "gpt-6-astra", displayName: "GPT-6 Astra" },
       { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol" },

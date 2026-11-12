@@ -1,10 +1,14 @@
-import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
+import { assertSafeAgentArg, BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
 import { execSync } from "node:child_process";
 
 export class CopilotDriver extends BaseDriver {
   readonly name = "copilot";
   readonly displayName = "Copilot CLI";
   readonly command = "copilot";
+
+  // Ticket runs use BaseDriver.buildTicketSpawnArgs: fresh session + brief.
+  // Copilot CLI's session/permission/MCP flags are not verified here, so no
+  // resume, permission-mode or MCP config is attempted.
 
   async checkInstalled(): Promise<boolean> {
     try {
@@ -15,7 +19,7 @@ export class CopilotDriver extends BaseDriver {
     }
   }
 
-  listModels(): ModelInfo[] {
+  protected defaultModels(): ModelInfo[] {
     return [
       { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
       { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
@@ -35,7 +39,7 @@ export class CopilotDriver extends BaseDriver {
     const args: string[] = [];
 
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
 
     if (options.prompt) {

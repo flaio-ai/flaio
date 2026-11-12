@@ -7,6 +7,11 @@ export const DEFAULTS = {
   agents: {
     statusCheckInterval: 1000,
     detectorInterval: 5000,
+    ticketIdleTimeoutMs: 20 * 60 * 1000,
+    /** Ticket jobs this runner advertises it can run at once (cli_runner_register). */
+    maxConcurrentJobs: 2,
+    /** Days after a ticket's last job before its clean worktree + tracker entry are removed (0 = never). */
+    ticketRetentionDays: 14,
   },
   connectors: {
     slack: {

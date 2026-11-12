@@ -1,0 +1,16 @@
+{
+  "description": "Flaio: ask for a handoff note in .flaio/ticket/progress.md before a ticket session stops (no-op outside Flaio ticket sessions).",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"$FLAIO_TICKET_ID\" ] || flaio-stop-hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

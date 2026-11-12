@@ -1,10 +1,44 @@
-import { BaseDriver, type AgentStatus, type SpawnConfig, type ModelInfo } from "./base-driver.js";
+import {
+  assertSafeAgentArg,
+  BaseDriver,
+  type AgentStatus,
+  type SpawnConfig,
+  type ModelInfo,
+  type TicketCapabilities,
+  type TicketSpawnConfig,
+  type TicketSpawnOptions,
+} from "./base-driver.js";
+import type { AgentPermissionMode } from "../../contracts/agent-loop.js";
 import { execSync } from "node:child_process";
+
+/**
+ * Contract permission mode -> `claude --permission-mode` value.
+ * Verified against Claude Code 2.1.296: choices are acceptEdits, auto,
+ * bypassPermissions, manual, dontAsk, plan; "default" is still accepted as a
+ * (hidden) alias of the normal ask-before-acting mode, and is what older 2.x
+ * releases call it, so we keep passing "default".
+ */
+const CLAUDE_PERMISSION_MODES: Record<AgentPermissionMode, string> = {
+  plan: "plan",
+  acceptEdits: "acceptEdits",
+  default: "default",
+};
 
 export class ClaudeDriver extends BaseDriver {
   readonly name = "claude";
   readonly displayName = "Claude Code";
   readonly command = "claude";
+
+  override readonly ticketCapabilities: TicketCapabilities = {
+    presetSessionId: true,
+    resume: true,
+    fork: true,
+    permissionModes: true,
+    mcpConfig: true,
+    appendSystemPrompt: true,
+    untrustedWorkspace: true,
+    untrustedWorkspaceEdits: true,
+  };
 
   async checkInstalled(): Promise<boolean> {
     try {
@@ -15,7 +49,7 @@ export class ClaudeDriver extends BaseDriver {
     }
   }
 
-  listModels(): ModelInfo[] {
+  protected defaultModels(): ModelInfo[] {
     return [
       { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
       { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
@@ -32,7 +66,7 @@ export class ClaudeDriver extends BaseDriver {
   }): SpawnConfig {
     const args: string[] = [];
     if (options.model) {
-      args.push("--model", options.model);
+      args.push("--model", assertSafeAgentArg("model", options.model));
     }
     if (options.allowedTools?.length) {
       args.push("--allowedTools", options.allowedTools.join(","));
@@ -59,6 +93,73 @@ export class ClaudeDriver extends BaseDriver {
       args.push(options.prompt);
     }
     return { command: this.resolveCommand(), args };
+  }
+
+  /**
+   * Ticket run args (flags verified with `claude --help`, Claude Code 2.1.296):
+   *   first run:  --session-id <uuid>
+   *   later runs: --resume <uuid>
+   *   fork:       --resume <uuid> --fork-session [--session-id <new uuid>]
+   *               (--session-id together with --resume is only accepted with --fork-session)
+   *   --permission-mode <mode>, --mcp-config=<path>, --settings <path>,
+   *   --append-system-prompt <text>, --model <id>, --allowedTools <list>, -p (print mode)
+   * `--mcp-config` and `--allowedTools` are variadic: `--mcp-config` uses the
+   * `=` form so it never swallows the next argument, and the prompt always
+   * follows a `--` terminator (also protects prompts that start with "-").
+   * `--settings` adds the ticket Stop hook on top of the user's own settings.
+   */
+  override buildTicketSpawnArgs(options: TicketSpawnOptions): TicketSpawnConfig {
+    const args: string[] = [];
+    let agentSessionId: string | null = null;
+    const resumed = options.resume && !!options.sessionId;
+
+    if (resumed && options.sessionId) {
+      args.push("--resume", options.sessionId);
+      if (options.forkSession) {
+        args.push("--fork-session");
+        if (options.forkSessionId) {
+          args.push("--session-id", options.forkSessionId);
+          agentSessionId = options.forkSessionId;
+        }
+        // Fork without a preset id: the new id arrives via sideband metadata.
+      } else {
+        agentSessionId = options.sessionId;
+      }
+    } else if (options.sessionId) {
+      args.push("--session-id", options.sessionId);
+      agentSessionId = options.sessionId;
+    }
+
+    if (options.model) {
+      args.push("--model", assertSafeAgentArg("model", options.model));
+    }
+    args.push("--permission-mode", CLAUDE_PERMISSION_MODES[options.permissionMode]);
+    if (options.appendSystemPrompt?.trim()) {
+      args.push("--append-system-prompt", options.appendSystemPrompt.trim());
+    }
+    if (options.mcpConfigPath) {
+      args.push(`--mcp-config=${options.mcpConfigPath}`);
+    }
+    if (options.settingsPath) {
+      args.push("--settings", options.settingsPath);
+    }
+    if (options.allowedTools?.length) {
+      args.push("--allowedTools", options.allowedTools.join(","));
+    }
+    if (options.untrustedWorkspace) {
+      // Pull request code: --restricted drops command-running tools and
+      // WebFetch, ignores user/project/local settings (so a .claude/settings.json
+      // or hooks shipped by the PR never load) and confines file tools to the
+      // working directory; --settings still applies. --strict-mcp-config loads
+      // only the Flaio server from --mcp-config (never a PR's .mcp.json).
+      args.push("--restricted", "--strict-mcp-config");
+    }
+    if (options.print) {
+      args.push("-p");
+    }
+    args.push("--", options.prompt);
+
+    return { command: this.resolveCommand(), args, agentSessionId, resumed };
   }
 
   buildContinueArgs(_options: { cwd: string }): SpawnConfig {

@@ -269,6 +269,32 @@ program
     }
   });
 
+program
+  .command("mcp")
+  .description("Run the Flaio MCP server over stdio (spawned by agent CLIs)")
+  .option("--ticket <ticketId>", "Ticket this session works on (defaults to $FLAIO_TICKET_ID)")
+  .option("--job <jobId>", "Job id (defaults to $FLAIO_JOB_ID)")
+  .action(async (opts: { ticket?: string; job?: string }) => {
+    const { runMcpStdioServer } = await import("./mcp/server.js");
+    await runMcpStdioServer(opts, pkg.version);
+    process.exit(0);
+  });
+
+program
+  .command("runner")
+  .description("Headless cloud runner: run the one job named by FLAIO_JOB_ID, then exit (no TUI)")
+  .option("--once", "Run exactly one job and exit (required)")
+  .action(async (opts: { once?: boolean }) => {
+    if (!opts.once) {
+      process.stderr.write("flaio runner: only --once is supported\n");
+      process.exit(2);
+    }
+    const { runCloudRunnerOnce } = await import("./runner/command.js");
+    const code = await runCloudRunnerOnce();
+    await shutdownAnalytics().catch(() => {});
+    process.exit(code);
+  });
+
 // ── helpers ──────────────────────────────────────────────────────────
 function ensureLoaded() {
   if (!settingsStore.getState().loaded) {
