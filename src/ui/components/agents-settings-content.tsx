@@ -24,6 +24,7 @@ const AGENT_DEFS = [
   { driverName: "claude", displayName: "Claude Code", command: "claude", npmPackage: "@anthropic-ai/claude-code", brewFormula: "claude-code" },
   { driverName: "gemini", displayName: "Gemini CLI", command: "gemini", npmPackage: "@google/gemini-cli", brewFormula: "gemini-cli" },
   { driverName: "copilot", displayName: "Copilot CLI", command: "copilot", npmPackage: "@github/copilot", brewFormula: "copilot" },
+  { driverName: "codex", displayName: "Codex CLI", command: "codex", npmPackage: "@openai/codex", brewFormula: "codex" },
 ] as const;
 
 type AgentInstallStatus = "checking" | "not_installed" | "up_to_date" | "update_available" | "installing" | "error";
@@ -82,7 +83,7 @@ interface AgentsSettingsContentProps {
   isActive: boolean;
 }
 
-type HooksStatus = "checking" | "configured" | "not_configured" | "installing" | "done" | "error";
+type HooksStatus = "checking" | "configured" | "not_configured" | "installing" | "done" | "error" | "unsupported";
 
 export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps): React.ReactElement {
   const [subTab, setSubTab] = useState(0);
@@ -152,15 +153,19 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
     Promise.all(
       Object.entries(checks).map(async ([name, p]) => [name, await p] as const),
     ).then((results) => {
-      setHooksStatus(Object.fromEntries(
-        results.map(([name, ok]) => [name, ok ? "configured" : "not_configured"]),
-      ));
+      // Drivers without a hook integration (e.g. Codex) fall back to PTY status polling
+      setHooksStatus({
+        ...Object.fromEntries(AGENT_DEFS.map((d) => [d.driverName, "unsupported" as const])),
+        ...Object.fromEntries(
+          results.map(([name, ok]) => [name, ok ? "configured" : "not_configured"] as const),
+        ),
+      });
     });
   }, []);
 
   const handleSetupHooks = useCallback(async () => {
     setHooksStatus((prev) => Object.fromEntries(
-      Object.keys(prev).map((k) => [k, "installing" as const]),
+      Object.entries(prev).map(([k, v]) => [k, v === "unsupported" ? v : ("installing" as const)]),
     ));
     setHooksError(null);
     try {
@@ -180,7 +185,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
       await mergeSettingsFile(copilotSettingsPath, copilotCfg);
 
       setHooksStatus((prev) => Object.fromEntries(
-        Object.keys(prev).map((k) => [k, "done" as const]),
+        Object.entries(prev).map(([k, v]) => [k, v === "unsupported" ? v : ("done" as const)]),
       ));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -371,6 +376,7 @@ export function AgentsSettingsContent({ isActive }: AgentsSettingsContentProps):
                     : hs === "configured" || hs === "done" ? <Text color="green">configured</Text>
                     : hs === "installing" ? <Text color="yellow">installing...</Text>
                     : hs === "error" ? <Text color="red">error</Text>
+                    : hs === "unsupported" ? <Text color="gray">not available (status from terminal output)</Text>
                     : <Text color="gray">not configured</Text>}
                 </Text>
               </Box>
