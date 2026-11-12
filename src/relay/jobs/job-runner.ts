@@ -448,6 +448,11 @@ export class JobRunner {
   }
 
   /** Detach from the bus and stop timers (relay shutdown). Agents keep running. */
+  /** Resolves once finished PR jobs are fully cleaned up (see PrJobRunner.whenSettled). */
+  whenSettled(): Promise<void> {
+    return this.prJobs.whenSettled();
+  }
+
   dispose(): void {
     for (const d of this.busDisposers) d();
     this.busDisposers = [];

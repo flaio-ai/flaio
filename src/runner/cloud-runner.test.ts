@@ -104,7 +104,11 @@ interface Harness {
   runner: CloudRunner;
   relay: FakeRelay;
   jobCtx: () => JobRunnerContext | null;
-  jobRunner: RunnerJobRunner & { runJob: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> };
+  jobRunner: RunnerJobRunner & {
+    runJob: ReturnType<typeof vi.fn>;
+    whenSettled: ReturnType<typeof vi.fn>;
+    dispose: ReturnType<typeof vi.fn>;
+  };
   deps: CloudRunnerDeps;
   gitTokens: (string | null)[];
 }
@@ -123,6 +127,7 @@ function harness(
     cancelJob: vi.fn(() => true),
     activeJobIds: () => [JOB_ID],
     activeJobCount: () => 1,
+    whenSettled: vi.fn(async () => {}),
     dispose: vi.fn(),
   };
   const gitTokens: (string | null)[] = [];
@@ -172,6 +177,49 @@ function completeJob(ctx: JobRunnerContext, result: "success" | "failed" = "succ
 afterEach(() => vi.useRealTimers());
 
 describe("CloudRunner", () => {
+  it("waits for the finished job's cleanup before reporting usage and exiting", async () => {
+    const relay = standardRelay();
+    const h = harness(relay, { onRun: (ctx) => queueMicrotask(() => completeJob(ctx)) });
+    const order: string[] = [];
+    let releaseCleanup: () => void = () => {};
+    h.jobRunner.whenSettled.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          order.push("cleanup started");
+          releaseCleanup = () => {
+            order.push("cleanup done");
+            resolve();
+          };
+        }),
+    );
+    h.jobRunner.dispose.mockImplementation(() => order.push("dispose"));
+
+    let exited = false;
+    const done = h.runner.run().then((code) => {
+      exited = true;
+      return code;
+    });
+    await vi.waitFor(() => expect(order).toEqual(["cleanup started"]));
+    // Cleanup still running: no usage report, no exit.
+    expect(relay.ofType("cli_job_usage")).toHaveLength(0);
+    expect(exited).toBe(false);
+
+    releaseCleanup();
+    expect(await done).toBe(RUNNER_EXIT.OK);
+    expect(order).toEqual(["cleanup started", "cleanup done", "dispose"]);
+    expect(relay.ofType("cli_job_usage")).toHaveLength(1);
+  });
+
+  it("still exits when the job's cleanup throws", async () => {
+    const relay = standardRelay();
+    const h = harness(relay, { onRun: (ctx) => queueMicrotask(() => completeJob(ctx)) });
+    h.jobRunner.whenSettled.mockImplementation(() => {
+      throw new Error("cleanup exploded");
+    });
+    expect(await h.runner.run()).toBe(RUNNER_EXIT.OK);
+    expect(relay.ofType("cli_job_usage")).toHaveLength(1);
+  });
+
   it("runs the assigned job end to end and reports usage", async () => {
     const relay = standardRelay();
     const h = harness(relay, { onRun: (ctx) => queueMicrotask(() => completeJob(ctx)) });
