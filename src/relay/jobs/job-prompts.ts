@@ -22,6 +22,10 @@ const KIND_INSTRUCTIONS: Record<JobKind, string> = {
     "A CI check failed on the ticket branch. Find the cause using the log below, fix it, run the relevant tests, and commit the fix.",
   answer_resume:
     "A question you asked has been answered (see below and the brief). Continue the phase you were in.",
+  // Pull requests: only keep the Record exhaustive. PR jobs never use
+  // buildJobPrompt; their prompts are in pr-job-prompts.ts.
+  pr_review: "Review the pull request read-only and report findings with submit_review. Do not modify files.",
+  pr_fix: "Apply the selected review findings, run the relevant tests, commit and push.",
 };
 
 const PLAN_KINDS: ReadonlySet<JobKind> = new Set(["plan", "revise_plan"]);

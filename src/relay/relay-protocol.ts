@@ -1,4 +1,13 @@
-import type { Job, JobKind, PhaseResult, Runner, TicketAgentSession, TicketEvent } from "../contracts/agent-loop.js";
+import type {
+  Job,
+  JobKind,
+  JobSecrets,
+  PhaseResult,
+  PrReviewSubmission,
+  Runner,
+  TicketAgentSession,
+  TicketEvent,
+} from "../contracts/agent-loop.js";
 
 // ---------------------------------------------------------------------------
 // WebSocket protocol message types for CLI ↔ Relay ↔ Browser communication
@@ -284,6 +293,8 @@ export interface CliPhaseCompleteMsg {
   /** Structured plan when phase is plan / revise_plan. */
   plan?: { steps: string[]; risks: string[]; files: string[]; markdown: string };
   gitContext?: { branch?: string; prUrl?: string; headSha?: string };
+  /** Structured review when phase is pr_review (from the submit_review MCP tool). Absent on older CLIs. */
+  review?: PrReviewSubmission;
 }
 
 export interface CliJobFailedMsg {
@@ -293,6 +304,39 @@ export interface CliJobFailedMsg {
   error: string;
   /** Fallback heuristics flagged the agent as stuck rather than crashed. */
   stuck?: boolean;
+}
+
+/**
+ * Cloud runner (kind "cloud") asks for the job-scoped secrets of a job it has
+ * claimed: provider key and a single-repo GitHub token. Pull requests Wave 0:
+ * contract only, not handled yet. Local runners never send this.
+ */
+export interface CliRequestJobSecretsMsg {
+  type: "cli_request_job_secrets";
+  requestId: string;
+  runnerId: string;
+  jobId: string;
+}
+
+/**
+ * Cloud runner (kind "cloud") reports the model usage of its job before it
+ * exits; the relay writes the usage ledger (users/{uid}/usage/{jobId}).
+ * Accepted only from the connection authenticated with that job's runner token.
+ */
+export interface CliJobUsageMsg {
+  type: "cli_job_usage";
+  jobId: string;
+  runnerId: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    /** null when the harness did not report a cost. */
+    costUsd: number | null;
+    /** Model the agent ran with (`provider/model`). */
+    model: string | null;
+    durationMs: number;
+  };
 }
 
 export type CliToRelayMsg =
@@ -320,7 +364,9 @@ export type CliToRelayMsg =
   | CliAgentSessionMsg
   | CliTicketEventMsg
   | CliPhaseCompleteMsg
-  | CliJobFailedMsg;
+  | CliJobFailedMsg
+  | CliRequestJobSecretsMsg
+  | CliJobUsageMsg;
 
 // ---------------------------------------------------------------------------
 // Browser → Relay messages
@@ -604,6 +650,18 @@ export interface RelayCancelJobMsg {
   reason: string;
 }
 
+/** Reply to cli_request_job_secrets. Pull requests Wave 0: contract only, not sent yet. */
+export interface RelayJobSecretsMsg {
+  type: "relay_job_secrets";
+  requestId: string;
+  jobId: string;
+  ok: boolean;
+  /** Present when ok. */
+  secrets?: JobSecrets;
+  /** Present when not ok (job not claimed by this runner, spend limit reached, ...). */
+  error?: string;
+}
+
 export type RelayToCliMsg =
   | RelayAuthOkMsg
   | RelayAuthFailMsg
@@ -627,7 +685,8 @@ export type RelayToCliMsg =
   | RelayRepoDetectedMsg
   | RelayUserSettingsMsg
   | RelayRunJobMsg
-  | RelayCancelJobMsg;
+  | RelayCancelJobMsg
+  | RelayJobSecretsMsg;
 
 // ---------------------------------------------------------------------------
 // Relay → Browser messages

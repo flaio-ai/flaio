@@ -118,7 +118,18 @@ export type JobKind =
   | "revise_plan"
   | "review_fixes"
   | "ci_fix"
-  | "answer_resume";
+  | "answer_resume"
+  /** Pull requests: review a PR head read-only and submit structured findings (submit_review). */
+  | "pr_review"
+  /** Pull requests: apply selected findings of a review and push (same branch or a new stacked branch). */
+  | "pr_fix";
+
+/** Job kinds that work on a pull request (`job.subject.type === "pr"`) rather than a ticket. */
+export const PR_JOB_KINDS: readonly JobKind[] = ["pr_review", "pr_fix"];
+
+export function isPrJobKind(kind: JobKind): kind is "pr_review" | "pr_fix" {
+  return kind === "pr_review" || kind === "pr_fix";
+}
 
 export type JobStatus = "queued" | "claimed" | "running" | "done" | "failed" | "cancelled";
 
@@ -148,6 +159,26 @@ export interface Job {
   runOptions?: JobRunOptions | null;
   /** Phase result reported when the job finished. */
   result?: PhaseResult | null;
+  /**
+   * What the job works on when it is not a ticket (pr_review / pr_fix).
+   * Absent/null for ticket jobs. See jobSubjectKey() for the exclusivity key.
+   */
+  subject?: JobSubject | null;
+  /** pr_review / pr_fix: the review document (`users/{uid}/prReviews/{reviewId}`) the job writes to or reads from. */
+  reviewId?: string | null;
+  /** pr_fix only: which findings to apply and where to push. */
+  fix?: PrFixInput | null;
+  /**
+   * pr_fix only, server-written when the runner reports success: the branch it
+   * pushed and the pushed commit (from `cli_phase_complete.gitContext`).
+   */
+  fixOutput?: PrFixOutput | null;
+}
+
+/** What a finished pr_fix pushed. */
+export interface PrFixOutput {
+  branch: string;
+  headSha: string;
 }
 
 /** Per-run overrides captured at enqueue time. */
@@ -163,9 +194,114 @@ export interface JobRunOptions {
   sessionId?: string;
   /** Plan iteration number for plan / revise_plan. */
   iteration?: number;
+  /** Where the user wants the job to run. Absent = "auto" (local if eligible, else cloud). */
+  runnerPreference?: RunnerPreference;
 }
 
 export const JOBS_COLLECTION = "jobs";
+
+// ---- Pull request jobs (pr_review / pr_fix) -------------------------------
+
+/** Runner choice for a job: a local CLI runner, the cloud runner, or whichever is eligible. */
+export type RunnerPreference = "auto" | "local" | "cloud";
+
+/** The pull request a pr_review / pr_fix job works on. */
+export interface PrJobSubject {
+  type: "pr";
+  owner: string;
+  repo: string;
+  number: number;
+  /** Commit the job reviews / fixes on top of. */
+  headSha: string;
+  headRef: string;
+  baseRef: string;
+  /** Head lives in a fork: reviews are read-only and fixes go to a new branch unless maintainers can edit. */
+  isFork: boolean;
+}
+
+/** Non-ticket job subjects. Ticket jobs leave `subject` unset and use `ticketId`. */
+export type JobSubject = PrJobSubject;
+
+/** Where a pr_fix pushes: the PR's own head branch, or a new branch with a PR stacked on the original. */
+export type PrFixTarget = "same_branch" | "new_branch";
+
+export interface PrFixInput {
+  /** Finding ids from the review named by `job.reviewId`. */
+  findingIds: string[];
+  target: PrFixTarget;
+  /** new_branch only; the runner picks a name when absent. */
+  newBranchName?: string;
+  /**
+   * The PR's head lives in a fork whose author allows edits by maintainers
+   * (GitHub `maintainer_can_modify`), checked by the server against the live
+   * PR. Only then may a `same_branch` fix push to a fork. Absent = false.
+   */
+  maintainerCanModify?: boolean;
+  /** `owner/repo` of the PR's head repository when it is a fork (where a same-branch fix pushes). */
+  headRepository?: string;
+  /**
+   * Set by startPrFix: the server checked, with the user's own GitHub token,
+   * that the user has push permission on `repository` (the repo the fix pushes
+   * to). Runners and the relay require `push: true`; the user's own "allow
+   * push" settings are never proof of permission. Absent on jobs created
+   * before this check existed (they are refused at dispatch).
+   */
+  pushPermission?: PrFixPushPermission;
+}
+
+export interface PrFixPushPermission {
+  /** `owner/repo` the fix will push to. */
+  repository: string;
+  push: true;
+  /** Epoch ms of the check. */
+  checkedAt: number;
+}
+
+/** Exclusivity key of a pull request subject: `pr:<owner>/<repo>#<number>` (owner/repo lower-cased). */
+export function prSubjectKey(pr: { owner: string; repo: string; number: number }): string {
+  return `pr:${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}`;
+}
+
+/** Exclusivity key of a ticket: `ticket:<ticketId>`. */
+export function ticketSubjectKey(ticketId: string): string {
+  return `ticket:${ticketId}`;
+}
+
+/** At most one active job per subject key. Ticket jobs keep their per-ticket behaviour. */
+export function jobSubjectKey(job: Pick<Job, "ticketId" | "subject">): string {
+  return job.subject ? prSubjectKey(job.subject) : ticketSubjectKey(job.ticketId);
+}
+
+/** Verdict of an agent PR review. */
+export type PrReviewVerdict = "approve" | "needs_fixes" | "comment";
+
+export type PrFindingSeverity = "critical" | "high" | "medium" | "low" | "info";
+
+/** How sure the reviewer is. "verified_by_test" = reproduced with a test or scratch run. */
+export type PrFindingConfidence = "verified_by_test" | "high" | "medium" | "low";
+
+/** A finding as the agent submits it (submit_review). The server adds id and state. */
+export interface PrReviewFindingInput {
+  severity: PrFindingSeverity;
+  confidence: PrFindingConfidence;
+  title: string;
+  /** Repo-relative path, or null for a PR-wide finding. */
+  path: string | null;
+  /** Line in the head version of `path`, or null. */
+  line: number | null;
+  /** Concrete scenario that triggers the problem. */
+  scenario: string;
+  suggestedFix: string | null;
+}
+
+/** Structured result of a pr_review job (MCP submit_review → cli_phase_complete.review). */
+export interface PrReviewSubmission {
+  verdict: PrReviewVerdict;
+  summary: string;
+  findings: PrReviewFindingInput[];
+  /** Things the reviewer checked and found clean, one sentence each. */
+  checkedClean: string[];
+}
 
 // ---- Runners --------------------------------------------------------------
 
@@ -189,6 +325,32 @@ export interface Runner {
 }
 
 export const RUNNERS_COLLECTION = "runners";
+
+/** Model providers a cloud runner can call with a provider key. */
+export type ModelProviderName = "openrouter" | "anthropic" | "openai";
+
+/**
+ * Secrets a cloud runner fetches for one claimed job (relay_job_secrets).
+ * Never persisted by the runner; expire with the job.
+ */
+export interface JobSecrets {
+  provider: ModelProviderName;
+  providerApiKey: string;
+  /** Override for the provider's API base URL (e.g. OpenRouter). */
+  providerBaseUrl?: string;
+  model?: string;
+  /** Short-lived GitHub App installation token scoped to the single repo of the job. */
+  github: {
+    token: string;
+    /** "owner/repo" */
+    repository: string;
+    /** read: pr_review and every fork PR; write: pr_fix on same-repo PRs only. */
+    access: "read" | "write";
+    expiresAt: number;
+  } | null;
+  /** epoch ms; the runner must not use any secret after this. */
+  expiresAt: number;
+}
 
 // ---- Decision layer (Jev + fallbacks) ------------------------------------
 
