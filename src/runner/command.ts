@@ -83,6 +83,7 @@ export function createCloudJobRunner(
     cancelJob: (msg) => runner.cancelJob(msg),
     activeJobIds: () => runner.activeJobIds(),
     activeJobCount: () => runner.activeJobCount(),
+    whenSettled: () => runner.whenSettled(),
     dispose: () => {
       runner.dispose();
       for (const s of sessions.values()) s.kill();

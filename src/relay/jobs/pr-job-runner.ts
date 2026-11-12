@@ -198,6 +198,21 @@ export class PrJobRunner {
     return this.activeJobIds().length;
   }
 
+  /**
+   * Clean up every run whose job has ended, now, and wait for it (agent
+   * stopped, MCP session released, worktree removed). A job's final message is
+   * sent before its teardown, and after a review is submitted the agent gets a
+   * grace period to exit on its own first; a caller that is about to exit (the
+   * cloud runner) uses this instead of waiting out that grace.
+   */
+  async whenSettled(): Promise<void> {
+    // `finished` is set before a run's final message goes out, so a caller
+    // reacting to that message already sees it here. A fix that is still
+    // committing or pushing is not finished and is left alone.
+    const ended = [...this.runs.values()].filter((r) => r.finished || r.teardown !== null);
+    await Promise.all(ended.map((run) => this.teardown(run)));
+  }
+
   /** PTY session of the PR run for a review id, if any. */
   getActiveSessionId(reviewId: string): string | null {
     return this.runs.get(reviewId)?.session?.id ?? null;

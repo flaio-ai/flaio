@@ -34,8 +34,13 @@ export interface RunnerJobRunner {
   cancelJob(msg: RelayCancelJobMsg): boolean;
   activeJobIds(): string[];
   activeJobCount(): number;
+  /** Resolves once the finished job's cleanup (agent, MCP session, worktree) is done. */
+  whenSettled(): Promise<void>;
   dispose(): void;
 }
+
+/** How long the runner waits for the job's own cleanup before exiting anyway. */
+export const JOB_SETTLE_TIMEOUT_MS = 15_000;
 
 export interface JobRunnerContext {
   /** Send to the relay (the runner watches it for the job end). */
@@ -288,7 +293,39 @@ export class CloudRunner {
     if ((msg.type === "cli_phase_complete" || msg.type === "cli_job_failed") && msg.jobId === this.deps.config.jobId) {
       this.jobEnded = true;
       const ok = msg.type === "cli_phase_complete" && msg.result !== "failed";
-      this.finish(ok ? RUNNER_EXIT.OK : RUNNER_EXIT.JOB_FAILED, ok ? "job finished" : `job failed: ${summaryOf(msg)}`);
+      void this.finishAfterSettle(
+        ok ? RUNNER_EXIT.OK : RUNNER_EXIT.JOB_FAILED,
+        ok ? "job finished" : `job failed: ${summaryOf(msg)}`,
+      );
+    }
+  }
+
+  /**
+   * The job's final message goes out before its cleanup has finished. Let the
+   * cleanup complete (bounded) so the runner does not exit with the agent, its
+   * MCP session or the review worktree still around. Any other exit path
+   * (disconnect, deadline) still finishes immediately.
+   */
+  private async finishAfterSettle(code: RunnerExitCode, reason: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const settled = this.jobRunner?.whenSettled();
+      if (settled) {
+        const timeout = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, JOB_SETTLE_TIMEOUT_MS);
+          this.timers.add(timer);
+        });
+        await Promise.race([settled.catch(() => {}), timeout]);
+      }
+    } catch (err) {
+      // Cleanup is best effort; the runner must still report and exit.
+      this.deps.log(`job cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+        this.timers.delete(timer);
+      }
+      this.finish(code, reason);
     }
   }
 

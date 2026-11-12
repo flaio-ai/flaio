@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrJobSubject } from "../contracts/agent-loop.js";
 import {
   checkFixTarget,
@@ -21,6 +21,10 @@ import {
   writePrDiff,
 } from "./pr-checkout.js";
 import { EMPTY_TRUSTED_CONFIG, resetTrustedGitConfigForTests } from "./safe-git.js";
+
+// These tests run real git against temporary repositories (1-2 s each alone);
+// under a fully parallel suite the default 5 s limit is occasionally too tight.
+vi.setConfig({ testTimeout: 30_000 });
 
 // ---------------------------------------------------------------------------
 // Real git fixture: a bare "GitHub" remote at <tmp>/remotes/acme/widgets.git
