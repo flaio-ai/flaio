@@ -1,5 +1,12 @@
 # flaio
 
+## 1.2.0
+
+### Minor Changes
+
+- Add Codex CLI support: spawn, resume and continue Codex sessions, detect and adopt standalone `codex` processes, and install/update it from Settings > Agents.
+- Run agent jobs from the Flaio web app: ticket jobs through the job runner, and pull request review and fix jobs (`submit_review` MCP tool, PR checkouts in isolated worktrees, guarded fix commits). Adds a headless `flaio runner` command and an OpenCode driver for cloud runners.
+
 ## 1.1.3-beta.0
 
 ### Patch Changes
@@ -101,7 +108,6 @@
 ### Patch Changes
 
 - 383d7f2: Resize terminal to match active viewer, fix rendering performance, and add settings shortcuts
-
   - Resize PTY to match whichever viewer (CLI, web, portal) is active via focus reporting, keystroke, and scroll fallbacks
   - Fix keystroke latency from listener accumulation by cleaning up listeners on session kill
   - Improve rendering with synchronous xterm writes and immediate screen buffer flush on idle-to-active transition
@@ -131,7 +137,6 @@
 ### Patch Changes
 
 - 48705e5: Fix Gemini CLI compatibility and add dynamic driver discovery
-
   - Fix Gemini driver: use -p (print) / -i (interactive) flags, --resume latest instead of --continue, add --approval-mode plan for print mode
   - Thread driverName through relay protocol so ticket planning/implementation uses the agent selected in the web UI instead of hardcoding "claude"
   - Add relay_list_drivers protocol handler: respond with installed drivers for web app discovery
@@ -148,7 +153,6 @@
 ### Minor Changes
 
 - 48a23a2: Add relay client for remote web terminal access
-
   - Connect to a relay server for browser-based terminal sessions
   - End-to-end encryption (X25519 + AES-256-GCM) between CLI and browser
   - Remote directory browsing via relay_browse_dir handler
