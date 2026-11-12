@@ -14,7 +14,7 @@ const KEYBINDINGS: Array<[string, string]> = [
   ["Ctrl+N / Ctrl+Down", "Next session"],
   ["Ctrl+P / Ctrl+Up", "Previous session"],
   ["Alt+1-9", "Jump to session N"],
-  ["Alt+A", "Adopt standalone agent"],
+  ["Ctrl+A", "Adopt standalone agent"],
   ["Ctrl+U", "Scroll up"],
   ["Ctrl+D", "Scroll down"],
   ["Mouse Wheel", "Scroll up/down"],

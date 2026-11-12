@@ -11,7 +11,7 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 
 // macOS Option key produces Unicode chars instead of ESC prefix (US English layout)
-const MAC_OPT_INTERCEPT = new Set(["¡", "™", "£", "¢", "∞", "§", "¶", "•", "ª", "å"]);
+const MAC_OPT_INTERCEPT = new Set(["¡", "™", "£", "¢", "∞", "§", "¶", "•", "ª"]);
 
 /**
  * Forward raw stdin bytes to the active agent's PTY.
@@ -108,7 +108,8 @@ export function useRawInput(
           charCode === 0x02 || // Ctrl+B
           charCode === 0x11 || // Ctrl+Q
           charCode === 0x13 || // Ctrl+S
-          charCode === 0x07    // Ctrl+G (help)
+          charCode === 0x07 || // Ctrl+G (help)
+          charCode === 0x01    // Ctrl+A (adopt)
         ) {
           return;
         }
@@ -133,7 +134,6 @@ export function useRawInput(
       if (str.length === 2 && str.charCodeAt(0) === 0x1b) {
         const second = str.charCodeAt(1);
         if (second >= 0x31 && second <= 0x39) return; // Alt+1-9
-        if (second === 0x61) return; // Alt+A (adopt)
       }
       // macOS Option key Unicode chars (US English layout)
       if (MAC_OPT_INTERCEPT.has(str)) return;
