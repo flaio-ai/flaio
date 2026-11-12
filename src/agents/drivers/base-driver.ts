@@ -133,6 +133,17 @@ export abstract class BaseDriver {
    */
   readonly inheritedSecretEnv: readonly string[] = [];
 
+  private processPattern?: RegExp;
+
+  /**
+   * Regex matching this agent's CLI process in a line of `ps aux` output.
+   * Override to avoid matching unrelated processes (e.g. desktop apps)
+   * that share the command name. Called per ps line, so return a cached instance.
+   */
+  processMatchPattern(): RegExp {
+    return (this.processPattern ??= new RegExp(`\\b${this.command}\\b`));
+  }
+
   /** Resolve the full path of the command binary */
   resolveCommand(): string {
     try {

@@ -27,18 +27,6 @@ function execAsync(
   });
 }
 
-/** Pre-compiled regex cache keyed by driver command name */
-const regexCache = new Map<string, RegExp>();
-
-function getCommandRegex(command: string): RegExp {
-  let re = regexCache.get(command);
-  if (!re) {
-    re = new RegExp(`\\b${command}\\b`);
-    regexCache.set(command, re);
-  }
-  return re;
-}
-
 export class AgentDetector extends EventEmitter {
   private timer: ReturnType<typeof setInterval> | null = null;
   private _detected: DetectedAgent[] = [];
@@ -93,7 +81,7 @@ export class AgentDetector extends EventEmitter {
 
       for (const line of lines) {
         for (const driver of drivers) {
-          const regex = getCommandRegex(driver.command);
+          const regex = driver.processMatchPattern();
           if (!regex.test(line)) continue;
 
           const parts = line.trim().split(/\s+/);

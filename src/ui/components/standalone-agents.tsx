@@ -10,6 +10,7 @@ interface StandaloneAgentsProps {
 
 const AGENT_ICONS: Record<string, string> = {
   claude: "◈",
+  codex: "◇",
   gemini: "◆",
 };
 const DEFAULT_ICON = "●";
@@ -48,7 +49,7 @@ export function StandaloneAgents({
         const label = agent.cwd ? path.basename(agent.cwd) : `PID:${agent.pid}`;
         return (
           <Box key={agent.pid} paddingX={1}>
-            <Text color={agent.driverName === "claude" ? "#D97757" : "cyan"}>
+            <Text color={agent.driverName === "claude" ? "#D97757" : agent.driverName === "codex" ? "#10A37F" : "cyan"}>
               {icon}{" "}
             </Text>
             <Text>{label}</Text>
