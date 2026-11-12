@@ -207,6 +207,13 @@ const PrFixInputSchema = z.object({
   newBranchName: z.string().optional(),
   maintainerCanModify: z.boolean().optional(),
   headRepository: z.string().max(200).optional(),
+  pushPermission: z
+    .object({
+      repository: z.string().max(200),
+      push: z.literal(true),
+      checkedAt: z.number(),
+    })
+    .optional(),
 });
 
 const TicketAgentSessionSchema = z.object({
